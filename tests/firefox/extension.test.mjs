@@ -12,6 +12,8 @@ import { Builder, By, until } from 'selenium-webdriver';
 import { Command } from 'selenium-webdriver/lib/command.js';
 import { Pointer } from 'selenium-webdriver/lib/input.js';
 import firefox from 'selenium-webdriver/firefox.js';
+import { artifactBytes } from '../../scripts/release/approved-release.mjs';
+import { FIREFOX_GUID } from '../../scripts/release/release-names.mjs';
 
 let server, origin;
 before(async () => {
@@ -23,15 +25,15 @@ before(async () => {
 });
 after(() => new Promise(done => server.close(done)));
 
-async function suspendBackground(driver) {
+async function suspendBackground(driver, extensionId = FIREFOX_GUID) {
   await driver.setContext('chrome');
   try {
     // Exercise Firefox's real event-page idle shutdown in this disposable profile.
     // This does not reload the add-on or destroy the sidebar document.
-    const state = await driver.executeAsyncScript(done => {
-      const extension = WebExtensionPolicy.getByID('briefmark@briefmark.app').extension;
+    const state = await driver.executeAsyncScript((extensionId, done) => {
+      const extension = WebExtensionPolicy.getByID(extensionId).extension;
       extension.terminateBackground({ disableResetIdleForTest: true }).then(() => done(extension.backgroundState), error => done(String(error)));
-    });
+    }, extensionId);
     assert.equal(state, 'stopped');
   } finally { await driver.setContext('content'); }
 }
@@ -40,8 +42,13 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
   const downloads = await mkdtemp(resolve(tmpdir(), 'anmerko-firefox-download-'));
   const profile = await mkdtemp(resolve(tmpdir(), 'anmerko-firefox-profile-'));
   let driver, evidence, output;
-  const legacyBaseline = signedXpi === 'site/installers/briefmark-0.5.0-firefox.xpi';
-  let expectedHost = legacyBaseline ? 'pagebrief-overlay' : 'anmerko-overlay';
+  const expectedHost = 'anmerko-overlay';
+  const signedManifest = signedXpi
+    ? JSON.parse(execFileSync('unzip', ['-p', resolve(signedXpi), 'manifest.json'], { encoding: 'utf8' }))
+    : null;
+  const extensionId = signedManifest?.browser_specific_settings?.gecko?.id || FIREFOX_GUID;
+  assert.match(extensionId, /^\S+@\S+$/, 'Firefox package must declare a Gecko ID');
+  const browserActionId = `${extensionId.replace(/[^a-zA-Z0-9_-]/g, '_')}-BAP`;
   t.after(async () => {
     let cleanupError;
     try { if (driver) await driver.quit(); } catch (error) { cleanupError = error; }
@@ -92,7 +99,7 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
   driver.getExecutor().defineCommand('installLocalAddon', 'POST', '/session/:sessionId/moz/addon/install');
   assert.equal(await driver.execute(new Command('installLocalAddon')
     .setParameter('path', signedXpi ? resolve(signedXpi) : extension)
-    .setParameter('temporary', !signedXpi)), 'briefmark@briefmark.app');
+    .setParameter('temporary', !signedXpi)), extensionId);
   output = resolve('artifacts', `${signedXpi ? 'firefox-signed' : 'desktop-firefox'}-${process.platform}-${Date.now()}`);
   await mkdir(output, { recursive: true });
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -103,20 +110,20 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
     assert.equal(manifest.version, JSON.parse(await readFile('package.json', 'utf8')).version);
     assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
     assert.equal(manifest.host_permissions, undefined);
-    assert.equal(manifest.browser_specific_settings.gecko.id, 'briefmark@briefmark.app');
+    assert.equal(manifest.browser_specific_settings.gecko.id, FIREFOX_GUID);
     for (const file of (await readdir(extension, { recursive: true, withFileTypes: true })).filter(file => file.isFile())) {
       const path = join(file.parentPath, file.name);
       payload[relative(extension, path).replaceAll('\\', '/')] = hash(await readFile(path));
     }
-    assert.ok(!Object.keys(payload).some(name => /briefmark-dev-install|test-bootstrap/.test(name)));
+    assert.ok(!Object.keys(payload).some(name => /dev-install|test-bootstrap/.test(name)));
   }
   await driver.setContext('chrome');
-  const installed = await driver.executeScript(async () => {
+  const installed = await driver.executeScript(async extensionId => {
     const { AddonManager } = ChromeUtils.importESModule('resource://gre/modules/AddonManager.sys.mjs');
-    const addon = await AddonManager.getAddonByID('briefmark@briefmark.app');
+    const addon = await AddonManager.getAddonByID(extensionId);
     return { id: addon.id, version: addon.version, temporary: addon.temporarilyInstalled, signedState: addon.signedState,
       executable: Services.dirsvc.get('XREExeF', Ci.nsIFile).path };
-  });
+  }, extensionId);
   await driver.setContext('content');
   assert.equal(installed.temporary, !signedXpi);
   if (signedXpi) assert.ok(installed.signedState > 0, 'A persistent candidate must be Mozilla-signed');
@@ -190,7 +197,7 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
   const activateDock = async () => {
     await driver.setContext('chrome');
     await driver.findElement(By.id('unified-extensions-button')).click();
-    const item = await driver.wait(until.elementLocated(By.id('briefmark_briefmark_app-BAP')), 5000);
+    const item = await driver.wait(until.elementLocated(By.id(browserActionId)), 5000);
     await item.click();
     await driver.setContext('content');
     await driver.wait(() => ui('.panel'), 5000, `${expectedHost} should connect from Firefox’s extension menu`);
@@ -232,7 +239,7 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
     return point;
   };
   try {
-    await run({ copiedPrompt, driver, ui, click, value, count, activate, activateDock, docked, dockClick, save, comment, tap, downloads, output, restart, evidence });
+    await run({ copiedPrompt, driver, ui, click, value, count, activate, activateDock, docked, dockClick, save, comment, tap, downloads, output, restart, evidence, extensionId, browserActionId });
     evidence.result = 'passed';
   }
   catch (error) {
@@ -423,10 +430,10 @@ test('Firefox creates and renders element and global comments on ordinary HTTP',
   await driver.wait(async () => await count() === 2, 5000, 'saved HTTP cards render after reload');
 }));
 
-test('Firefox shows a helpful explanation when activation targets a protected page', { timeout: 90000 }, async t => session(t, async ({ driver }) => {
+test('Firefox shows a helpful explanation when activation targets a protected page', { timeout: 90000 }, async t => session(t, async ({ driver, browserActionId }) => {
   await driver.get('about:blank'); await driver.setContext('chrome');
   await driver.findElement(By.id('unified-extensions-button')).click();
-  await driver.findElement(By.id('briefmark_briefmark_app-BAP')).click();
+  await driver.findElement(By.id(browserActionId)).click();
   await driver.setContext('content');
   await driver.wait(async () => (await driver.getAllWindowHandles()).length === 2, 5000);
   await driver.switchTo().window((await driver.getAllWindowHandles()).at(-1));
@@ -557,7 +564,14 @@ test('Firefox default process isolation reconnects an open sidebar after page re
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'fresh toolbar activation reconnects the existing remote sidebar');
 }, true));
 
-test('Firefox signed baseline survives restart and a renamed signed update starts without migrating its data', { timeout: 90000 }, async t => session(t, async ({ copiedPrompt, driver, ui, click, count, activate, comment, restart, evidence }) => {
+test('Firefox current approved signed package preserves data across restart and same-identity signed update', { timeout: 90000 }, async t => {
+  const approved = JSON.parse(await readFile('releases/approved.json', 'utf8'));
+  const artifact = approved.browsers.firefox.artifact;
+  const baseline = resolve('artifacts', artifact.filename);
+  await writeFile(baseline, await artifactBytes(artifact));
+  const updateProofRequested = process.env.FIREFOX_UPDATE_PROOF === '1';
+  if (updateProofRequested) assert.ok(process.env.FIREFOX_XPI, 'FIREFOX_UPDATE_PROOF requires FIREFOX_XPI');
+  return session(t, async ({ copiedPrompt, driver, ui, click, count, activate, comment, restart, evidence, extensionId }) => {
   await activate();
   await comment('#hero-title', 'Keep this feedback through Firefox updates.');
   await click('.settings-button');
@@ -576,30 +590,27 @@ test('Firefox signed baseline survives restart and a renamed signed update start
   };
   driver = await restart();
   await verifyBaseline();
-  evidence.browserRestart = 'passed; signed baseline, no reinstallation';
-  evidence.signedUpdate = 'unrun; supply FIREFOX_XPI with a newer signed release';
+  evidence.browserRestart = 'passed; current approved signed package, no reinstallation';
+  evidence.signedUpdate = 'unrun; set FIREFOX_UPDATE_PROOF=1 and supply FIREFOX_XPI with a newer same-identity signed release';
   if (process.env.FIREFOX_XPI) {
+    const updateManifest = JSON.parse(execFileSync('unzip', ['-p', resolve(process.env.FIREFOX_XPI), 'manifest.json'], { encoding: 'utf8' }));
+    assert.equal(updateManifest.browser_specific_settings?.gecko?.id, extensionId,
+      'Signed update proof requires the same Firefox identity as the approved package');
     assert.equal(await driver.installAddon(resolve(process.env.FIREFOX_XPI), false), evidence.id);
     await driver.setContext('chrome');
-    const updated = await driver.executeScript(async () => {
+    const updated = await driver.executeScript(async extensionId => {
       const { AddonManager } = ChromeUtils.importESModule('resource://gre/modules/AddonManager.sys.mjs');
-      const addon = await AddonManager.getAddonByID('briefmark@briefmark.app');
+      const addon = await AddonManager.getAddonByID(extensionId);
       return { version: addon.version, signedState: addon.signedState, temporary: addon.temporarilyInstalled };
-    });
-    assert.equal(updated.version, JSON.parse(await readFile('package.json', 'utf8')).version);
+    }, extensionId);
+    assert.equal(updated.version, updateManifest.version);
     assert.notEqual(updated.version, evidence.version, 'An update must use a different signed version');
     assert.ok(updated.signedState > 0 && !updated.temporary);
-    expectedHost = 'anmerko-overlay';
     driver = await restart();
-    // Tabs injected by the baseline still speak the retired protocol. Refresh
-    // before activating the renamed content script, as users must after update.
     await driver.navigate().refresh();
-    await activate();
-    await driver.wait(async () => await count() === 0, 5000);
-    assert.notEqual(await (await ui('.panel')).getCssValue('background-color'), 'rgb(21, 28, 41)');
-    await click('.settings-button');
-    assert.match(await (await ui('#preamble')).getAttribute('value'), /Comments collected with anmerko/);
-    evidence.signedUpdate = { result: 'passed; renamed update starts fresh after refreshing the injected tab', ...updated,
+    await verifyBaseline();
+    evidence.signedUpdate = { result: 'passed; same-identity signed update preserves data', ...updated,
       sha256: createHash('sha256').update(await readFile(process.env.FIREFOX_XPI)).digest('hex') };
   }
-}, false, 'site/installers/briefmark-0.5.0-firefox.xpi'));
+  }, false, baseline);
+});
