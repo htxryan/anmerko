@@ -6,9 +6,22 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
-export function obsoleteLegacyUrls(body, allowed = new Set()) {
-  return [...body.matchAll(/https:\/\/briefmark\.app[^\s"'<>)]*/g)]
-    .map(match => match[0]).filter(url => !allowed.has(url));
+export function noncanonicalSiteUrls(body, approvedFilenames, canonicalOrigin = 'https://anmerko.com') {
+  const canonical = new URL(canonicalOrigin).origin;
+  return [...body.matchAll(/https?:\/\/[^\s"'<>)]*/g)]
+    .map(match => match[0])
+    .filter(value => {
+      try {
+        const url = new URL(value);
+        const filename = url.pathname.match(/^\/downloads\/([^/]+)$/)?.[1];
+        const siteRoute = /^\/(?:docs(?:\/|$)|support(?:\/|$)|release-manifest\.json$)/.test(url.pathname)
+          || (filename && approvedFilenames.has(filename));
+        return siteRoute && (url.origin !== canonical
+          || (filename && approvedFilenames.has(filename) && (url.search !== '' || url.hash !== '')));
+      } catch {
+        return false;
+      }
+    });
 }
 
 export function deploymentRouteChecks(main404, support404) {
@@ -44,17 +57,16 @@ export async function verifySite({
   const support404 = hash(await readFile(join(root, 'artifacts/store-site/404.html')));
   checks.push(...deploymentRouteChecks(main404, support404));
   const approved = JSON.parse(await readFile(join(root, 'site/dist/release-manifest.json'), 'utf8'));
-  const allowedLegacyUrls = new Set(Object.values(approved.browsers || {})
+  const approvedFilenames = new Set(Object.values(approved.browsers || {})
     .map(browser => browser?.artifact?.filename)
-    .filter(filename => /^briefmark-[\w.-]+\.(?:zip|xpi)$/.test(filename || ''))
-    .map(filename => `https://briefmark.app/downloads/${filename}`));
+    .filter(filename => /^[\w.-]+\.(?:zip|xpi)$/.test(filename || '')));
   for (const directory of ['site/dist', 'artifacts/store-site']) {
     const dir = join(root, directory);
     const files = await readdir(dir, { recursive: true, withFileTypes: true });
     for (const file of files.filter(entry => entry.isFile() && /\.(?:html|css|js|json|xml|txt)$/.test(entry.name))) {
       const body = await readFile(join(file.parentPath, file.name), 'utf8');
-      const obsolete = obsoleteLegacyUrls(body, allowedLegacyUrls);
-      if (obsolete.length) throw new Error(`Obsolete live Briefmark URL in ${file.name}: ${obsolete[0]}`);
+      const obsolete = noncanonicalSiteUrls(body, approvedFilenames);
+      if (obsolete.length) throw new Error(`Noncanonical approved-download URL in ${file.name}: ${obsolete[0]}`);
     }
   }
   // Limit requests while still checking every lazy module and search asset.

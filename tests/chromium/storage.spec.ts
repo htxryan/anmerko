@@ -19,11 +19,11 @@ const note: Note = {
 
 test('fresh anmerko storage ignores the retired preview namespace', async () => {
   const memory = store();
-  await memory.write('pagebrief:note:v1:legacy', { ...note, id: 'legacy' });
+  await memory.write('retired-product:note:v1:legacy', { ...note, id: 'legacy' });
   await saveNote(memory, note);
   expect(STORAGE_PREFIX).toBe('anmerko:note:v1:');
   expect(await readNotes(memory)).toEqual([note]);
-  expect(await memory.read('pagebrief:note:v1:legacy')).toMatchObject({ id: 'legacy' });
+  expect(await memory.read('retired-product:note:v1:legacy')).toMatchObject({ id: 'legacy' });
 });
 
 test('notes use only their supplied store, preserve concurrent notes, and reject invalid records', async () => {

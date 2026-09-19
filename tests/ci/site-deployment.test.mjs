@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deploymentRouteChecks, obsoleteLegacyUrls } from '../../scripts/deployment/verify-site-deployment.mjs';
+import { deploymentRouteChecks, noncanonicalSiteUrls } from '../../scripts/deployment/verify-site-deployment.mjs';
 
 test('deployment verifier covers private docs, task paths, both 404 workers and bare support', () => {
   assert.deepEqual(deploymentRouteChecks('main-404', 'support-404'), [
@@ -12,10 +12,15 @@ test('deployment verifier covers private docs, task paths, both 404 workers and 
   ]);
 });
 
-test('deployment verifier rejects obsolete live origins with exact historical download exceptions', () => {
-  const historical = 'https://briefmark.app/downloads/briefmark-0.5.4.zip';
-  const allowed = new Set([historical]);
-  assert.deepEqual(obsoleteLegacyUrls(`<a href="${historical}">old package</a>`, allowed), []);
-  assert.deepEqual(obsoleteLegacyUrls('https://briefmark.app/docs/usage/', allowed), ['https://briefmark.app/docs/usage/']);
-  assert.deepEqual(obsoleteLegacyUrls(`${historical}?latest=1`, allowed), [`${historical}?latest=1`]);
+test('deployment verifier rejects approved downloads on noncanonical origins or altered URLs', () => {
+  const filename = 'approved-package-0.5.4.zip';
+  const canonical = `https://anmerko.com/downloads/${filename}`;
+  const noncanonical = `https://downloads.invalid/downloads/${filename}`;
+  const approved = new Set([filename]);
+  assert.deepEqual(noncanonicalSiteUrls(`<a href="${canonical}">package</a>`, approved), []);
+  assert.deepEqual(noncanonicalSiteUrls(noncanonical, approved), [noncanonical]);
+  const noncanonicalDocs = 'https://docs.invalid/docs/usage/';
+  assert.deepEqual(noncanonicalSiteUrls(noncanonicalDocs, approved), [noncanonicalDocs]);
+  assert.deepEqual(noncanonicalSiteUrls(`${canonical}?latest=1`, approved), [`${canonical}?latest=1`]);
+  assert.deepEqual(noncanonicalSiteUrls('https://example.com/project/', approved), []);
 });

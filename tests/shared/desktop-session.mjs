@@ -54,7 +54,7 @@ export async function createDesktopSession({ scenario = 'manual' } = {}) {
     const expected = JSON.parse(await readFile('public/manifest.json', 'utf8'));
     expected.version = JSON.parse(await readFile('package.json', 'utf8')).version;
     assert.deepEqual(manifest, expected, 'Build the unchanged production Chrome manifest first');
-    assert.ok(!files.some(file => /briefmark-dev-install|test-bootstrap/.test(file.name)), 'Development helpers must not enter acceptance');
+    assert.ok(!files.some(file => /anmerko-dev-install|test-bootstrap/.test(file.name)), 'Development helpers must not enter acceptance');
     const html = await readFile('tests/fixtures/demo/index.html');
     server = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(html); });
     await new Promise(done => server.listen(0, '127.0.0.1', done));

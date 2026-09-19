@@ -69,18 +69,18 @@ test('supported browser targets build clean resources and reject development hel
     const archive = join(root, `artifacts/anmerko-${version}${suffix}.zip`);
     const zip = await readFile(archive);
     assert.equal(zip.readUInt32LE(0), 0x04034b50);
-    for (const helper of ['briefmark-dev-install.js', 'anmerko-dev-install.js']) {
+    for (const helper of ['anmerko-dev-install.js', 'retired-dev-install.js']) {
       await writeFile(join(root, outdir, helper), 'test helper');
       await assert.rejects(pack(), error => /Development update helper/.test(error.stderr));
       assert.deepEqual(await readFile(archive), zip, 'rejection preserves the previous archive');
       await rm(join(root, outdir, helper));
     }
-    for (const marker of ['BRIEFMARK_DEV_VERIFY', 'ANMERKO_DEV_VERIFY']) {
+    for (const marker of ['ANMERKO_DEV_VERIFY', 'RETIRED_DEV_VERIFY']) {
       await writeFile(join(root, outdir, 'background.js'), marker);
       await assert.rejects(pack(), error => /Development update helper/.test(error.stderr));
     }
     await build(args);
-    assert.ok(!(await readFile(join(root, outdir, 'background.js'), 'utf8')).includes('BRIEFMARK_DEV_VERIFY'));
+    assert.ok(!(await readFile(join(root, outdir, 'background.js'), 'utf8')).includes('RETIRED_DEV_VERIFY'));
     await pack();
   }
 });

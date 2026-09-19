@@ -6,8 +6,8 @@ const target = browserTarget();
 const { name, version: packageVersion } = JSON.parse(await readFile('package.json', 'utf8'));
 const version = buildVersion(packageVersion);
 const { outdir } = target;
-if ((await readdir(outdir)).some(file => /^(?:briefmark|anmerko)-dev-install\./.test(file)) ||
-    /(?:BRIEFMARK|ANMERKO)_DEV_VERIFY/.test(await readFile(`${outdir}/background.js`, 'utf8'))) {
+if ((await readdir(outdir)).some(file => /^(?:anmerko|retired)-dev-install\./.test(file)) ||
+    /(?:ANMERKO|RETIRED)_DEV_VERIFY/.test(await readFile(`${outdir}/background.js`, 'utf8'))) {
   throw new Error(`Development update helper detected. Run node scripts/extension/build.mjs --target ${target.name} to rebuild clean resources before packaging.`);
 }
 const archive = `${name}-${version}${target.archiveSuffix}.zip`;
