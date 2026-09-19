@@ -85,7 +85,10 @@ Current extension data and page integration use the `anmerko:` storage prefix, `
 
 Chrome, Edge, and Firefox share the product implementation. Keep API differences in `src/platform.ts` and `src/docking.ts`, and manifest/build differences in `scripts/extension/browser-targets.mjs`. Edge reuses the Chromium ZIP.
 
-Windows CI builds and checks are temporarily disabled under [issue #58](https://github.com/htxryan/anmerko/issues/58); their source and workflow definitions remain. See the [reactivation policy](release-process.md#platform-scope).
+Windows CI builds and checks are temporarily disabled under
+[issue #1](https://github.com/htxryan/anmerko/issues/1);
+their source and workflow definitions remain. See the
+[reactivation policy](release-process.md#platform-scope).
 
 For Firefox, run `npm run build:firefox`, `npm run package:firefox`, and `npm run test:firefox`. Packaging emits an unsigned ZIP and matching review-source ZIP. The active default reuses the registered add-on ID; it is an opaque package identity and an explicit historical exception. Preserve that GUID and every historical signed baseline unchanged.
 

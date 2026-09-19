@@ -27,7 +27,17 @@ Only one automated release is active. Automated callbacks and schedules only res
 
 `releases/approved.json` remains the website source of truth and retains the previous manifest hash for rollback. Release-policy PRs also run the callable validation workflow. If the requested main source has only site checks, this read-only proof may select a recent main ancestor with verified browser evidence whose attestation matches that ancestor's own immutable policy. It tests the selected source's candidate packages under the proposed controller and cannot publish. Production releases still require the exact requested source and the current controller's validation policy.
 
-For a new independent repository, the first parentless commit may import only the exact audited sequence-8 manifest pinned in `verify-approved-release.mjs`. The verifier checks every approved installer checksum. This is an explicit import trust anchor, not a claim that historical Actions runs belong to the new repository. Seed the reviewed release assets at their manifest URLs before the first Check run; public downloads build anonymously, with authenticated `gh` fallback for private GitHub assets. Later commits use normal predecessor and promotion verification. If the approved release changes before the move, review and repin the import baseline through a PR.
+The public repository starts from an independent parentless commit rather than
+carrying over the private repository's Git history. That root imports only the
+exact audited sequence-8 manifest pinned in `verify-approved-release.mjs`. The
+verifier checks every approved installer checksum, so the unchanged manifest,
+signed installer bytes, and hashes preserve the inherited release provenance
+without treating private commits or Actions runs as public-repository history.
+Seed the reviewed release assets at their manifest URLs before the first Check
+run; public downloads build anonymously, with authenticated `gh` fallback for
+private GitHub assets. Later commits use normal predecessor and promotion
+verification. If the approved release changes before the move, review and repin
+the import baseline through a PR.
 
 Current automation runs only for the exact active `htxryan/anmerko` repository. Historical approval records and release assets resolve only from the repository allowlist in `scripts/release/release-repository.mjs`, with source, run, attempt, filename, and hash checks. The release and production concurrency groups remain stable so in-flight and new runs share one lock.
 
@@ -39,7 +49,11 @@ Close a store-launch issue after public approval, a real store installation and 
 
 Website promotion and public store publication are separate results. The immutable 0.5.5 rename candidate is persisted and approved website downloads are published. Edge became publicly Live on 2026-09-15, Chrome on 2026-09-16, and Firefox received public approval on 2026-09-18 ([verification summary](evidence/anmerko/verification-summary.md)). Keep channel CTAs truthful until the corresponding public listing, package identity, and supported-platform installation are verified. Native Edge-store acceptance remains separate from the shared Chromium download. The completed old-domain homepage redirect has no candidate-promotion or observation dependency.
 
-Release 0.5.5 is complete. [Continuation run 35448181046](https://github.com/htxryan/anmerko/actions/runs/35448181046) recorded durable state 018 with all website channels ready, deployment published, and Chrome and Firefox published; the [0.5.5 release](https://github.com/htxryan/anmerko/releases/tag/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3) is final rather than a draft or prerelease.
+Release 0.5.5 is complete. [Private-archive continuation run 35448181046](https://github.com/htxryan/anmerko-private-archive/actions/runs/35448181046)
+recorded durable state 018 with all website channels ready, deployment published,
+and Chrome and Firefox published; the
+[private-archive 0.5.5 release](https://github.com/htxryan/anmerko-private-archive/releases/tag/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3)
+is final rather than a draft or prerelease.
 
 ## Platform scope
 

@@ -1,8 +1,9 @@
 # Desktop store launch acceptance
 
-Firefox [#26](https://github.com/htxryan/anmerko/issues/26), Chrome
-[#27](https://github.com/htxryan/anmerko/issues/27), and Edge
-[#35](https://github.com/htxryan/anmerko/issues/35) are complete. On September 19,
+Firefox [private-archive issue #26](https://github.com/htxryan/anmerko-private-archive/issues/26),
+Chrome [private-archive issue #27](https://github.com/htxryan/anmerko-private-archive/issues/27),
+and Edge [private-archive issue #35](https://github.com/htxryan/anmerko-private-archive/issues/35)
+are complete. On September 19,
 2026, the owner clarified that practical launch verification is sufficient;
 an exhaustive native certification matrix and a future version's update are
 not blockers for the current launch.
@@ -30,27 +31,29 @@ The signed website Firefox 0.5.5.1 XPI SHA-256 is
 `dc9aec89a3841c9faa47ffe5d7524e2589236e3f0ca78b154e9c16ed2e784267`.
 See the [sanitized verification summary](../evidence/anmerko/verification-summary.md).
 
-[Selected-source Check 34976898752](https://github.com/htxryan/anmerko/actions/runs/34976898752)
+[Private-archive selected-source Check 34976898752](https://github.com/htxryan/anmerko-private-archive/actions/runs/34976898752)
 passed applicable macOS and Linux browser regressions, including stable and
 minimum Firefox candidate coverage. These are automated candidate checks;
 the real store installations are independently recorded above.
 
 Release automation is complete in
-[state 018](https://github.com/htxryan/anmerko/releases/download/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3/state-018.json).
+[private-archive state 018](https://github.com/htxryan/anmerko-private-archive/releases/download/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3/state-018.json).
 The [installation hub](https://anmerko.com/docs/install/) and browser guides
 cover Chrome/Edge/Firefox desktop, Edge/Firefox Android, supported stores,
-manual alternatives, and unsupported mobile platforms. PRs #120 and #124
-updated and verified the public guidance without changing approved installers.
+manual alternatives, and unsupported mobile platforms. Private-archive PRs
+[#120](https://github.com/htxryan/anmerko-private-archive/pull/120) and
+[#124](https://github.com/htxryan/anmerko-private-archive/pull/124) updated and
+verified the public guidance without changing approved installers.
 Firefox Android has prior native signed-runtime acceptance and an exact runtime
 payload match to the listed package; this does not claim a fresh Android AMO UI
 installation. Edge Android support retains its documented owner verification.
 
 ## Continuing maintenance
 
-- **Windows:** [#121](https://github.com/htxryan/anmerko/issues/121) owns native
-  Windows testing; [#58](https://github.com/htxryan/anmerko/issues/58) owns the
+- **Windows:** [#2](https://github.com/htxryan/anmerko/issues/2) owns native
+  Windows testing; [#1](https://github.com/htxryan/anmerko/issues/1) owns the
   known Windows CI repair and hold.
-- **Linux:** [#122](https://github.com/htxryan/anmerko/issues/122) owns native
+- **Linux:** [#3](https://github.com/htxryan/anmerko/issues/3) owns native
   Linux testing beyond the existing automated coverage.
 - **Store updates:** preserve useful 0.5.5 test installations and check ordinary
   update retention when the next approved release exists. A future release is
