@@ -1,6 +1,6 @@
 # Site deployment
 
-`anmerko-site` serves public `site/dist/` at `anmerko.com`; `anmerko-support` serves `/support/` and `/support/privacy/`. Configuration lives in `site/wrangler.jsonc` and `store-site/wrangler.jsonc`. Both use static assets and have no bindings.
+`anmerko-site` serves public `site/dist/` at `anmerko.com`; `anmerko-support` serves `/support/` and `/support/privacy/`. Configuration lives in `site/wrangler.jsonc` and `site/support/wrangler.jsonc`. Both use static assets and have no bindings.
 
 ## Continuous deployment
 
@@ -19,7 +19,7 @@ For a transient failure, rerun Deploy while inputs remain current and its seven-
 
 ```sh
 npx wrangler rollback VERSION_ID --config site/wrangler.jsonc
-npx wrangler rollback SUPPORT_VERSION_ID --config store-site/wrangler.jsonc
+npx wrangler rollback SUPPORT_VERSION_ID --config site/support/wrangler.jsonc
 ```
 
 Coordinate recovery with queued production runs. For durable installer rollback, use a [manifest PR](release-process.md).
@@ -37,7 +37,7 @@ npx wrangler dev --config site/wrangler.jsonc --port 4180
 
 Browser tests use the actual Wrangler configuration. Manually check docs navigation/search, Chrome download, narrow layout, console, and downloaded bytes. Repository-only guides and removed installation pages must return 404.
 
-For authorized manual recovery, use the exact successful Check artifact for the eligible source commit. Verify its archive digest and approved installer hashes, authenticate with `npx wrangler whoami`, verify the account/domain, and dry-run both configs against those extracted assets. With the artifact extracted under `release/`, publish with `npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist` and `npx --no-install wrangler deploy --config store-site/wrangler.jsonc --assets release/artifacts/store-site`, then run `node scripts/verify-site-deployment.mjs release`. Do not rebuild during privileged recovery: `npm run store:deploy` rebuilds support output and is not the tested-artifact recovery command. Never bypass release approval.
+For authorized manual recovery, use the exact successful Check artifact for the eligible source commit. Verify its archive digest and approved installer hashes, authenticate with `npx wrangler whoami`, verify the account/domain, and dry-run both configs against those extracted assets. With the artifact extracted under `release/`, publish with `npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist` and `npx --no-install wrangler deploy --config site/support/wrangler.jsonc --assets release/artifacts/store-site`, then run `node scripts/verify-site-deployment.mjs release`. Do not rebuild during privileged recovery: `npm run store:deploy` rebuilds support output and is not the tested-artifact recovery command. Never bypass release approval.
 
 ## Public assets and privacy
 
@@ -47,7 +47,9 @@ The support build uses shared privacy Markdown and emits only help, privacy, hea
 
 `workers_dev` and `preview_urls` remain disabled; inspect actual domain bindings after route changes.
 
-`www.anmerko.com` uses the separate `legacy-site/wrangler-www.jsonc` redirect Worker. Normal Deploy updates only site and support; a reviewed www configuration change requires a separate dry run, deployment, and canonical redirect verification.
+`www.anmerko.com` uses the separate `site/wrangler-www.jsonc` redirect Worker.
+Normal Deploy updates only site and support; a reviewed www configuration change
+requires a separate dry run, deployment, and canonical redirect verification.
 
 ## Legacy domain
 

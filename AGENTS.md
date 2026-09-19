@@ -26,10 +26,10 @@ Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and
 - `src/`: extension logic, browser integration, UI, and styles.
 - `public/`: extension manifest, HTML entry points, and icons.
 - `scripts/`: build, packaging, browser installation, signing, and preview tools.
-- `tests/`, `tests-dev/`, `tests-firefox/`: Chromium, Chrome installer, and Firefox tests.
-- `site/`: public website, Cloudflare deployment configuration, and site tests.
+- `tests/`: browser, desktop, tooling, CI, release, deployment, and site tests, plus test fixtures.
+- `site/`: public website, support-site source, and Cloudflare deployment configuration.
 - [site/src/content/docs/docs/](site/src/content/docs/docs/): published user documentation.
-- [docs/](docs/): repository-only development guides; `demo/`: local test website.
+- [docs/](docs/): repository-only development guides.
 - `dist/`, `dist-firefox/`, `site/dist/`, `artifacts/`: generated output; edit source instead.
 
 ## Development

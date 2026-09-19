@@ -39,14 +39,14 @@ if (import.meta.main) {
     process.env.ANMERKO_DESKTOP_BROWSER = values.browser;
     process.env.ANMERKO_DESKTOP_EXECUTABLE = executable;
     if (values.manual) {
-      const { createDesktopSession } = await import('../tests-shared/desktop-session.mjs');
+      const { createDesktopSession } = await import('../tests/shared/desktop-session.mjs');
       const session = await createDesktopSession();
       console.log(JSON.stringify(session.evidence, null, 2));
       console.log('Disposable profile ready. Click anmerko in the Extensions menu. Ctrl+C saves evidence and closes this profile.');
       await new Promise(done => { process.once('SIGINT', done); process.once('SIGTERM', done); session.context.once('close', done); });
       await session.close();
     } else {
-      const child = spawn(process.execPath, ['--test', 'tests-desktop/extension.test.mjs'], { cwd: root, env: process.env, stdio: 'inherit' });
+      const child = spawn(process.execPath, ['--test', 'tests/desktop/extension.test.mjs'], { cwd: root, env: process.env, stdio: 'inherit' });
       child.on('error', error => { console.error(error.message); process.exitCode = 1; });
       child.on('exit', code => { process.exitCode = code ?? 1; });
     }

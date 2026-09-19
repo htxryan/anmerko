@@ -34,10 +34,12 @@ on 15 September 2026. Rule ID: `a1bf3ce6d1104f1f9b20b480bd7fe67f`.
 ```
 
 The existing proxied apex record remains. A proxied `www` CNAME targeting
-`briefmark.app` was added with automatic TTL. Mail DNS, domain registration
-and old Worker deployments are retained as an optional rollback;
+`briefmark.app` was added with automatic TTL. Mail DNS, domain registration,
+and any provider-side old Worker state are outside this repository cleanup;
 the redirect intercepts old-host web traffic before application serving.
-Current main deploys only the new `anmerko-site` and `anmerko-support` Workers.
+The retired Briefmark Worker source and Wrangler configurations have been
+removed and must not be recreated or deployed. Current main deploys only the
+`anmerko-site` and `anmerko-support` Workers.
 
 This is a dashboard-managed rule; normal site Deploy does not manage it.
 See Cloudflare's [Single Redirect documentation](https://developers.cloudflare.com/rules/url-forwarding/single-redirects/create-dashboard/).
@@ -63,10 +65,12 @@ Post-cutover verification at 13:14 UTC on 15 September 2026:
   and Report Issue links. Chrome resolved `www` normally.
 
 No scheduled observation or legacy URL compatibility work remains under the
-owner's simplified cutover decision. Deleting retained infrastructure is optional.
+owner's simplified cutover decision. The dashboard-managed redirect stays
+active; this repository does not manage or delete it.
 
 ## Rollback
 
-Disable the named Single Redirect to restore the previous apex serving path.
-Do not rerun a historical old-domain deployment. Permanent redirects may be
-cached by clients. Worker or domain deletion is not part of this cutover.
+Disable the named Single Redirect only as an authorized provider-side recovery
+step. Do not rerun a historical old-domain deployment or restore the removed
+Worker source. Permanent redirects may be cached by clients. Worker, DNS, or
+domain deletion is not part of this repository cleanup.

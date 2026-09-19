@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "tests", "playwright.config.ts", "playwright.site.config.ts", "site/tests", "site/src/scripts", "site/src/env.d.ts"]
+  "include": ["src", "tests", "site/src/scripts", "site/src/env.d.ts"]
 }

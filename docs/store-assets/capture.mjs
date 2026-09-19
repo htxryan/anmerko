@@ -5,9 +5,9 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from '@playwright/test';
 import { resolveBrowser } from '../../scripts/test-desktop.mjs';
-import { createDesktopSession } from '../../tests-shared/desktop-session.mjs';
-import { sidebar } from '../../tests-shared/chromium-sidebar.ts';
-import { copyPrompt } from '../../tests-shared/clipboard.ts';
+import { createDesktopSession } from '../../tests/shared/desktop-session.mjs';
+import { sidebar } from '../../tests/shared/chromium-sidebar.ts';
+import { copyPrompt } from '../../tests/shared/clipboard.ts';
 
 process.chdir(fileURLToPath(new URL('../../', import.meta.url)));
 process.env.ANMERKO_DESKTOP_BROWSER = 'chrome';

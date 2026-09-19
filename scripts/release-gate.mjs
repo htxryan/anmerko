@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { digest, isSource } from './approved-release.mjs';
-import { desktopScenarios } from '../tests-shared/desktop-scenarios.mjs';
+import { desktopScenarios } from '../tests/shared/desktop-scenarios.mjs';
 import { requiredOperatingSystems } from './ci-policy.mjs';
 import { activeRepository, HISTORICAL_REPOSITORIES } from './release-repository.mjs';
 

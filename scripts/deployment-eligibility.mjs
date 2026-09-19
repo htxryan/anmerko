@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 
 export function siteAffected(path) {
-  return /^(?:src\/|public\/icons\/128\.png$|site\/|store-site\/|releases\/|package(?:-lock)?\.json$|\.github\/|scripts\/(?:build-site|approved-release|verify-approved-release|build-store-site|verify-site-deployment|capture-deployment-state|deployment-eligibility)\.mjs$)/.test(path);
+  return /^(?:src\/|public\/icons\/128\.png$|site\/|releases\/|package(?:-lock)?\.json$|\.github\/|scripts\/(?:build-site|approved-release|verify-approved-release|build-store-site|verify-site-deployment|capture-deployment-state|deployment-eligibility)\.mjs$)/.test(path);
 }
 export function canDeployAfter(source, latest, comparison) {
   if (source === latest) return true;

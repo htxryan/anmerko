@@ -112,7 +112,7 @@ jobs:
       - name: Validate both deployment configurations
         run: |
           npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist --dry-run
-          npx --no-install wrangler deploy --config store-site/wrangler.jsonc --assets release/artifacts/store-site --dry-run
+          npx --no-install wrangler deploy --config site/support/wrangler.jsonc --assets release/artifacts/store-site --dry-run
       - name: Skip a superseded main commit
         id: current
         env:
@@ -143,7 +143,7 @@ jobs:
           cp release/site/dist/release-manifest.json artifacts/deployment/approved.json
           node scripts/capture-deployment-state.mjs
           npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist --message "main $SOURCE_SHA" | tee artifacts/deployment/site.txt
-          npx --no-install wrangler deploy --config store-site/wrangler.jsonc --assets release/artifacts/store-site --message "main $SOURCE_SHA" | tee artifacts/deployment/support.txt
+          npx --no-install wrangler deploy --config site/support/wrangler.jsonc --assets release/artifacts/store-site --message "main $SOURCE_SHA" | tee artifacts/deployment/support.txt
       - name: Verify public routes and exact asset bytes
         if: steps.current.outputs.publish == 'true'
         run: |

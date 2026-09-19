@@ -45,7 +45,7 @@ jobs:
           package-manager-cache: false
       - name: Reject private source data
         run: node scripts/check-public-source.mjs
-      - run: node --test tests-ci/*.test.mjs tests-release/*.test.mjs
+      - run: node --test tests/ci/*.test.mjs tests/release/*.test.mjs
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'
@@ -220,7 +220,7 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: node --test tests-deployment/*.test.mjs
+      - run: node --test tests/deployment/*.test.mjs
       - name: Verify approved release transition
         env:
           GH_TOKEN: ${{ github.token }}

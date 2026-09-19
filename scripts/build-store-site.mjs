@@ -5,12 +5,12 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 // This public build has an explicit content allowlist, separate from site/dist.
 // Never copy the private brochure, search index, or installers into this output.
 const output = 'artifacts/store-site';
-const template = await readFile('store-site/page.html', 'utf8');
+const template = await readFile('site/support/page.html', 'utf8');
 const markdown = await createMarkdownProcessor({ syntaxHighlight: false });
 await rm(output, { recursive: true, force: true });
 await mkdir(`${output}/support/privacy`, { recursive: true });
 for (const [source, destination, title] of [
-  ['store-site/help.md', 'support/index.html', 'Help with anmerko'],
+  ['site/support/help.md', 'support/index.html', 'Help with anmerko'],
   ['site/src/content/docs/docs/privacy.md', 'support/privacy/index.html', 'Privacy policy'],
 ]) {
   const sourceText = await readFile(source, 'utf8');

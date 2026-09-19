@@ -12,6 +12,7 @@ npm run demo
 ```
 
 The demo runs at `http://127.0.0.1:4173`. At `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `dist/`. After rebuilding, reload the extension and refresh the website.
+Its local test page is maintained at `tests/fixtures/demo/index.html`.
 
 | Command | Purpose |
 | --- | --- |
@@ -54,6 +55,7 @@ Preview: `http://127.0.0.1:4174`. The browser suite uses port 4175. Rebuild afte
 - `site/src/content/docs/docs/`: published Markdown/MDX; navigation in `site/astro.config.mjs`.
 - `docs/`: repository-only developer guides; never publish these.
 - `site/src/pages/index.astro`: landing page.
+- `site/support/`: source for the standalone help, privacy, and support routes.
 - `site/public/product-illustration.svg`: brochure-only artwork; do not upload it to extension stores.
 - `site/public/screenshots/`: current UI captures on [Salad Recipe Finder](https://saladrecipefinder.com/), shared by documentation and [store listings](store-assets/README.md).
 
@@ -113,7 +115,7 @@ proof. Site/deployment helpers select Site without forcing browser checks; brows
 build, packaging, permissions, integration, and release-policy changes retain full
 coverage. Keep new production helpers assigned to their relevant path filters.
 
-For CI changes, run `node --test tests-ci/*.test.mjs tests-release/*.test.mjs` and `actionlint`.
+For CI changes, run `node --test tests/ci/*.test.mjs tests/release/*.test.mjs` and `actionlint`.
 
 See [local runners](local-runners.md) for the MacBook macOS/Docker setup, routing
 policy and Taskfile start/stop commands. Trusted private macOS jobs use the local

@@ -38,30 +38,30 @@ lint:
 
 chrome:
   - *extension
-  - 'tests/**'
-  - 'tests-desktop/**'
-  - 'tests-shared/**'
+  - 'tests/chromium/**'
+  - 'tests/desktop/**'
+  - 'tests/shared/**'
   - 'scripts/test-desktop.mjs'
   - 'scripts/check-desktop-payloads.mjs'
-  - 'tests-dev/**'
+  - 'tests/tooling/**'
   # The installer suite also rebuilds Firefox's extracted review-source archive.
   - 'scripts/package-firefox-source.mjs'
-  - 'playwright.config.ts'
+  - 'tests/playwright.config.ts'
   - 'scripts/install-chrome.mjs'
   - 'scripts/demo.mjs'
-  - 'demo/**'
+  - 'tests/fixtures/demo/**'
 
 firefox:
   - *extension
-  - 'tests-firefox/**'
-  - 'tests-shared/**'
+  - 'tests/firefox/**'
+  - 'tests/shared/**'
   - 'scripts/web-ext.mjs'
   - 'scripts/sign-firefox.mjs'
   - 'scripts/package-firefox-source.mjs'
   - 'scripts/check-desktop-payloads.mjs'
   - 'site/firefox-release.json'
   - 'site/installers/*.xpi'
-  - 'demo/**'
+  - 'tests/fixtures/demo/**'
 
 site:
   - '.github/workflows/deploy.yml'
@@ -75,14 +75,15 @@ site:
   - 'src/**'
   # Published Markdown/MDX is compiled by Astro; repository docs need no build.
   - 'site/**'
-  - 'store-site/**'
   - 'scripts/build-store-site.mjs'
-  - 'playwright.site.config.ts'
+  - 'tests/site/**'
+  - 'tests/store-site/**'
+  - 'tests/playwright.site.config.ts'
   - 'scripts/build-site.mjs'
   - 'scripts/serve-site.mjs'
   - 'scripts/verify-site-deployment.mjs'
   - 'scripts/capture-deployment-state.mjs'
-  - 'tests-deployment/**'
+  - 'tests/deployment/**'
 
 # These changes can affect browser integration or the release trust boundary.
 highrisk:
@@ -106,9 +107,9 @@ highrisk:
   - 'scripts/demo.mjs'
   - 'scripts/build-release-demo.mjs'
   - 'scripts/store-api.mjs'
-  - 'tests-shared/**'
-  - 'tests-desktop/**'
-  - 'tests-firefox/**'
+  - 'tests/shared/**'
+  - 'tests/desktop/**'
+  - 'tests/firefox/**'
   - 'site/installers/**'
   - 'site/firefox-release.json'
   - 'releases/**'

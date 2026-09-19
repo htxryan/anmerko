@@ -28,6 +28,8 @@ export function workflowVersion({ root = '.', ref } = {}) {
     assert.match(ref, /^[a-f0-9]{40}$/, 'Policy ref must be an immutable commit');
     execFileSync('git', ['-C', root, 'cat-file', '-e', `${ref}^{commit}`], { stdio: 'ignore' });
   }
+  // Retain the legacy test prefixes so immutable historical refs keep their original fingerprint;
+  // tests/ covers every current suite and both Playwright configs.
   const tracked = ['.github', 'scripts', 'tests-ci', 'tests-release', 'tests-shared', 'tests-desktop', 'tests-firefox',
     'tests-dev', 'tests', 'package.json', 'package-lock.json', 'playwright.config.ts'];
   const paths = execFileSync('git', ['-C', root, ...(ref === undefined ? ['ls-files'] : ['ls-tree', '-r', '--name-only', ref, '--']), ...tracked],

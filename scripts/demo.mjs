@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-const html = await readFile(new URL('../demo/index.html', import.meta.url));
+const html = await readFile(new URL('../tests/fixtures/demo/index.html', import.meta.url));
 const server = createServer((_req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);

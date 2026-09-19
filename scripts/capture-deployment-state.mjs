@@ -48,7 +48,7 @@ if (import.meta.main) {
     outputDir: 'artifacts/deployment',
     workers: [
       { label: 'site', name: 'anmerko-site', config: 'site/wrangler.jsonc' },
-      { label: 'support', name: 'anmerko-support', config: 'store-site/wrangler.jsonc' },
+      { label: 'support', name: 'anmerko-support', config: 'site/support/wrangler.jsonc' },
     ],
     newManifestUrl: 'https://anmerko.com/release-manifest.json',
   });
