@@ -24,7 +24,7 @@ jobs:
           CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
           WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
-        run: node scripts/store-audit.mjs
+        run: node scripts/release/store-audit.mjs
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:

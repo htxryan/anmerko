@@ -7,6 +7,5 @@ const selected = approved.browsers[artifactBrowser];
 const label = browser === 'edge' ? 'Edge' : browser === 'firefox' ? 'Firefox' : 'Chrome';
 ---
 <p>
-  <a href={`/downloads/${selected.artifact.filename}`} download>Download for {label} ({selected.version})</a><br />
-  <small>This approved anmerko build appears as <strong>anmerko</strong> after installation.</small>
+  <a href={`/downloads/${selected.artifact.filename}`} download>Download for {label} ({selected.version})</a>
 </p>

@@ -78,7 +78,7 @@ jobs:
         id: edge-install
         shell: bash
         run: |
-          if [ "$RUNNER_OS" != Linux ] && node --input-type=module -e "import { resolveBrowser } from './scripts/test-desktop.mjs'; console.log(resolveBrowser('edge'));"; then
+          if [ "$RUNNER_OS" != Linux ] && node --input-type=module -e "import { resolveBrowser } from './scripts/browsers/test-desktop.mjs'; console.log(resolveBrowser('edge'));"; then
             echo 'Using the runner-provided stable Edge, as for Chrome. Tests record its actual version.'
           else
             # Runner-bundled Chromium channels can hang during extension startup.

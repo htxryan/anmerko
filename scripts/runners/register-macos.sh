@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 repository=${1:?Usage: register-macos.sh OWNER/REPO [RUNNER_NAME]}
 runner_name=${2:-macbook-${repository//\//-}-macos-vm-1}
-vm_name=${ANMERKO_MACOS_VM:-briefmark-ci}
+vm_name=${ANMERKO_MACOS_VM:-anmerko-ci}
 tart_bin=${ANMERKO_TART_BIN:-$HOME/.local/bin/tart}
 [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
 [[ "$runner_name" =~ ^[A-Za-z0-9_.-]+$ ]]

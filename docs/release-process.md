@@ -27,25 +27,29 @@ Only one automated release is active. Automated callbacks and schedules only res
 
 `releases/approved.json` remains the website source of truth and retains the previous manifest hash for rollback. Release-policy PRs also run the callable validation workflow. If the requested main source has only site checks, this read-only proof may select a recent main ancestor with verified browser evidence whose attestation matches that ancestor's own immutable policy. It tests the selected source's candidate packages under the proposed controller and cannot publish. Production releases still require the exact requested source and the current controller's validation policy.
 
-The public repository starts from an independent parentless commit rather than
-carrying over the private repository's Git history. That root imports only the
-exact audited sequence-8 manifest pinned in `verify-approved-release.mjs`. The
-verifier checks every approved installer checksum, so the unchanged manifest,
-signed installer bytes, and hashes preserve the inherited release provenance
-without treating private commits or Actions runs as public-repository history.
-Seed the reviewed release assets at their manifest URLs before the first Check
-run; public downloads build anonymously, with authenticated `gh` fallback for
-private GitHub assets. Later commits use normal predecessor and promotion
-verification. If the approved release changes before the move, review and repin
-the import baseline through a PR.
+The public repository began with an independently audited, parentless snapshot
+and the exact sequence-8 approval manifest. The original repository retains its
+private history and historical packages.
 
-Current automation runs only for the exact active `htxryan/anmerko` repository. Historical approval records and release assets resolve only from the repository allowlist in `scripts/release-repository.mjs`, with source, run, attempt, filename, and hash checks. The release and production concurrency groups remain stable so in-flight and new runs share one lock.
+Approval schema 2 records installer downloads only. Its sequence-9 migration is
+pinned to the exact sequence-8 manifest digest and preserves every browser
+object, URL and checksum while removing unused demo metadata. The live demo is
+built and tested from current shared source. Obsolete package archives, demo
+bundles and one-time recovery code are no longer part of the current tree.
+Future promotions and manifest rollbacks use schema 2; deployment recovery may
+still capture a previous schema-1 site's manifest unchanged.
+
+Current automation and release asset URLs accept only `htxryan/anmerko`, with
+source, run, attempt, filename and hash checks. Release and production
+concurrency groups serialize their respective workflows. Promotion author
+verification uses the authenticated GitHub App slug returned by the token
+action, so private infrastructure names do not need to be embedded in source.
 
 ## Identity and channel acceptance
 
 The written product and generated package names are lowercase `anmerko`. Reuse existing store item IDs and the registered Firefox GUID; never rewrite historical signed installers, manifests, hashes, or receipts to make them look renamed. The `anmerko:` local storage namespace intentionally starts clean. The owner confirmed the prelaunch preview had zero real users, so legacy data migration and preview-to-store transition validation are not applicable. Preserve historical packages and developer profiles as evidence, use disposable profiles for validation, and require future anmerko updates to retain data within the same installation and profile.
 
-Close a store-launch issue after public approval, a real store installation and core workflow smoke test, package verification, applicable automated regressions, and accurate installation guidance. Additional native platform coverage belongs in its own task. Check managed-update retention when a subsequent release exists; do not keep the initial launch open waiting for it. See the [completed launch evidence](store-release-validation.md).
+Close a store-launch issue after public approval, a real store installation and core workflow smoke test, package verification, applicable automated regressions, and accurate installation guidance. Additional native platform coverage belongs in its own task. Check managed-update retention when a subsequent release exists; do not keep the initial launch open waiting for it. See the [completed launch evidence](store/validation.md).
 
 Website promotion and public store publication are separate results. The immutable 0.5.5 rename candidate is persisted and approved website downloads are published. Edge became publicly Live on 2026-09-15, Chrome on 2026-09-16, and Firefox received public approval on 2026-09-18 ([verification summary](evidence/anmerko/verification-summary.md)). Keep channel CTAs truthful until the corresponding public listing, package identity, and supported-platform installation are verified. Native Edge-store acceptance remains separate from the shared Chromium download. The completed old-domain homepage redirect has no candidate-promotion or observation dependency.
 

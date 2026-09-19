@@ -73,7 +73,7 @@ jobs:
           PUBLISH_RELEASE: ${{ inputs.publish || false }}
           RELEASE_PROOF: ${{ inputs.proof || false }}
           VALIDATION_POLICY_ROOT: ${{ inputs.proof && 'source-policy' || '.' }}
-        run: node scripts/release-candidate.mjs resolve
+        run: node scripts/release/release-candidate.mjs resolve
       - name: Retain signed candidate input from the controller commit
         if: inputs.signed-xpi != ''
         uses: actions/upload-artifact@v7.0.1
@@ -111,7 +111,7 @@ jobs:
           run-id: ${{ inputs.candidate-run }}
           github-token: ${{ github.token }}
           path: artifacts/release-candidate
-      - name: Build candidate packages and demo evidence once
+      - name: Build candidate packages once
         env:
           RELEASE_SOURCE: ${{ needs.resolve.outputs.source }}
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
@@ -120,13 +120,13 @@ jobs:
           MANUAL_EVIDENCE: ${{ inputs.manual-evidence }}
           CANDIDATE_RUN: ${{ inputs.candidate-run }}
           FAST_RUN: ${{ needs.resolve.outputs.fast-run }}
-        run: node scripts/release-candidate.mjs prepare
+        run: node scripts/release/release-candidate.mjs prepare
       - run: npx playwright install --with-deps chromium
       - name: Test candidate downloads with the current website and shared demo
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/release-preview.mjs
+          node scripts/release/release-preview.mjs
           npm run site:build
           npm run site:check
           npm run site:test
@@ -202,7 +202,7 @@ jobs:
           RELEASE_SOURCE: ${{ needs.resolve.outputs.source }}
           DESKTOP_RESULT: ${{ needs.desktop.result }}
           PUBLISH_RELEASE: ${{ inputs.publish || false }}
-        run: node scripts/release-candidate.mjs verify
+        run: node scripts/release/release-candidate.mjs verify
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:

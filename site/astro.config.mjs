@@ -28,9 +28,15 @@ export default defineConfig({
       { label: 'Overview', slug: 'docs' },
       { label: 'Installation', items: [
         { label: 'Overview', slug: 'docs/install' },
-        { label: 'Install in Chrome', slug: 'docs/install/chrome' },
-        { label: 'Install in Edge', slug: 'docs/install/edge' },
-        { label: 'Install in Firefox', slug: 'docs/install/firefox' },
+        { label: 'Desktop', items: [
+          { label: 'Chrome', slug: 'docs/install/chrome' },
+          { label: 'Edge', slug: 'docs/install/edge' },
+          { label: 'Firefox', slug: 'docs/install/firefox' },
+        ] },
+        { label: 'Android', items: [
+          { label: 'Edge', slug: 'docs/install/edge-android' },
+          { label: 'Firefox', slug: 'docs/install/firefox-android' },
+        ] },
       ] },
       { label: 'Usage', items: [
         { label: 'Add comments', items: [

@@ -12,6 +12,7 @@ npm run demo
 ```
 
 The demo runs at `http://127.0.0.1:4173`. At `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `dist/`. After rebuilding, reload the extension and refresh the website.
+Its local test page is maintained at `tests/fixtures/demo/index.html`.
 
 | Command | Purpose |
 | --- | --- |
@@ -20,7 +21,7 @@ The demo runs at `http://127.0.0.1:4173`. At `chrome://extensions`, enable **Dev
 | `npm run package` | Build a versioned ZIP in `artifacts/` |
 | `npm run test:desktop -- --browser chrome` | Test installed Chrome with the production manifest |
 | `npm run test:desktop -- --browser chrome --manual` | Open a disposable profile for native UI checks |
-| `node scripts/icons.mjs` | Regenerate extension icons |
+| `node scripts/extension/icons.mjs` | Regenerate extension icons |
 
 [Taskfile.yml](../Taskfile.yml) provides equivalent Task commands. Manually test browser changes end to end; automated tests complement that check.
 
@@ -54,8 +55,9 @@ Preview: `http://127.0.0.1:4174`. The browser suite uses port 4175. Rebuild afte
 - `site/src/content/docs/docs/`: published Markdown/MDX; navigation in `site/astro.config.mjs`.
 - `docs/`: repository-only developer guides; never publish these.
 - `site/src/pages/index.astro`: landing page.
+- `site/support/`: source for the standalone help, privacy, and support routes.
 - `site/public/product-illustration.svg`: brochure-only artwork; do not upload it to extension stores.
-- `site/public/screenshots/`: current UI captures on [Salad Recipe Finder](https://saladrecipefinder.com/), shared by documentation and [store listings](store-assets/README.md).
+- `site/public/screenshots/`: current UI captures on [Salad Recipe Finder](https://saladrecipefinder.com/), shared by documentation and [store listings](store/README.md).
 
 `site:build` compiles the current shared demo UI and copies hash-verified installers from `releases/approved.json`. It never packages current extension source as a download or serves archived demo code. Private release assets require authenticated `gh` with repository read access, or `GH_TOKEN` with contents read. Preserve signed artifacts unchanged. See [deployment](site-deployment.md).
 
@@ -81,7 +83,7 @@ Current extension data and page integration use the `anmerko:` storage prefix, `
 
 ## Browser targets
 
-Chrome, Edge, and Firefox share the product implementation. Keep API differences in `src/platform.ts` and `src/docking.ts`, and manifest/build differences in `scripts/browser-targets.mjs`. Edge reuses the Chromium ZIP.
+Chrome, Edge, and Firefox share the product implementation. Keep API differences in `src/platform.ts` and `src/docking.ts`, and manifest/build differences in `scripts/extension/browser-targets.mjs`. Edge reuses the Chromium ZIP.
 
 Windows CI builds and checks are temporarily disabled under
 [issue #1](https://github.com/htxryan/anmerko/issues/1);
@@ -116,7 +118,7 @@ proof. Site/deployment helpers select Site without forcing browser checks; brows
 build, packaging, permissions, integration, and release-policy changes retain full
 coverage. Keep new production helpers assigned to their relevant path filters.
 
-For CI changes, run `node --test tests-ci/*.test.mjs tests-release/*.test.mjs` and `actionlint`.
+For CI changes, run `node --test tests/ci/*.test.mjs tests/release/*.test.mjs` and `actionlint`.
 
 See [local runners](local-runners.md) for the MacBook macOS/Docker setup, routing
 policy and Taskfile start/stop commands. Trusted private macOS jobs use the local
@@ -129,7 +131,7 @@ Pronounce **anmerko** as **ahn mare ko**. The written brand and domain remain
 
 The user selected pronunciation audition #2: the joined TTS-only respelling
 `ahn-mare-koh`, with Microsoft's stock `en-US-AvaMultilingualNeural` voice at
-`+5%` speaking rate. [Listen to the selected reference clip](store-assets/audio/anmerko-pronunciation-reference.mp3).
+`+5%` speaking rate. [Listen to the selected reference clip](store/audio/anmerko-pronunciation-reference.mp3).
 Its exact synthesis text is “Meet ahn-mare-koh. Website feedback, ready for AI.”
 Use the same respelling for spoken brand and domain occurrences. Plain-text
 respelling guides the voice; it is not a phoneme-level guarantee.

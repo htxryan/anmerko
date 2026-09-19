@@ -2,7 +2,7 @@
 
 [anmerko](README.md) is a website feedback extension targeting Chrome, Edge, and Firefox on desktop, plus Edge and Firefox for Android, with an Astro/Starlight documentation site.
 
-The live product name is lowercase `anmerko`; its canonical origin and repository are `https://anmerko.com` and `htxryan/anmerko`. The prelaunch preview had zero real users, so legacy data migration and preview-to-store transition testing are not release requirements. Preserve registered store identities, signed installer bytes, and verifiable release records. Keep the working published support contact `support@briefmark.app` until a tested replacement is approved. Public release uses a freshly audited snapshot in a new independent repository; keep the original repository and its history private.
+The live product name is lowercase `anmerko`; its canonical origin and repository are `https://anmerko.com` and `htxryan/anmerko`. The prelaunch preview had zero real users, so legacy data migration and preview-to-store transition testing are not release requirements. Preserve registered store identities, signed installer bytes, and verifiable release records. Manage support mailbox configuration outside Git and verify delivery before changing store contact fields. Public release uses a freshly audited snapshot in a new independent repository; keep the original repository and its history private.
 
 Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and queries; do not reinstate archive compatibility or observation gates. Store publication and supported-platform installation must be verified before activating channel CTAs.
 
@@ -25,11 +25,11 @@ Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and
 
 - `src/`: extension logic, browser integration, UI, and styles.
 - `public/`: extension manifest, HTML entry points, and icons.
-- `scripts/`: build, packaging, browser installation, signing, and preview tools.
-- `tests/`, `tests-dev/`, `tests-firefox/`: Chromium, Chrome installer, and Firefox tests.
-- `site/`: public website, Cloudflare deployment configuration, and site tests.
+- `scripts/`: extension, browser, CI, release, site, deployment, and runner tooling grouped by responsibility.
+- `tests/`: browser, desktop, tooling, CI, release, deployment, and site tests, plus test fixtures.
+- `site/`: public website, support-site source, and Cloudflare deployment configuration.
 - [site/src/content/docs/docs/](site/src/content/docs/docs/): published user documentation.
-- [docs/](docs/): repository-only development guides; `demo/`: local test website.
+- [docs/](docs/): repository-only development guides.
 - `dist/`, `dist-firefox/`, `site/dist/`, `artifacts/`: generated output; edit source instead.
 
 ## Development
@@ -39,7 +39,7 @@ Use Node.js 24+ and run commands from the repository root.
 - [Build and test](docs/development.md): setup, architecture, Chrome updates, and validation. Run `npm run check` for extension changes; for site changes, run `npm run site:build`, `npm run site:check`, and `npm run site:test`.
 - [CI and releases](docs/release-process.md): fast/full scopes, immutable release candidates, signing/manual evidence, artifact promotion and rollback. Site builds copy approved installer downloads from `releases/approved.json`; never replace them with current source packages. The demo must compile the current shared UI components, layouts, and styles. Never copy UI implementations or serve archived demo bundles.
 - [Site deployment](docs/site-deployment.md): public-site deployment and verification. Keep repository-only development guides out of the published build; never modify signed XPI installers.
-- [Store publishing](docs/store-distribution.md): listing copy, identities, and reusable assets.
+- [Store publishing](docs/store/distribution.md): listing copy, identities, reusable assets, capture tooling, and media sources.
 
 Command definitions live in [package.json](package.json) and [Taskfile.yml](Taskfile.yml); CI checks are in [.github/workflows/check.yml](.github/workflows/check.yml).
 

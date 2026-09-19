@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "sequence": 8,
+  "previous": "010ad8535eaf654f890626d13b9c289ea35dbc9d285155d9a3e006f96da820fa",
+  "validation": {
+    "kind": "automation",
+    "runId": 34981472448,
+    "runAttempt": 1,
+    "source": "519a8c1e3417c68d3094e63f3c879f4262ba08e3",
+    "controller": "fb9cd0068fa80f730f2628f8dfe3a43315bc19b0",
+    "checkRun": 34976898752,
+    "version": "0.5.5",
+    "phase": "firefox",
+    "payloadFingerprint": "7a02b47e58c63a170c282e8e0cf292459d5781bdcdf3c6cd873213c7c1b3d3a5",
+    "record": {
+      "location": "https://github.com/htxryan/anmerko/releases/download/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3/promotion-firefox-fb9cd0068fa80f730f2628f8dfe3a43315bc19b0.json",
+      "sha256": "cd514f90438249077a5b11d3cbb1ed0419bee5da39b6bc4419350de3ea8b7873"
+    }
+  },
+  "browsers": {
+    "chrome": { "version": "0.5.5", "source": "519a8c1e3417c68d3094e63f3c879f4262ba08e3", "artifact": {
+      "filename": "anmerko-0.5.5.zip", "location": "https://github.com/htxryan/anmerko/releases/download/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3/anmerko-0.5.5.zip", "sha256": "d9ca4aa7c08b446429c78c706fb9b875286ecb48faa7606e108d4df0d032aebd" } },
+    "firefox": { "version": "0.5.5.1", "source": "519a8c1e3417c68d3094e63f3c879f4262ba08e3", "artifact": {
+      "filename": "anmerko-0.5.5.1-firefox.xpi", "location": "https://github.com/htxryan/anmerko/releases/download/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3/anmerko-0.5.5.1-firefox.xpi", "sha256": "dc9aec89a3841c9faa47ffe5d7524e2589236e3f0ca78b154e9c16ed2e784267" } },
+    "edge": { "version": "0.5.5", "source": "519a8c1e3417c68d3094e63f3c879f4262ba08e3", "artifact": {
+      "filename": "anmerko-0.5.5-edge.zip", "location": "https://github.com/htxryan/anmerko/releases/download/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3/anmerko-0.5.5-edge.zip", "sha256": "d9ca4aa7c08b446429c78c706fb9b875286ecb48faa7606e108d4df0d032aebd" } }
+  },
+  "demo": { "version": "0.5.2", "source": "e197736b17503298387424086c70eeae4d747b41", "entry": "/_astro/index.astro_astro_type_script_index_0_lang.BrlARXe4.js", "files": {
+    "/_astro/index.astro_astro_type_script_index_0_lang.BrlARXe4.js": { "location": "releases/bootstrap/_astro/index.astro_astro_type_script_index_0_lang.BrlARXe4.js", "sha256": "b93e664895fa06ce2f32c16aeb5f34206d9b0c4a8b8c0148c033077433e2ca79" },
+    "/_astro/demo-runtime.BnqWqa-3.js": { "location": "releases/bootstrap/_astro/demo-runtime.BnqWqa-3.js", "sha256": "03877da7dcada1834c29345fa4cbe98ec75cae6a47928466026adf266a5e1088" },
+    "/_astro/privacy.C5Rrn9ZQ.css": { "location": "releases/bootstrap/_astro/privacy.C5Rrn9ZQ.css", "sha256": "ae0512c04c5c4e393b28ce47bb39a8fe137c6a73f04cb473e5ff137826ed113b" },
+    "/_astro/panel.BUOyv_dd.css": { "location": "releases/bootstrap/_astro/panel.BUOyv_dd.css", "sha256": "3d4174f328f215df7fa78aba247e53771bfe9c98954feb91ac46fd709035854c" },
+    "/_astro/preload-helper.B3nfOi5I.js": { "location": "releases/bootstrap/_astro/preload-helper.B3nfOi5I.js", "sha256": "298e58483be1903930c5a1661df3e66b3ef02723b34237990ad3a5f5e6052628" }
+  } }
+}

@@ -66,7 +66,7 @@ tasks:
     cmds: [npm run firefox:sign]
   icons:
     desc: Regenerate the extension icons with Chromium
-    cmds: [node scripts/icons.mjs]
+    cmds: [node scripts/extension/icons.mjs]
   site:build:
     desc: Build website content with approved installer and demo bytes
     cmds: [npm run site:build]

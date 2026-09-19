@@ -21,7 +21,7 @@ defaults:
 # Never interrupt a deployment between the two Workers. Older completed Check
 # runs must also pass the freshness guard before they can publish.
 concurrency:
-  group: briefmark-production
+  group: anmerko-production
   cancel-in-progress: false
 jobs:
   eligible:
@@ -74,7 +74,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHECK_RUN: ${{ github.event.workflow_run.id }}
-        run: node scripts/deployment-eligibility.mjs site-tested
+        run: node scripts/deployment/deployment-eligibility.mjs site-tested
       - name: Explicit release promotion is deployable
         if: github.event_name == 'workflow_dispatch'
         run: echo 'deploy=true' >> "$GITHUB_OUTPUT"
@@ -112,18 +112,18 @@ jobs:
       - name: Validate both deployment configurations
         run: |
           npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist --dry-run
-          npx --no-install wrangler deploy --config store-site/wrangler.jsonc --assets release/artifacts/store-site --dry-run
+          npx --no-install wrangler deploy --config site/support/wrangler.jsonc --assets release/artifacts/store-site --dry-run
       - name: Skip a superseded main commit
         id: current
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/deployment-eligibility.mjs
+        run: node scripts/deployment/deployment-eligibility.mjs
       - name: Verify approved release before publication
         if: steps.current.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/verify-approved-release.mjs
+          node scripts/release/verify-approved-release.mjs
           cmp releases/approved.json release/site/dist/release-manifest.json
       - name: Publish both Workers
         if: steps.current.outputs.publish == 'true'
@@ -141,13 +141,13 @@ jobs:
           fi
           mkdir -p artifacts/deployment
           cp release/site/dist/release-manifest.json artifacts/deployment/approved.json
-          node scripts/capture-deployment-state.mjs
+          node scripts/deployment/capture-deployment-state.mjs
           npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist --message "main $SOURCE_SHA" | tee artifacts/deployment/site.txt
-          npx --no-install wrangler deploy --config store-site/wrangler.jsonc --assets release/artifacts/store-site --message "main $SOURCE_SHA" | tee artifacts/deployment/support.txt
+          npx --no-install wrangler deploy --config site/support/wrangler.jsonc --assets release/artifacts/store-site --message "main $SOURCE_SHA" | tee artifacts/deployment/support.txt
       - name: Verify public routes and exact asset bytes
         if: steps.current.outputs.publish == 'true'
         run: |
-          node scripts/verify-site-deployment.mjs release > artifacts/deployment/verification.json
+          node scripts/deployment/verify-site-deployment.mjs release > artifacts/deployment/verification.json
           echo "Deployed and verified $SOURCE_SHA at https://anmerko.com." >> "$GITHUB_STEP_SUMMARY"
       - name: Retain deployment and rollback evidence
         if: always()
@@ -163,7 +163,7 @@ jobs:
     needs: deploy
     if: >-
       always() && github.event_name == 'workflow_dispatch' && needs.deploy.result == 'success' &&
-      (github.repository == 'htxryan/briefmark' || github.repository == 'htxryan/anmerko') && github.ref_name == 'main'
+      github.repository == 'htxryan/anmerko' && github.ref_name == 'main'
     permissions:
       contents: read
       actions: write
@@ -178,4 +178,4 @@ jobs:
       - name: Resume pending release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/continue-release.mjs
+        run: node scripts/ci/continue-release.mjs

@@ -10,13 +10,13 @@ runner_name=${2:-macbook-${repository//\//-}-linux-1}
   exit 1
 }
 docker_context=${ANMERKO_DOCKER_CONTEXT:-colima-github-actions}
-runner_image=${ANMERKO_RUNNER_IMAGE:-briefmark-actions-runner:2.337.0}
+runner_image=${ANMERKO_RUNNER_IMAGE:-anmerko-actions-runner:2.337.0}
 docker_cli() { docker --context "$docker_context" "$@"; }
 if ! docker_cli container inspect "$runner_name" >/dev/null 2>&1; then
   # Named volumes only: no Mac filesystem, Docker socket or credentials mounted.
   docker_cli run --detach --init --restart unless-stopped --name "$runner_name" \
     --cpus 2 --memory 4g --shm-size 1g --log-opt max-size=10m --log-opt max-file=3 \
-    --label briefmark.runner-group=linux --label "briefmark.repository=$repository" \
+    --label anmerko.runner-group=linux --label "anmerko.repository=$repository" \
     --mount "type=volume,source=$runner_name,target=/home/runner" "$runner_image"
 else
   docker_cli start "$runner_name"

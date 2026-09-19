@@ -1,6 +1,6 @@
 # Site deployment
 
-`anmerko-site` serves public `site/dist/` at `anmerko.com`; `anmerko-support` serves `/support/` and `/support/privacy/`. Configuration lives in `site/wrangler.jsonc` and `store-site/wrangler.jsonc`. Both use static assets and have no bindings.
+`anmerko-site` serves public `site/dist/` at `anmerko.com`; `anmerko-support` serves `/support/` and `/support/privacy/`. Configuration lives in `site/wrangler.jsonc` and `site/support/wrangler.jsonc`. Both use static assets and have no bindings.
 
 ## Continuous deployment
 
@@ -13,13 +13,13 @@ Ordinary PR/manual Check artifacts and skipped Site jobs cannot deploy. The expl
 
 Evidence retains previous Worker versions, approval manifests, and route results for 30 days. On the first deployment, the exact missing state of both new Workers and the valid legacy approved manifest are recorded as rollback references. Later deployments require and retain the previous manifest from `anmerko.com`; mixed Worker state, authentication failures, network failures, and malformed manifests stop publication. Approved assets and Git history outlive CI retention.
 
-The first-deployment exception is deliberately narrow: both new Workers must return Cloudflare's exact missing-script response, the legacy manifest must match the reviewed sequence-6 SHA-256 digest, and current `briefmark-site` and `briefmark-support` versions are captured. If only one new Worker exists, stop. Inspect its recorded deployment, either roll it back/delete that partial bootstrap under an approved recovery or complete the missing half from the same trusted artifact, then rerun only when both new Workers have a consistent state. Never treat a mixed state or another API error as a fresh bootstrap.
+The first-deployment exception is deliberately narrow: both new Workers must return Cloudflare's exact missing-script response, the legacy manifest must match the reviewed sequence-6 SHA-256 digest, and current retired site and support Worker versions are captured. If only one new Worker exists, stop. Inspect its recorded deployment, either roll it back/delete that partial bootstrap under an approved recovery or complete the missing half from the same trusted artifact, then rerun only when both new Workers have a consistent state. Never treat a mixed state or another API error as a fresh bootstrap.
 
 For a transient failure, rerun Deploy while inputs remain current and its seven-day Site artifact exists. Otherwise rerun the original main-push Check. Worker updates are sequential: inspect both after a partial failure. Restore recorded versions with:
 
 ```sh
 npx wrangler rollback VERSION_ID --config site/wrangler.jsonc
-npx wrangler rollback SUPPORT_VERSION_ID --config store-site/wrangler.jsonc
+npx wrangler rollback SUPPORT_VERSION_ID --config site/support/wrangler.jsonc
 ```
 
 Coordinate recovery with queued production runs. For durable installer rollback, use a [manifest PR](release-process.md).
@@ -37,7 +37,7 @@ npx wrangler dev --config site/wrangler.jsonc --port 4180
 
 Browser tests use the actual Wrangler configuration. Manually check docs navigation/search, Chrome download, narrow layout, console, and downloaded bytes. Repository-only guides and removed installation pages must return 404.
 
-For authorized manual recovery, use the exact successful Check artifact for the eligible source commit. Verify its archive digest and approved installer hashes, authenticate with `npx wrangler whoami`, verify the account/domain, and dry-run both configs against those extracted assets. With the artifact extracted under `release/`, publish with `npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist` and `npx --no-install wrangler deploy --config store-site/wrangler.jsonc --assets release/artifacts/store-site`, then run `node scripts/verify-site-deployment.mjs release`. Do not rebuild during privileged recovery: `npm run store:deploy` rebuilds support output and is not the tested-artifact recovery command. Never bypass release approval.
+For authorized manual recovery, use the exact successful Check artifact for the eligible source commit. Verify its archive digest and approved installer hashes, authenticate with `npx wrangler whoami`, verify the account/domain, and dry-run both configs against those extracted assets. With the artifact extracted under `release/`, publish with `npx --no-install wrangler deploy --config site/wrangler.jsonc --assets release/site/dist` and `npx --no-install wrangler deploy --config site/support/wrangler.jsonc --assets release/artifacts/store-site`, then run `node scripts/deployment/verify-site-deployment.mjs release`. Do not rebuild during privileged recovery: `npm run support:deploy` rebuilds support output and is not the tested-artifact recovery command. Never bypass release approval.
 
 ## Public assets and privacy
 
@@ -47,7 +47,9 @@ The support build uses shared privacy Markdown and emits only help, privacy, hea
 
 `workers_dev` and `preview_urls` remain disabled; inspect actual domain bindings after route changes.
 
-`www.anmerko.com` uses the separate `legacy-site/wrangler-www.jsonc` redirect Worker. Normal Deploy updates only site and support; a reviewed www configuration change requires a separate dry run, deployment, and canonical redirect verification.
+`www.anmerko.com` uses the separate `site/wrangler-www.jsonc` redirect Worker.
+Normal Deploy updates only site and support; a reviewed www configuration change
+requires a separate dry run, deployment, and canonical redirect verification.
 
 ## Legacy domain
 
