@@ -4,9 +4,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Temporary CI hold; restore scheduling and evidence together after issue #58.
+// Temporary CI hold; restore scheduling and evidence together after issue #1.
 export const windowsChecksEnabled = false;
-export const windowsHoldReason = 'Windows checks are on hold: https://github.com/htxryan/anmerko/issues/58';
+export const windowsHoldReason = 'Windows checks are on hold: https://github.com/htxryan/anmerko/issues/1';
 
 export const selectScope = ({ event, highRisk, labels = [] }) =>
   event === 'workflow_dispatch' || highRisk || labels.includes('full-ci') ? 'full' : 'fast';
