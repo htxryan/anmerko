@@ -166,4 +166,4 @@ jobs:
         if: steps.release.outputs.ready == 'true' && hashFiles('artifacts/release-evidence.json') != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main -f resume-only=true
+        run: node scripts/ci/continue-release.mjs
