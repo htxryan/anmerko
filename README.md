@@ -54,4 +54,4 @@ User documentation source is in `site/src/content/docs/docs/`.
 
 ## License
 
-[MIT](LICENSE) © 2026 Ryan Henderson.
+[MIT](LICENSE) © 2026 [Ryan Henderson](https://ryanhenderson.dev).
