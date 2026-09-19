@@ -131,15 +131,23 @@ test('store guides identify each browser bundle and retain approved manual alter
   await expect(page.locator('.sl-markdown-content')).toContainText('Install extension from file');
   await page.goto('/docs/install/');
   await expect(page.getByRole('heading', { name: 'Installation', exact: true })).toBeVisible();
-  for (const [label, href] of [
-    ['Chrome desktop', '/docs/install/chrome/'],
-    ['Edge desktop', '/docs/install/edge/'],
-    ['Firefox desktop', '/docs/install/firefox/'],
-    ['Edge Android', '/docs/install/edge-android/'],
-    ['Firefox Android', '/docs/install/firefox-android/'],
-  ]) {
-    await expect(page.locator('.sl-markdown-content').getByRole('link', { name: label, exact: true })).toHaveAttribute('href', href);
+  const content = page.locator('.sl-markdown-content');
+  for (const [group, links] of [
+    ['Desktop', [['Chrome', '/docs/install/chrome/'], ['Edge', '/docs/install/edge/'], ['Firefox', '/docs/install/firefox/']]],
+    ['Android', [['Edge', '/docs/install/edge-android/'], ['Firefox', '/docs/install/firefox-android/']]],
+  ] as const) {
+    const section = content.getByRole('heading', { name: group, exact: true }).locator('xpath=../following-sibling::ul[1]');
+    for (const [label, href] of links) await expect(section.getByRole('link', { name: label, exact: true })).toHaveAttribute('href', href);
   }
+  const sidebar = page.locator('#starlight__sidebar');
+  const installation = sidebar.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Installation$/ }) }).first();
+  const desktop = installation.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Desktop$/ }) }).first();
+  const android = installation.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Android$/ }) }).first();
+  await expect(desktop.getByRole('link', { name: 'Chrome', exact: true })).toHaveAttribute('href', '/docs/install/chrome/');
+  await expect(desktop.getByRole('link', { name: 'Edge', exact: true })).toHaveAttribute('href', '/docs/install/edge/');
+  await expect(desktop.getByRole('link', { name: 'Firefox', exact: true })).toHaveAttribute('href', '/docs/install/firefox/');
+  await expect(android.getByRole('link', { name: 'Edge', exact: true })).toHaveAttribute('href', '/docs/install/edge-android/');
+  await expect(android.getByRole('link', { name: 'Firefox', exact: true })).toHaveAttribute('href', '/docs/install/firefox-android/');
   await expect(page.locator('a[href*="install/brave"]')).toHaveCount(0);
 });
 
@@ -157,7 +165,8 @@ test('public approved download bytes remain intact', async ({ request }) => {
   await page.getByRole('tab', { name: 'Edge', exact: true }).click();
   await expect(page.getByRole('tabpanel').getByRole('link', { name: 'Microsoft Edge Add-ons', exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Download manually', exact: true }).click();
-  await page.locator('.sl-markdown-content').getByRole('link', { name: 'Edge desktop', exact: true }).click();
+  await page.locator('.sl-markdown-content').getByRole('heading', { name: 'Desktop', exact: true })
+    .locator('xpath=../following-sibling::ul[1]').getByRole('link', { name: 'Edge', exact: true }).click();
   const channels = JSON.parse(await readFile('releases/approved.json', 'utf8')).browsers;
   const approved = channels.chrome.artifact;
   expect(approved.sha256).toBe(channels.edge.artifact.sha256);
