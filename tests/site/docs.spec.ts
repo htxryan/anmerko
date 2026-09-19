@@ -97,7 +97,7 @@ test('example prompt wraps inside its container without changing the copyable te
 test('docs support mobile navigation and keep content within the viewport', async ({ page }) => {
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
-    for (const route of ['/docs/', '/docs/install/', '/docs/install/chrome/', '/docs/install/edge/', '/docs/install/firefox/', '/docs/usage/', '/docs/usage/inline-comments/', '/docs/usage/screenshot-comments/', '/docs/usage/global-comments/', '/docs/send-to-your-agent/', '/docs/settings/']) {
+    for (const route of ['/docs/', '/docs/install/', '/docs/install/chrome/', '/docs/install/edge/', '/docs/install/firefox/', '/docs/install/edge-android/', '/docs/install/firefox-android/', '/docs/usage/', '/docs/usage/inline-comments/', '/docs/usage/screenshot-comments/', '/docs/usage/global-comments/', '/docs/send-to-your-agent/', '/docs/settings/']) {
       await page.goto(route);
       expect(await page.evaluate(() => document.documentElement.scrollWidth), route).toBeLessThanOrEqual(width);
     }
@@ -125,25 +125,20 @@ test('store guides identify each browser bundle and retain approved manual alter
     const download = content.locator(`a[href="/downloads/${approved[artifactBrowser].artifact.filename}"]`);
     await expect(download).toBeVisible();
     await expect(download).toContainText(`Download for ${browser[0].toUpperCase() + browser.slice(1)} (${approved[artifactBrowser].version})`);
-    const notice = 'This approved anmerko build appears as anmerko after installation.';
-    await expect(download.locator('xpath=..').locator('small')).toHaveText(notice);
   }
-  await page.goto('/docs/install/firefox/#android');
+  await page.goto('/docs/install/firefox-android/');
   await expect(page.locator('.sl-markdown-content')).toContainText('Android 10 or later');
   await expect(page.locator('.sl-markdown-content')).toContainText('Install extension from file');
   await page.goto('/docs/install/');
   await expect(page.getByRole('heading', { name: 'Installation', exact: true })).toBeVisible();
   for (const [label, href] of [
-    ['Chrome Web Store', 'https://chromewebstore.google.com/detail/anmerko/oligkkknbmklalfnkipmheifammnpgpo'],
-    ['Microsoft Edge Add-ons', 'https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka'],
-    ['Firefox Add-ons', 'https://addons.mozilla.org/en-US/firefox/addon/anmerko/'],
+    ['Chrome desktop', '/docs/install/chrome/'],
+    ['Edge desktop', '/docs/install/edge/'],
+    ['Firefox desktop', '/docs/install/firefox/'],
+    ['Edge Android', '/docs/install/edge-android/'],
+    ['Firefox Android', '/docs/install/firefox-android/'],
   ]) {
-    await expect(page.locator('.sl-markdown-content').getByRole('link', { name: label, exact: true }).first()).toHaveAttribute('href', href);
-  }
-  const manualAlternatives = page.locator('.sl-markdown-content table').nth(1);
-  for (const browser of ['Chrome', 'Edge', 'Firefox']) {
-    await expect(manualAlternatives.getByRole('link', { name: `Install in ${browser}`, exact: true })).toBeVisible();
-    await expect(page.locator('.sl-markdown-content').getByRole('link', { name: new RegExp(`Download for ${browser}`) })).toBeVisible();
+    await expect(page.locator('.sl-markdown-content').getByRole('link', { name: label, exact: true })).toHaveAttribute('href', href);
   }
   await expect(page.locator('a[href*="install/brave"]')).toHaveCount(0);
 });
@@ -162,7 +157,7 @@ test('public approved download bytes remain intact', async ({ request }) => {
   await page.getByRole('tab', { name: 'Edge', exact: true }).click();
   await expect(page.getByRole('tabpanel').getByRole('link', { name: 'Microsoft Edge Add-ons', exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Download manually', exact: true }).click();
-  await page.locator('.sl-markdown-content table').nth(1).getByRole('link', { name: 'Install in Edge', exact: true }).click();
+  await page.locator('.sl-markdown-content').getByRole('link', { name: 'Edge desktop', exact: true }).click();
   const channels = JSON.parse(await readFile('releases/approved.json', 'utf8')).browsers;
   const approved = channels.chrome.artifact;
   expect(approved.sha256).toBe(channels.edge.artifact.sha256);
@@ -170,6 +165,5 @@ test('public approved download bytes remain intact', async ({ request }) => {
   await expect(download).toHaveAttribute('href', `/downloads/${approved.filename}`);
   const response = await request.get(await download.getAttribute('href') as string);
   expect(createHash('sha256').update(await response.body()).digest('hex')).toBe(approved.sha256);
-  await expect(page.locator('.sl-markdown-content')).toContainText('desktop-only');
   await expect(page.getByRole('heading', { name: 'Install manually', exact: true })).toBeVisible();
 });

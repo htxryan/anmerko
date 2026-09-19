@@ -1,75 +1,26 @@
 ---
-title: Install in Firefox
-description: Install anmerko from Firefox Add-ons or use the approved signed download.
+title: Firefox desktop
+description: Install anmerko in desktop Firefox from Firefox Add-ons or an approved signed XPI.
 ---
 
 import Download from '../../../../components/Download.astro';
 
-Use **Firefox 142 or later**, on desktop or Android. anmerko is available from Firefox Add-ons on both supported platforms. Firefox on iPhone and iPad does not support these extensions.
+Use Firefox 142 or later.
 
-## Desktop
+## Install from Firefox Add-ons
 
-### Install from Firefox Add-ons
+1. Open [anmerko on Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/anmerko/).
+2. Select **Add to Firefox** and accept the installation prompt.
+3. Activate anmerko from the Extensions menu on a regular website. You can pin it to the toolbar.
 
-Open [anmerko on Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/anmerko/), then:
+Firefox Add-ons installations update automatically.
 
-1. Select **Add to Firefox**.
-2. Review and accept Firefox's installation prompt.
-3. Open Firefox's Extensions menu and activate anmerko on a regular website. [Add a comment](/docs/usage/) to check the installation. You can pin it to the toolbar for easier access.
-
-Firefox Add-ons installs updates automatically. [Export feedback you want to keep](/docs/send-to-your-agent/) before changing installations or browser profiles.
-
-For a signed XPI file installation instead, see [Manual installation on desktop](#manual-installation-on-desktop).
-
-## Android
-
-### Install from Firefox Add-ons
-
-In Firefox for Android, open [anmerko on Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/anmerko/), then:
-
-1. Select **Add to Firefox** and accept the installation prompt.
-2. Open a regular website, then choose anmerko from Firefox's **Extensions** menu. Tap an element and add a comment.
-
-Firefox Add-ons installs updates automatically in the same Firefox profile.
-
-For a signed XPI file installation instead, see [Manual installation on Android](#manual-installation-on-android).
-
-## Manual alternatives
-
-### Download the signed bundle
+## Install a signed file
 
 <Download browser="firefox" />
 
-The public download above is the current approved Mozilla-signed XPI.
+1. Open `about:addons` and select **Extensions**.
+2. Open the gear menu and choose **Install Add-on From File…**.
+3. Select the downloaded `.xpi` and accept the installation prompt.
 
-Keep the `.xpi` file intact. Do not unzip it, rename a ZIP to `.xpi`, or install the `firefox-unsigned.zip`, `firefox-source.zip`, or GitHub **Source code** archive. Those files are not signed installers.
-
-### Manual installation on desktop
-
-1. Download the signed `.xpi` to your computer.
-2. Enter `about:addons` in Firefox's address bar and select **Extensions**.
-3. Open the gear menu (**Tools for all add-ons**) and choose **Install Add-on From File…**.
-4. Select the `.xpi`, then review and accept Firefox's installation prompt.
-5. Open a regular website and activate the extension, using the installed name shown above, from the Extensions menu. [Add a comment](/docs/usage/) to check the installation. You can pin it to the toolbar for easier access.
-
-Mozilla's [add-on installation guide](https://support.mozilla.org/en-US/kb/find-and-install-add-ons-add-features-to-firefox) describes installing a signed add-on from a file.
-
-### Manual installation on Android
-
-Manual file installation requires **Android 10 or later** and Firefox 142 or later. This Android 10 requirement applies only to installing an `.xpi` file manually, not to Firefox Add-ons installation.
-
-1. Download the signed `.xpi` from this page onto your phone.
-2. In Firefox, open **Settings → About Firefox**. Tap the Firefox logo five times, until the debug-menu confirmation appears.
-3. Return to **Settings** and choose **Install extension from file**.
-4. Select the downloaded `.xpi` and accept the installation prompt.
-5. Open a website, then choose the installed name shown above from Firefox's **Extensions** menu. Tap an element and add a comment.
-
-If the file-install option is missing, check the Android version and repeat the logo taps. Mozilla confirms that [file installation is unavailable below Android 10](https://bugzilla.mozilla.org/show_bug.cgi?id=1921902#c5).
-
-### Update a manual installation
-
-Save open drafts, download the newer approved signed `.xpi`, and repeat the file-install steps in the **same Firefox profile**. Accept the update without first removing the extension, then refresh your open websites. This manual track has no custom update URL.
-
-Ordinary updates retain saved feedback.
-
-[Export your feedback](/docs/send-to-your-agent/) before removing the extension or changing profiles. There is no automatic transfer between browsers or devices.
+Install only the signed `.xpi`; source and unsigned archives are not installers. To update a manual installation, install the newer signed XPI in the same Firefox profile without removing the extension first.
