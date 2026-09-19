@@ -34,7 +34,7 @@ and test transcripts are retained outside the public source tree.
   runtime comparison supports the existing Android provenance but does not
   claim a fresh installation through the Android AMO interface.
 - The completed release is recorded by the approved
-  [0.5.5 release record](https://github.com/htxryan/anmerko/releases/tag/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3).
+  [private-archive 0.5.5 release record](https://github.com/htxryan/anmerko-private-archive/releases/tag/automation-0-5-5-519a8c1e3417c68d3094e63f3c879f4262ba08e3).
 
 ## Platform status
 
