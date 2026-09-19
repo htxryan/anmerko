@@ -16,9 +16,10 @@ Collect website comments and screenshots, then share them with your AI agent.
 
 ## Get started
 
-anmerko targets Chrome, Edge, and Firefox on desktop, and Edge and Firefox for Android on mobile. It stores feedback in your browser and needs no account or AI API key; you choose when to export or share it. Chrome 0.5.5, Edge 0.5.5, and Firefox 0.5.5 are publicly listed. Approved manual downloads remain anmerko 0.5.5 for Chrome/Edge and signed 0.5.5.1 for Firefox.
+anmerko targets Chrome, Edge, and Firefox on desktop; Edge and Firefox on Android; and Orion on iPhone. It stores feedback in your browser and needs no account or AI API key; you choose when to export or share it. Chrome 0.5.5, Edge 0.5.5, and Firefox 0.5.5 are publicly listed. Approved manual downloads remain anmerko 0.5.5 for Chrome/Edge and signed 0.5.5.1 for Firefox.
 
 - [Installation guides](https://anmerko.com/docs/install/)
+- [Install in Orion on iPhone](https://anmerko.com/docs/install/orion-iphone/)
 - [Add comments](https://anmerko.com/docs/usage/) and [send feedback to your agent](https://anmerko.com/docs/send-to-your-agent/)
 - [Settings](https://anmerko.com/docs/settings/), [troubleshooting](https://anmerko.com/docs/troubleshooting/), and [release notes](https://anmerko.com/docs/releases/)
 

@@ -17,6 +17,24 @@ test.beforeEach(async ({ page }) => {
   await page.addScriptTag({ content: bundle });
 });
 
+test('mobile panel stays inside nonzero display safe-area insets', async ({ page, context }) => {
+  const session = await context.newCDPSession(page);
+  await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await session.send('Emulation.setSafeAreaInsetsOverride', {
+    insets: { top: 13, right: 39, bottom: 21, left: 47 },
+  });
+  await page.setViewportSize({ width: 844, height: 390 });
+  await run(page, 'harness.open()');
+  const bounds = await panel(page).evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  });
+  expect(bounds.left).toBeGreaterThanOrEqual(55);
+  expect(bounds.right).toBeLessThanOrEqual(797);
+  expect(bounds.top).toBeGreaterThanOrEqual(13);
+  expect(bounds.bottom).toBeLessThanOrEqual(369);
+});
+
 test('global comments open focused, survive reopen, and have no element controls or markers', async ({ page }) => {
   await run(page, 'harness.open()');
   const toggle = panel(page).getByRole('button', { name: 'More Comment Options' });

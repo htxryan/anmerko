@@ -19,6 +19,7 @@ Its local test page is maintained at `tests/fixtures/demo/index.html`.
 | `npm run build` | Build the unpacked extension in `dist/` |
 | `npm run check` | Lint, typecheck, build, installer tests, and Chromium tests |
 | `npm run package` | Build a versioned ZIP in `artifacts/` |
+| `npm run package:orion` | Build `artifacts/anmerko-<version>-orion.zip` for folder-based installation in Orion on iPhone |
 | `npm run test:desktop -- --browser chrome` | Test installed Chrome with the production manifest |
 | `npm run test:desktop -- --browser chrome --manual` | Open a disposable profile for native UI checks |
 | `node scripts/extension/icons.mjs` | Regenerate extension icons |

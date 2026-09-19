@@ -197,7 +197,7 @@ footer { padding: 16px 20px 17px; border-top: 1px solid var(--border); backgroun
 .resume:hover, .quick-action:hover:not(:disabled) { background: var(--accent-soft); }
 @keyframes resume-in { from { opacity: 0; transform: translateY(-16px) scale(1.2); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media(max-width:600px), (pointer:coarse) {
-  .panel { top: auto; left: 8px; right: 8px; bottom: calc(8px + var(--viewport-bottom, 0px) + env(safe-area-inset-bottom, 0px)); width: auto; max-width: none; height: min(650px, calc(var(--viewport-height, 100dvh) * .78)); max-height: calc(var(--viewport-height, 100dvh) - 16px - env(safe-area-inset-bottom, 0px)); border-radius: 20px 20px 12px 12px; }
+  .panel { top: auto; left: calc(8px + env(safe-area-inset-left, 0px)); right: calc(8px + env(safe-area-inset-right, 0px)); bottom: calc(8px + var(--viewport-bottom, 0px) + env(safe-area-inset-bottom, 0px)); width: auto; max-width: none; height: min(650px, calc(var(--viewport-height, 100dvh) * .78)); max-height: calc(var(--viewport-height, 100dvh) - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); border-radius: 20px 20px 12px 12px; }
   header { padding: 4px 12px; gap: 8px; flex-shrink: 0; }
   .brand { min-width: 0; font-size: 17px; }
   button, .scope-row select { min-height: 44px; }

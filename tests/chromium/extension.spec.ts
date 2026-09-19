@@ -989,8 +989,11 @@ test('popup handles restricted pages', async ({ context, worker }) => {
   await expect(popup.getByRole('alert')).toContainText('Open a regular http or https website');
 });
 
-test('popup activates the selected website through the background worker', async ({ page, context, worker }) => {
+test('popup activates the selected website directly when background messaging is unavailable', async ({ page, context, worker }) => {
   const popup = await context.newPage();
+  await popup.addInitScript(() => {
+    chrome.runtime.sendMessage = async () => { throw new Error('Background messaging is unavailable.'); };
+  });
   await popup.goto(`chrome-extension://${new URL(worker.url()).host}/popup.html`);
   await page.bringToFront();
   // Execute the popup button while its target website remains the active tab.

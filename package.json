@@ -21,6 +21,8 @@
     "site:deploy": "wrangler deploy --config site/wrangler.jsonc",
     "support:build": "node scripts/site/build-support-site.mjs",
     "support:deploy": "npm run support:build && wrangler deploy --config site/support/wrangler.jsonc",
+    "build:orion": "node scripts/extension/build.mjs --target orion",
+    "package:orion": "npm run build:orion && node scripts/extension/package.mjs --target orion",
     "build:firefox": "node scripts/extension/build.mjs --firefox",
     "lint:firefox": "node scripts/browsers/web-ext.mjs lint --source-dir dist-firefox --self-hosted --warnings-as-errors",
     "package:firefox": "npm run build:firefox && npm run lint:firefox && node scripts/extension/package.mjs --firefox && node scripts/extension/package-firefox-source.mjs",
