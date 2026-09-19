@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { selectScope, requiredOperatingSystems, assertSelectedJobs } from '../../scripts/ci-policy.mjs';
+import { selectScope, requiredOperatingSystems, assertSelectedJobs } from '../../scripts/ci/ci-policy.mjs';
 test('ordinary extension PRs select Linux and high-risk, manual or labeled PRs select every enabled OS', () => {
   assert.equal(selectScope({ event: 'pull_request', highRisk: false, labels: [] }), 'fast');
   for (const input of [{ highRisk: true }, { labels: ['full-ci'] }, { event: 'workflow_dispatch' }]) {

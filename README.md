@@ -45,10 +45,10 @@ Development guides are kept in this repository:
 - [Build and test](docs/development.md)
 - [CI scopes, release validation and promotion](docs/release-process.md)
 - [Site deployment and rollback](docs/site-deployment.md)
-- [Store publishing and listing assets](docs/store-distribution.md)
+- [Store publishing and listing assets](docs/store/distribution.md)
 - [Project agent skills for Codex CLI, Claude Code, and OpenCode](.agents/README.md)
 
-Existing store identities and signed historical artifacts retain their original identifiers so updates and release verification remain valid. See [identity and channel guidance](docs/store-distribution.md).
+Existing store identities and signed historical artifacts retain their original identifiers so updates and release verification remain valid. See [identity and channel guidance](docs/store/distribution.md).
 
 User documentation source is in `site/src/content/docs/docs/`.
 

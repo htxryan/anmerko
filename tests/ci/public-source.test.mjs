@@ -3,7 +3,7 @@ import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkPublicSource, scanPublicText } from '../../scripts/check-public-source.mjs';
+import { checkPublicSource, scanPublicText } from '../../scripts/ci/check-public-source.mjs';
 
 const privateEmail = ['person', 'private-company.example'].join('@');
 const privateMacPath = ['', 'Users', 'named-user', 'project'].join('/');

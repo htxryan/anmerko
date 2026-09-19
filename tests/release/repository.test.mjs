@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { activeRepository, parseReleaseAssetLocation } from '../../scripts/release-repository.mjs';
+import { activeRepository, parseReleaseAssetLocation } from '../../scripts/release/release-repository.mjs';
 
 test('active repository uses the exact workflow identity with the renamed local default', () => {
   assert.equal(activeRepository({}), 'htxryan/anmerko');

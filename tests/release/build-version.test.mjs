@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildVersion } from '../../scripts/build-version.mjs';
+import { buildVersion } from '../../scripts/extension/build-version.mjs';
 
 test('build version defaults to package version and permits Mozilla four-part variants', () => {
   assert.equal(buildVersion('0.5.3', ''), '0.5.3');

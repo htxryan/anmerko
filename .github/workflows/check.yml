@@ -44,7 +44,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Reject private source data
-        run: node scripts/check-public-source.mjs
+        run: node scripts/ci/check-public-source.mjs
       - run: node --test tests/ci/*.test.mjs tests/release/*.test.mjs
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -58,11 +58,11 @@ jobs:
         id: scope
         env:
           HIGH_RISK: ${{ steps.filter.outputs.highrisk }}
-        run: node scripts/ci-policy.mjs
+        run: node scripts/ci/ci-policy.mjs
       - name: Record the checkout identity and validation scope
         env:
           VALIDATION_SCOPE: ${{ steps.scope.outputs.scope }}
-        run: node scripts/reuse-ci.mjs record
+        run: node scripts/ci/reuse-ci.mjs record
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: ci-source-${{ github.run_attempt }}
@@ -75,7 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VALIDATION_SCOPE: ${{ steps.scope.outputs.scope }}
-        run: node scripts/reuse-ci.mjs
+        run: node scripts/ci/reuse-ci.mjs
 
 
   # Keep the required check names and skip jobs, not the workflow, so docs-only
@@ -127,7 +127,7 @@ jobs:
         with:
           pattern: anmerko-desktop-chromium-*
           path: artifacts/desktop-ci
-      - run: node scripts/check-desktop-payloads.mjs artifacts/desktop-ci --edge
+      - run: node scripts/browsers/check-desktop-payloads.mjs artifacts/desktop-ci --edge
       - run: npm run package
       - run: npm run test:installer
       - run: npm test
@@ -169,7 +169,7 @@ jobs:
         with:
           pattern: anmerko-desktop-firefox-*
           path: artifacts/firefox-ci
-      - run: node scripts/check-desktop-payloads.mjs artifacts/firefox-ci --firefox
+      - run: node scripts/browsers/check-desktop-payloads.mjs artifacts/firefox-ci --firefox
       # Firefox desktop and Android use the same build and manifest. Packaging
       # runs Mozilla's linter with warnings treated as errors.
       - run: npm run package:firefox
@@ -224,7 +224,7 @@ jobs:
       - name: Verify approved release transition
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/verify-approved-release.mjs
+        run: node scripts/release/verify-approved-release.mjs
       - run: npm run site:build
         env:
           GH_TOKEN: ${{ github.token }}

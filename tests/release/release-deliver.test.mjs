@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertSignedVariant, chromeReviewState, firefoxReviewNotes, promotableCheck, successfulDeploy } from '../../scripts/release-deliver.mjs';
-import { HISTORICAL_REPOSITORIES, activeRepository } from '../../scripts/release-repository.mjs';
+import { assertSignedVariant, chromeReviewState, firefoxReviewNotes, promotableCheck, successfulDeploy } from '../../scripts/release/release-deliver.mjs';
+import { HISTORICAL_REPOSITORIES, activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
 const inactive = HISTORICAL_REPOSITORIES.find(repository => repository !== active);
 
@@ -66,7 +66,7 @@ test('deployment success requires both live repository identities', () => {
 });
 
 test('private account identifiers come from the production environment', async () => {
-  const listings = JSON.parse(await readFile('docs/store-assets/listings.json', 'utf8'));
+  const listings = JSON.parse(await readFile('docs/store/listings.json', 'utf8'));
   assert.equal(listings.chromeWebStore.publisherId, undefined);
   assert.equal(listings.chromeWebStore.dashboardUrl, undefined);
   assert.equal(listings.edgeAddOns.productId, undefined);
@@ -78,6 +78,6 @@ test('private account identifiers come from the production environment', async (
   const deploy = await readFile('.github/workflows/deploy.yml', 'utf8');
   assert.match(deploy, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
   assert.match(deploy, /\[ -z "\$CLOUDFLARE_ACCOUNT_ID" \]/);
-  const controller = await readFile('scripts/release-deliver.mjs', 'utf8');
+  const controller = await readFile('scripts/release/release-deliver.mjs', 'utf8');
   assert.match(controller, /publisherId: process\.env\.CWS_PUBLISHER_ID/);
 });

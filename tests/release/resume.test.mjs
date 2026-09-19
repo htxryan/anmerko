@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { missingReleaseAssets, assertPromotionBranch } from '../../scripts/release-resume.mjs';
+import { missingReleaseAssets, assertPromotionBranch } from '../../scripts/release/release-resume.mjs';
 
 test('publication resumes only missing assets and never replaces existing bytes', () => {
   const expected = { 'package.zip': 'a'.repeat(64), 'validation.json': 'b'.repeat(64) };

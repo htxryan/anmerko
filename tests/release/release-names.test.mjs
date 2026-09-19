@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { releaseArtifacts, releaseArtifactsFromCandidate, releaseArtifactsFromState } from '../../scripts/release-names.mjs';
-import { candidateArchiveFiles } from '../../scripts/archive-release-candidate.mjs';
+import { releaseArtifacts, releaseArtifactsFromCandidate, releaseArtifactsFromState } from '../../scripts/release/release-names.mjs';
+import { candidateArchiveFiles } from '../../scripts/release/archive-release-candidate.mjs';
 
 test('new releases use the anmerko artifact family', () => {
   assert.deepEqual(releaseArtifacts('0.6.0'), {

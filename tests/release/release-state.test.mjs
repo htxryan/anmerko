@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { advanceReleaseState, assertTrustedCheck, chooseRelease, firefoxWebsiteVersion, initialReleaseState, nextReleaseVersion, shouldResume } from '../../scripts/release-state.mjs';
-import { activeRepository } from '../../scripts/release-repository.mjs';
+import { advanceReleaseState, assertTrustedCheck, chooseRelease, firefoxWebsiteVersion, initialReleaseState, nextReleaseVersion, shouldResume } from '../../scripts/release/release-state.mjs';
+import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
 const inactive = active === 'htxryan/briefmark' ? 'htxryan/anmerko' : 'htxryan/briefmark';
 

@@ -25,7 +25,7 @@ Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and
 
 - `src/`: extension logic, browser integration, UI, and styles.
 - `public/`: extension manifest, HTML entry points, and icons.
-- `scripts/`: build, packaging, browser installation, signing, and preview tools.
+- `scripts/`: extension, browser, CI, release, site, deployment, and runner tooling grouped by responsibility.
 - `tests/`: browser, desktop, tooling, CI, release, deployment, and site tests, plus test fixtures.
 - `site/`: public website, support-site source, and Cloudflare deployment configuration.
 - [site/src/content/docs/docs/](site/src/content/docs/docs/): published user documentation.
@@ -39,7 +39,7 @@ Use Node.js 24+ and run commands from the repository root.
 - [Build and test](docs/development.md): setup, architecture, Chrome updates, and validation. Run `npm run check` for extension changes; for site changes, run `npm run site:build`, `npm run site:check`, and `npm run site:test`.
 - [CI and releases](docs/release-process.md): fast/full scopes, immutable release candidates, signing/manual evidence, artifact promotion and rollback. Site builds copy approved installer downloads from `releases/approved.json`; never replace them with current source packages. The demo must compile the current shared UI components, layouts, and styles. Never copy UI implementations or serve archived demo bundles.
 - [Site deployment](docs/site-deployment.md): public-site deployment and verification. Keep repository-only development guides out of the published build; never modify signed XPI installers.
-- [Store publishing](docs/store-distribution.md): listing copy, identities, and reusable assets.
+- [Store publishing](docs/store/distribution.md): listing copy, identities, reusable assets, capture tooling, and media sources.
 
 Command definitions live in [package.json](package.json) and [Taskfile.yml](Taskfile.yml); CI checks are in [.github/workflows/check.yml](.github/workflows/check.yml).
 

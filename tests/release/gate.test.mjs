@@ -4,9 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertReleaseEvidence, assertPromotion, assertFastEvidence, assertMainAttestation, selectEvidenceSource, verifyFastEvidence } from '../../scripts/release-gate.mjs';
-import { digest } from '../../scripts/approved-release.mjs';
-import { activeRepository } from '../../scripts/release-repository.mjs';
+import { assertReleaseEvidence, assertPromotion, assertFastEvidence, assertMainAttestation, selectEvidenceSource, verifyFastEvidence } from '../../scripts/release/release-gate.mjs';
+import { digest } from '../../scripts/release/approved-release.mjs';
+import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const source = 'a'.repeat(40), hash = 'b'.repeat(64);
 const active = activeRepository();
 const inactive = active === 'htxryan/briefmark' ? 'htxryan/anmerko' : 'htxryan/briefmark';
@@ -62,7 +62,7 @@ test('promotion serializes on previous manifest and rollback must restore an app
 });
 
 test('direct main checks must carry the current schema, scope and policy fingerprint', async () => {
-  const { assertMainAttestation } = await import('../../scripts/release-gate.mjs');
+  const { assertMainAttestation } = await import('../../scripts/release/release-gate.mjs');
   const run = { id: 123, run_attempt: 1, event: 'push' };
   const record = { schema: 2, repository: 'htxryan/briefmark', sha: source, scope: 'fast', workflowVersion: hash,
     runId: 123, runAttempt: 1, event: 'push', ref: 'refs/heads/main' };
@@ -76,7 +76,7 @@ test('direct main checks must carry the current schema, scope and policy fingerp
 });
 
 test('policy fingerprint reads an alternate tracked tree without executing it', async t => {
-  const { workflowVersion } = await import('../../scripts/ci-policy.mjs');
+  const { workflowVersion } = await import('../../scripts/ci/ci-policy.mjs');
   const root = await mkdtemp(join(tmpdir(), 'anmerko-policy-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'), { recursive: true });
@@ -104,7 +104,7 @@ test('policy fingerprint reads an alternate tracked tree without executing it', 
 });
 
 test('read-only proof binds an ancestor attestation to that source policy', async t => {
-  const { workflowVersion } = await import('../../scripts/ci-policy.mjs');
+  const { workflowVersion } = await import('../../scripts/ci/ci-policy.mjs');
   const root = await mkdtemp(join(tmpdir(), 'anmerko-ancestor-policy-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'), { recursive: true });
@@ -173,7 +173,7 @@ test('only read-only proof may use exact reusable PR evidence without a current 
 
 
 test('dispatched promotion checks reject branches predating current main policy', async () => {
-  const { assertPromotionBase } = await import('../../scripts/release-gate.mjs');
+  const { assertPromotionBase } = await import('../../scripts/release/release-gate.mjs');
   assert.doesNotThrow(() => assertPromotionBase('main', { status: 'ahead', merge_base_commit: { sha: 'main' } }));
   assert.throws(() => assertPromotionBase('new-main', { status: 'diverged', merge_base_commit: { sha: 'old-main' } }), /include current main/);
 });

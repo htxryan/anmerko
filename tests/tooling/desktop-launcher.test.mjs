@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { resolveBrowser } from '../../scripts/test-desktop.mjs';
+import { resolveBrowser } from '../../scripts/browsers/test-desktop.mjs';
 
 test('desktop launcher selects branded binaries across Windows, macOS and Linux', () => {
   for (const platform of ['win32', 'darwin', 'linux']) {
@@ -21,7 +21,7 @@ test('missing browsers and misspelled targets fail instead of falling back to Ch
 
 test('an explicit missing executable fails before launching a test', () => {
   assert.throws(() => execFileSync(process.execPath, [
-    'scripts/test-desktop.mjs', '--browser', 'chrome', '--executable', '/missing/anmerko-chrome',
+    'scripts/browsers/test-desktop.mjs', '--browser', 'chrome', '--executable', '/missing/anmerko-chrome',
   ], { stdio: 'pipe' }), error => {
     assert.equal(error.status, 1);
     assert.match(error.stderr.toString(), /not found/);

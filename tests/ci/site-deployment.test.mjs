@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deploymentRouteChecks, obsoleteLegacyUrls } from '../../scripts/verify-site-deployment.mjs';
+import { deploymentRouteChecks, obsoleteLegacyUrls } from '../../scripts/deployment/verify-site-deployment.mjs';
 
 test('deployment verifier covers private docs, task paths, both 404 workers and bare support', () => {
   assert.deepEqual(deploymentRouteChecks('main-404', 'support-404'), [

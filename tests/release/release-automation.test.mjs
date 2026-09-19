@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { activeTrustedCheck, candidateFingerprint, changesExtensionPayload, checkArtifactPrefix, requiredCheckJobs } from '../../scripts/release-automation.mjs';
-import { activeRepository } from '../../scripts/release-repository.mjs';
+import { activeTrustedCheck, candidateFingerprint, changesExtensionPayload, checkArtifactPrefix, requiredCheckJobs } from '../../scripts/release/release-automation.mjs';
+import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
 const inactive = active === 'htxryan/briefmark' ? 'htxryan/anmerko' : 'htxryan/briefmark';
 
@@ -18,10 +18,11 @@ test('candidate fingerprint is stable across file enumeration order and changes 
 });
 
 test('website and release machinery changes reuse the extension family but payload changes do not', () => {
-  assert.equal(changesExtensionPayload([{ filename: 'docs/release-process.md' }, { filename: 'scripts/release-state.mjs' }]), false);
+  assert.equal(changesExtensionPayload([{ filename: 'docs/release-process.md' }, { filename: 'scripts/release/release-state.mjs' }]), false);
   assert.equal(changesExtensionPayload([{ filename: 'src/core.ts' }]), true);
   assert.equal(changesExtensionPayload([{ filename: 'public/manifest.json' }]), true);
   assert.equal(changesExtensionPayload([{ filename: 'scripts/build-version.mjs' }]), true);
+  assert.equal(changesExtensionPayload([{ filename: 'scripts/extension/build-version.mjs' }]), true);
   assert.equal(changesExtensionPayload([{ filename: 'tsconfig.json' }]), true);
 });
 

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { verifyApproved, verifyFreshRootImport } from '../../scripts/verify-approved-release.mjs';
-import { digest } from '../../scripts/approved-release.mjs';
-import { HISTORICAL_REPOSITORIES, activeRepository } from '../../scripts/release-repository.mjs';
+import { verifyApproved, verifyFreshRootImport } from '../../scripts/release/verify-approved-release.mjs';
+import { digest } from '../../scripts/release/approved-release.mjs';
+import { HISTORICAL_REPOSITORIES, activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
 const inactive = HISTORICAL_REPOSITORIES.find(repository => repository !== active);
 const bootstrap = { schema: 1, sequence: 1, previous: null, validation: {
@@ -202,7 +202,7 @@ test('even a successful full run cannot authorize a forged durable validation re
 });
 
 test('a fully attested promotion serves the tested installers and retains demo archives only as evidence', async () => {
-  const { copyApprovedDownloads } = await import('../../scripts/approved-release.mjs');
+  const { copyApprovedDownloads } = await import('../../scripts/release/approved-release.mjs');
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');

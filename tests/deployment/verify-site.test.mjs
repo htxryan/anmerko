@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifySite } from '../../scripts/verify-site-deployment.mjs';
+import { verifySite } from '../../scripts/deployment/verify-site-deployment.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'anmerko-deployment-'));
@@ -113,10 +113,10 @@ test('rejects an incomplete artifact before making public requests', async t => 
 });
 
 test('a later docs-only merge can deploy, while stale website or manifest builds cannot', async () => {
-  const { canDeployAfter } = await import('../../scripts/deployment-eligibility.mjs');
+  const { canDeployAfter } = await import('../../scripts/deployment/deployment-eligibility.mjs');
   const comparison = files => ({ merge_base_commit: { sha: 'source' }, status: 'ahead', files: files.map(filename => ({ filename })) });
   assert.equal(canDeployAfter('source', 'latest', comparison(['docs/release-process.md'])), true);
-  for (const path of ['src/content.ts', 'src/panel.css', 'src/comment-card.ts', 'src/support-icon.ts', 'public/icons/128.png', 'releases/approved.json', 'site/src/pages/index.astro', 'scripts/build-site.mjs', 'package-lock.json']) {
+  for (const path of ['src/content.ts', 'src/panel.css', 'src/comment-card.ts', 'src/support-icon.ts', 'public/icons/128.png', 'releases/approved.json', 'site/src/pages/index.astro', 'scripts/build-site.mjs', 'scripts/site/build-site.mjs', 'package-lock.json']) {
     assert.equal(canDeployAfter('source', 'latest', comparison([path])), false);
   }
   assert.equal(canDeployAfter('source', 'latest', comparison(Array(300).fill('docs/a.md'))), false);

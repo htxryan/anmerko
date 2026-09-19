@@ -66,7 +66,7 @@ jobs:
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version }}
           ADOPT_EXISTING: ${{ inputs.adopt-existing || false }}
           RELEASE_RESUME_ONLY: ${{ inputs.resume-only || false }}
-        run: node scripts/release-automation.mjs resolve
+        run: node scripts/release/release-automation.mjs resolve
       - name: Stop when there is no pending work
         if: steps.release.outputs.run != 'true'
         run: echo 'No pending release or extension payload change.' >> "$GITHUB_STEP_SUMMARY"
@@ -114,7 +114,7 @@ jobs:
           ADOPT_EXISTING: ${{ steps.release.outputs.adopt || inputs.adopt-existing || false }}
           RELEASE_RUN: ${{ steps.release.outputs.release-run }}
           RELEASE_ATTEMPT: ${{ steps.release.outputs.release-attempt }}
-        run: node scripts/release-automation.mjs verify-candidate
+        run: node scripts/release/release-automation.mjs verify-candidate
       - uses: actions/checkout@v7.0.1
         if: steps.release.outputs.ready == 'true'
         with:
@@ -126,7 +126,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/archive-release-candidate.mjs artifacts/state-001.json artifacts/release-candidate.tgz
+          node scripts/release/archive-release-candidate.mjs artifacts/state-001.json artifacts/release-candidate.tgz
           gh release upload '${{ steps.release.outputs.tag }}' artifacts/release-candidate.tgz --repo "$GITHUB_REPOSITORY"
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         if: steps.release.outputs.ready == 'true'
@@ -153,7 +153,7 @@ jobs:
           WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
           RELEASE_PR_TOKEN: ${{ steps.release-app.outputs.token }}
-        run: node scripts/release-deliver.mjs
+        run: node scripts/release/release-deliver.mjs
       - name: Retain promotion evidence in its authorizing run
         if: steps.release.outputs.ready == 'true'
         uses: actions/upload-artifact@v7.0.1

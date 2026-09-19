@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { browserTarget, browserManifest } from '../../scripts/browser-targets.mjs';
+import { browserTarget, browserManifest } from '../../scripts/extension/browser-targets.mjs';
 
 const exec = promisify(execFile);
 const source = JSON.parse(await readFile('public/manifest.json', 'utf8'));
@@ -48,7 +48,7 @@ test('supported browser targets build clean resources and reject development hel
   const root = await mkdtemp(join(tmpdir(), 'anmerko-browser-build-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const file of ['src', 'public', 'package.json']) await cp(file, join(root, file), { recursive: true });
-  const build = args => exec(process.execPath, [resolve('scripts/build.mjs'), ...args], { cwd: root });
+  const build = args => exec(process.execPath, [resolve('scripts/extension/build.mjs'), ...args], { cwd: root });
   await mkdir(join(root, 'dist'));
   await writeFile(join(root, 'dist/keep.txt'), 'existing Chrome build');
   await assert.rejects(build(['--target', 'opera']));
@@ -57,7 +57,7 @@ test('supported browser targets build clean resources and reject development hel
     { args: [], outdir: 'dist', suffix: '' },
     { args: ['--firefox'], outdir: 'dist-firefox', suffix: '-firefox-unsigned' },
   ]) {
-    const pack = () => exec(process.execPath, [resolve('scripts/package.mjs'), ...args], { cwd: root });
+    const pack = () => exec(process.execPath, [resolve('scripts/extension/package.mjs'), ...args], { cwd: root });
     await build(args);
     const target = browserTarget(args);
     const manifest = JSON.parse(await readFile(join(root, outdir, 'manifest.json'), 'utf8'));
@@ -88,20 +88,20 @@ test('supported browser targets build clean resources and reject development hel
 test('the listed and unlisted Firefox review source archives reproduce their explicit versions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'anmerko-review-source-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(join(root, 'scripts'));
-  for (const file of ['src', 'public', 'package.json', 'package-lock.json', 'tsconfig.json', 'LICENSE', 'scripts/build.mjs', 'scripts/build-version.mjs', 'scripts/browser-targets.mjs']) {
+  await mkdir(join(root, 'scripts/extension'), { recursive: true });
+  for (const file of ['src', 'public', 'package.json', 'package-lock.json', 'tsconfig.json', 'LICENSE', 'scripts/extension/build.mjs', 'scripts/extension/build-version.mjs', 'scripts/extension/browser-targets.mjs']) {
     await cp(file, join(root, file), { recursive: true });
   }
   for (const releaseVersion of [version, `${version}.1`]) {
     const env = { ...process.env, RELEASE_VERSION: releaseVersion };
-    await exec(process.execPath, [resolve('scripts/build.mjs'), '--firefox'], { cwd: root, env });
-    await exec(process.execPath, [resolve('scripts/package-firefox-source.mjs')], { cwd: root, env });
+    await exec(process.execPath, [resolve('scripts/extension/build.mjs'), '--firefox'], { cwd: root, env });
+    await exec(process.execPath, [resolve('scripts/extension/package-firefox-source.mjs')], { cwd: root, env });
     const unpacked = join(root, `review-${releaseVersion}`);
     await exec('unzip', ['-q', join(root, `artifacts/anmerko-${releaseVersion}-firefox-source.zip`), '-d', unpacked]);
     assert.match(await readFile(join(unpacked, 'README-SOURCE.md'), 'utf8'), new RegExp(`RELEASE_VERSION=${releaseVersion.replaceAll('.', '\\.')}`));
     // Use the installed, locked dependencies without downloading another copy.
     await symlink(resolve('node_modules'), join(unpacked, 'node_modules'), 'junction');
-    await exec(process.execPath, [join(unpacked, 'scripts/build.mjs'), '--firefox'], { cwd: unpacked, env });
+    await exec(process.execPath, [join(unpacked, 'scripts/extension/build.mjs'), '--firefox'], { cwd: unpacked, env });
     for (const file of await readdir(join(root, 'dist-firefox'), { recursive: true, withFileTypes: true })) {
       if (!file.isFile()) continue;
       const original = join(file.parentPath, file.name);

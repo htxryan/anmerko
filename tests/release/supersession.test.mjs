@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { resolveRelease } from '../../scripts/release-automation.mjs';
+import { resolveRelease } from '../../scripts/release/release-automation.mjs';
 import { createHash } from 'node:crypto';
 
 const oldSource = 'a'.repeat(40), newSource = 'b'.repeat(40);

@@ -13,7 +13,7 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export async function createDesktopSession({ scenario = 'manual' } = {}) {
   const browser = process.env.ANMERKO_DESKTOP_BROWSER || 'chrome';
   const executable = process.env.ANMERKO_DESKTOP_EXECUTABLE;
-  assert.ok(executable, 'Run through scripts/test-desktop.mjs to select an installed browser');
+  assert.ok(executable, 'Run through scripts/browsers/test-desktop.mjs to select an installed browser');
   const temp = await mkdtemp(join(tmpdir(), 'anmerko-desktop-'));
   const extension = join(temp, 'extension');
   const output = resolve('artifacts', `desktop-${browser}-${process.platform}-${Date.now()}`);

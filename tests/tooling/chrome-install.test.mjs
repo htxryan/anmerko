@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from '@playwright/test';
-import { installSession, unpackedId, writeHelpers } from '../../scripts/install-chrome.mjs';
+import { installSession, unpackedId, writeHelpers } from '../../scripts/browsers/install-chrome.mjs';
 
 const exec = promisify(execFile);
 const id = 'a'.repeat(32), token = 'b'.repeat(48), version = '0.5.1';
@@ -42,7 +42,7 @@ test('the release packager refuses temporary update code before touching an arch
   await cp('dist', resolve(root, 'dist'), {recursive:true});
   await writeFile(resolve(root, 'package.json'), JSON.stringify({name:'anmerko',version}));
   await writeHelpers(resolve(root, 'dist'), token);
-  await assert.rejects(exec(process.execPath, [resolve('scripts/package.mjs')], {cwd:root}), error => /Development update helper detected/.test(error.stderr));
+  await assert.rejects(exec(process.execPath, [resolve('scripts/extension/package.mjs')], {cwd:root}), error => /Development update helper detected/.test(error.stderr));
 });
 
 test('Chrome reloads new code without changing the ID, permissions, or saved data', {timeout:60000}, async t => {

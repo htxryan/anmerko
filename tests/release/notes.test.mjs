@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { releaseNotes } from '../../scripts/release-notes.mjs';
+import { releaseNotes } from '../../scripts/release/release-notes.mjs';
 
 test('release notes identify the actual browser installers and their public guides', () => {
   const candidate = { version: '0.6.0', source: 'a'.repeat(40), browsers: {

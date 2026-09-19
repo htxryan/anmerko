@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { requiredOperatingSystems, requiredRunners } from '../../scripts/ci-policy.mjs';
+import { requiredOperatingSystems, requiredRunners } from '../../scripts/ci/ci-policy.mjs';
 
 test('Windows is not required in either CI scope while on hold', () => {
   assert.deepEqual(requiredOperatingSystems('fast'), ['linux']);

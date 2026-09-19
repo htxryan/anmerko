@@ -3,10 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { resolveRelease } from '../../scripts/release-automation.mjs';
-import { continuePromotion } from '../../scripts/release-deliver.mjs';
-import { digest } from '../../scripts/approved-release.mjs';
-import { activeRepository } from '../../scripts/release-repository.mjs';
+import { resolveRelease } from '../../scripts/release/release-automation.mjs';
+import { continuePromotion } from '../../scripts/release/release-deliver.mjs';
+import { digest } from '../../scripts/release/approved-release.mjs';
+import { activeRepository } from '../../scripts/release/release-repository.mjs';
 
 const source = 'a'.repeat(40);
 const activeRepositoryName = activeRepository();

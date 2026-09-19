@@ -3,8 +3,8 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createAmoClient, createAmoJwtProvider, createChromeStoreClient, StoreApiError } from '../../scripts/store-api.mjs';
-import { firefoxReviewNotes } from '../../scripts/release-deliver.mjs';
+import { createAmoClient, createAmoJwtProvider, createChromeStoreClient, StoreApiError } from '../../scripts/release/store-api.mjs';
+import { firefoxReviewNotes } from '../../scripts/release/release-deliver.mjs';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const fixture = async name => { const dir = await mkdtemp(join(tmpdir(), 'store-api-')); const path = join(dir, name); await writeFile(path, Buffer.from('exact-bytes')); return path; };

@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { assertFirefoxSigningInputs, firefoxSourcePath } from '../../scripts/sign-firefox.mjs';
+import { assertFirefoxSigningInputs, firefoxSourcePath } from '../../scripts/release/sign-firefox.mjs';
 
 const fixture = async ({ version = '0.6.0.1', guid = 'briefmark@briefmark.app', source = true } = {}) => {
   const root = await mkdtemp(join(tmpdir(), 'anmerko-sign-'));

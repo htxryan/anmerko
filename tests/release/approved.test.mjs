@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { artifactBytes, copyApprovedDownloads, digest, findReleaseByTag, validateManifest } from '../../scripts/approved-release.mjs';
+import { artifactBytes, copyApprovedDownloads, digest, findReleaseByTag, validateManifest } from '../../scripts/release/approved-release.mjs';
 
 const source = 'a'.repeat(40);
 function manifest() {

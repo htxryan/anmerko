@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { assertDesktopPayloads, firefoxScenarios } from '../../scripts/check-desktop-payloads.mjs';
+import { assertDesktopPayloads, firefoxScenarios } from '../../scripts/browsers/check-desktop-payloads.mjs';
 
-import { requiredOperatingSystems, windowsChecksEnabled, windowsHoldReason } from '../../scripts/ci-policy.mjs';
+import { requiredOperatingSystems, windowsChecksEnabled, windowsHoldReason } from '../../scripts/ci/ci-policy.mjs';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 const reports = () => requiredOperatingSystems('full').map(os => ({

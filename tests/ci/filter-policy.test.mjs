@@ -10,15 +10,15 @@ test('standalone release and deployment helpers select their required CI jobs', 
   const site = section(filters, 'site', 'highrisk');
   const releasegate = section(filters, 'releasegate');
 
-  assert.match(common, /scripts\/archive-release-candidate\.mjs/,
+  assert.match(common, /scripts\/release\/archive-release-candidate\.mjs/,
     'candidate archive changes must select every shared validation target');
-  assert.match(releasegate, /scripts\/archive-release-candidate\.mjs/,
+  assert.match(releasegate, /scripts\/release\/archive-release-candidate\.mjs/,
     'candidate archive changes must run release proof');
-  for (const path of ['.github/workflows/check.yml', '.github/filters.yml', 'scripts/ci-policy.mjs', 'scripts/reuse-ci.mjs']) {
+  for (const path of ['.github/workflows/check.yml', '.github/filters.yml', 'scripts/ci/ci-policy.mjs', 'scripts/ci/reuse-ci.mjs']) {
     assert.match(releasegate, new RegExp(path.replaceAll('.', '\\.').replaceAll('/', '\\/')),
       `${path} changes must run release proof`);
   }
-  assert.match(site, /scripts\/capture-deployment-state\.mjs/,
+  assert.match(site, /scripts\/deployment\/capture-deployment-state\.mjs/,
     'deployment-state changes must run the site and deployment checks');
 });
 

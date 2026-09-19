@@ -102,7 +102,7 @@ test('Linux desktop checks refresh both stable Chromium channels before testing'
 test('runner controls use the anmerko environment contract and retain documented installed identities', () => {
   const files = ['scripts/runners/control.sh', 'scripts/runners/register-linux.sh',
     'scripts/runners/register-macos.sh', 'scripts/runners/install-macos-vm-service.sh',
-    'scripts/test-desktop.mjs', 'tests/shared/desktop-session.mjs', 'docs/store-assets/capture.mjs'];
+    'scripts/browsers/test-desktop.mjs', 'tests/shared/desktop-session.mjs', 'docs/store/capture.mjs'];
   const source = files.map(file => readFileSync(file, 'utf8')).join('\n');
   assert.doesNotMatch(source, /BRIEFMARK_(?:DESKTOP|TART|MACOS|DOCKER|RUNNER|REPOSITORY)/);
   for (const name of ['ANMERKO_DESKTOP_BROWSER', 'ANMERKO_DESKTOP_EXECUTABLE', 'ANMERKO_TART_BIN',

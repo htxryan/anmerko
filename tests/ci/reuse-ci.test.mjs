@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { findReusableCheck, reuseOrRun } from '../../scripts/reuse-ci.mjs';
+import { findReusableCheck, reuseOrRun } from '../../scripts/ci/reuse-ci.mjs';
 
 test('release proof can read associated PR evidence across the reusable-workflow boundary', () => {
   const caller = readFileSync('.github/workflows/check.yml', 'utf8')

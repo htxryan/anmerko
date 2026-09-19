@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { auditAmo, sanitizeChromeStatus } from '../../scripts/store-audit.mjs';
+import { auditAmo, sanitizeChromeStatus } from '../../scripts/release/store-audit.mjs';
 
 const json = value => new Response(JSON.stringify(value));
 test('AMO audit uses only authenticated GETs and excludes private text, accounts and URLs', async () => {
