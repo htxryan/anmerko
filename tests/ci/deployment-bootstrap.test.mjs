@@ -55,9 +55,9 @@ test('auth, network, arbitrary and partial-state failures are never treated as b
   }), /network unavailable/);
 });
 
-test('deploy workflow captures rollback state before publishing and retains the old concurrency lock', async () => {
+test('deploy workflow captures rollback state before publishing and retains the production concurrency lock', async () => {
   const workflow = await readFile('.github/workflows/deploy.yml', 'utf8');
-  assert.match(workflow, /group: briefmark-production/);
+  assert.match(workflow, /group: anmerko-production/);
   assert.match(workflow, /node scripts\/deployment\/capture-deployment-state\.mjs[\s\S]*wrangler deploy --config site\/wrangler\.jsonc/);
   assert.match(workflow, /wrangler deploy --config site\/support\/wrangler\.jsonc --assets release\/artifacts\/store-site/);
   assert.match(workflow, /environment:[\s\S]*url: https:\/\/anmerko\.com/);

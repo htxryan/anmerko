@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start an existing Tart VM at login without showing or sharing its desktop.
 set -euo pipefail
-vm_name=${1:-briefmark-ci}
+vm_name=${1:-anmerko-ci}
 tart_bin=${ANMERKO_TART_BIN:-$HOME/.local/bin/tart}
 label=local.github-actions.macos-vm
 [[ "$vm_name" =~ ^[A-Za-z0-9_.-]+$ ]]

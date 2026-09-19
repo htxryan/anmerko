@@ -99,21 +99,19 @@ test('Linux desktop checks refresh both stable Chromium channels before testing'
   assert.match(workflow, /name: Test Chrome[\s\S]*name: Test Edge/);
 });
 
-test('runner controls use the anmerko environment contract and retain documented installed identities', () => {
+test('runner controls use the anmerko environment contract and documented defaults', () => {
   const files = ['scripts/runners/control.sh', 'scripts/runners/register-linux.sh',
     'scripts/runners/register-macos.sh', 'scripts/runners/install-macos-vm-service.sh',
     'scripts/browsers/test-desktop.mjs', 'tests/shared/desktop-session.mjs', 'docs/store/capture.mjs'];
   const source = files.map(file => readFileSync(file, 'utf8')).join('\n');
-  assert.doesNotMatch(source, /BRIEFMARK_(?:DESKTOP|TART|MACOS|DOCKER|RUNNER|REPOSITORY)/);
   for (const name of ['ANMERKO_DESKTOP_BROWSER', 'ANMERKO_DESKTOP_EXECUTABLE', 'ANMERKO_TART_BIN',
     'ANMERKO_MACOS_VM', 'ANMERKO_DOCKER_CONTEXT', 'ANMERKO_RUNNER_IMAGE', 'ANMERKO_REPOSITORY']) {
     assert.match(source, new RegExp(name));
   }
   const guide = readFileSync('docs/local-runners.md', 'utf8');
-  for (const installed of ['briefmark-ci', 'briefmark-actions-runner:2.337.0',
-    'briefmark.runner-group=linux', 'briefmark.repository', 'local.github-actions.macos-vm',
-    'local.github-actions.colima']) {
-    assert.ok(guide.includes(installed), `document installed identity ${installed}`);
+  for (const configured of ['anmerko-ci', 'anmerko-actions-runner:2.337.0',
+    'anmerko.runner-group=linux', 'anmerko.repository',
+    'local.github-actions.{macos-vm,colima}.plist']) {
+    assert.ok(guide.includes(configured), `document runner default ${configured}`);
   }
-  assert.match(guide, /next planned runner drain and reprovision/);
 });

@@ -41,7 +41,7 @@ jobs:
     runs-on: ${{ fromJSON(github.event.repository.private && vars.LINUX_RUNNER_MODE != 'hosted' && '["self-hosted","Linux","ARM64","macbook-linux"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 25
     concurrency:
-      group: briefmark-release
+      group: anmerko-release
       cancel-in-progress: false
     permissions:
       contents: write

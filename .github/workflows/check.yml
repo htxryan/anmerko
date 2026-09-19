@@ -270,7 +270,7 @@ jobs:
     needs: [changes, lint, chrome, firefox, desktop, site, release-proof]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
-      (github.repository == 'htxryan/briefmark' || github.repository == 'htxryan/anmerko') &&
+      github.repository == 'htxryan/anmerko' &&
       (github.ref_name == 'main' || startsWith(github.ref_name, 'codex/release-source-') ||
       startsWith(github.ref_name, 'codex/automated-release-')) &&
       needs.changes.result == 'success' && needs.lint.result == 'success' &&

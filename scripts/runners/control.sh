@@ -13,7 +13,7 @@ if [[ "$group" == all ]]; then
 fi
 domain="gui/$(id -u)"
 tart_bin=${ANMERKO_TART_BIN:-$HOME/.local/bin/tart}
-vm_name=${ANMERKO_MACOS_VM:-briefmark-ci}
+vm_name=${ANMERKO_MACOS_VM:-anmerko-ci}
 docker_context=${ANMERKO_DOCKER_CONTEXT:-colima-github-actions}
 docker_cli() { docker --context "$docker_context" "$@"; }
 start_service() {
@@ -38,7 +38,7 @@ linux_containers() {
   containers=()
   while IFS= read -r container; do
     [[ -z "$container" ]] || containers+=("$container")
-  done < <(docker_cli ps -aq --filter label=briefmark.runner-group=linux)
+  done < <(docker_cli ps -aq --filter label=anmerko.runner-group=linux)
 }
 case "$group:$action" in
   mac:start)

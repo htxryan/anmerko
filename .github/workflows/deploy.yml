@@ -21,7 +21,7 @@ defaults:
 # Never interrupt a deployment between the two Workers. Older completed Check
 # runs must also pass the freshness guard before they can publish.
 concurrency:
-  group: briefmark-production
+  group: anmerko-production
   cancel-in-progress: false
 jobs:
   eligible:
@@ -163,7 +163,7 @@ jobs:
     needs: deploy
     if: >-
       always() && github.event_name == 'workflow_dispatch' && needs.deploy.result == 'success' &&
-      (github.repository == 'htxryan/briefmark' || github.repository == 'htxryan/anmerko') && github.ref_name == 'main'
+      github.repository == 'htxryan/anmerko' && github.ref_name == 'main'
     permissions:
       contents: read
       actions: write

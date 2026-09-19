@@ -1,8 +1,8 @@
 # Local GitHub Actions runners
 
-The source controls use `ANMERKO_*` environment names. The currently installed infrastructure retains a few exact prelaunch identifiers while release and CI work is active: Tart VM `briefmark-ci`, Docker image `briefmark-actions-runner:2.337.0`, container labels `briefmark.runner-group=linux` and `briefmark.repository`, and LaunchAgent labels `local.github-actions.macos-vm` and `local.github-actions.colima`. These names do not change the repository registration or product output. Retire them together during the next planned runner drain and reprovision, after active jobs finish and the replacement routes successfully.
+Runner controls use `ANMERKO_*` environment names and default to the current local names. These settings are optional: public CI uses GitHub-hosted runners, and private local infrastructure can override each default through its environment without changing tracked files.
 
-- **macOS:** one Tart VM (`briefmark-ci`), 6 CPUs / 12 GiB RAM. Its desktop,
+- **macOS:** one Tart VM (`anmerko-ci`), 6 CPUs / 12 GiB RAM. Its desktop,
   clipboard and audio stay separate from the host; no Mac folders are shared.
 - **Linux:** four Ubuntu ARM64 Docker runners, each limited to 2 CPUs / 4 GiB RAM.
   Their dedicated Colima VM has 8 CPUs / 20 GiB RAM and no host-folder, SSH-agent
@@ -68,15 +68,14 @@ Tart 2.37.0 is installed at `~/.local/bin/tart`. The VM uses
 `ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e`,
 with Chrome/Edge installed and network SSH/screen sharing disabled.
 `install-macos-vm-service.sh` installs its host LaunchAgent. The Linux image is
-built with `docker --context colima-github-actions build -t briefmark-actions-runner:2.337.0 scripts/runners`.
+built with `docker --context colima-github-actions build -t anmerko-actions-runner:2.337.0 scripts/runners`.
 It includes DejaVu fonts for consistent layout tests. Containers carry the
-`briefmark.runner-group=linux` label used by the controls.
+`anmerko.runner-group=linux` control label and an `anmerko.repository` label
+identifying their repository registration.
 
 Optional source-control overrides use `ANMERKO_MACOS_VM`, `ANMERKO_TART_BIN`,
 `ANMERKO_DOCKER_CONTEXT`, `ANMERKO_RUNNER_IMAGE`, and `ANMERKO_REPOSITORY`.
-Their defaults deliberately address the installed values above. No legacy
-environment-variable fallback is provided; update local shell configuration to
-the new names before using an override.
+Their defaults use the names above. Local installations can override them without changing repository source.
 
 Host service plists are `~/Library/LaunchAgents/local.github-actions.{macos-vm,colima}.plist`;
 logs are in `~/Library/Logs/github-actions-{macos-vm,colima}/`. Both services hold
