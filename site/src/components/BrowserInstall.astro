@@ -1,0 +1,53 @@
+---
+import { browsers, platforms } from '../data/browsers';
+---
+<section class="install-area" aria-labelledby="install-heading">
+  <div class="install">
+    <h2 id="install-heading">Install the Browser Extension</h2>
+    <div id="browser-choices">
+      {platforms.map(platform => {
+        const options = browsers.flatMap(browser => {
+          const target = browser.targets[platform];
+          return target ? [{ ...browser, ...target, key: `${platform}-${browser.id}` }] : [];
+        });
+        return (
+          <div data-browser-platform={platform} hidden={platform !== 'desktop'}>
+            <div class="browser-tabs" role="tablist" aria-label={`Choose your ${platform} browser`}>
+              {options.map((browser, index) => (
+                <button class="browser-tab" type="button" role="tab" id={`tab-${browser.key}`} aria-label={browser.name} aria-controls={`panel-${browser.key}`} aria-selected={index === 0 ? 'true' : 'false'} aria-describedby={[!browser.store && `badge-${browser.key}`, browser.os && `os-${browser.key}`].filter(Boolean).join(' ') || undefined} tabindex={index === 0 ? 0 : -1}>
+                  <span class="browser-icon">
+                    <img class:list={{ 'browser-icon-soon': !browser.store }} src={`/browsers/${browser.id}.png`} width="28" height="28" alt="" />
+                    {!browser.store && <span class="browser-badge" id={`badge-${browser.key}`} aria-hidden="true">SOON</span>}
+                  </span>
+                  <span>{browser.name}</span>
+                  {browser.os && <span class="browser-os" id={`os-${browser.key}`}>{browser.os}</span>}
+                </button>
+              ))}
+            </div>
+            {options.map((browser, index) => (
+              <div class="browser-panel" role="tabpanel" id={`panel-${browser.key}`} aria-labelledby={`tab-${browser.key}`} tabindex="0" hidden={index !== 0}>
+                {browser.store ? (
+                  <>
+                    <p class="release">{browser.store.requirements}</p>
+                    <a class="store-button" href={browser.store.href}>{browser.store.label}</a>
+                  </>
+                ) : <p class="coming-soon">{browser.pending}</p>}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  </div>
+  <div class="install-links">
+    <a class="releases" href="/docs/install/">Download manually</a>
+    <span class="platform-choice" hidden>
+      <span>or</span>
+      <button class="platform-switch" type="button" aria-controls="browser-choices">Install for mobile browsers</button>
+    </span>
+  </div>
+</section>
+
+<script>
+  import './browser-install';
+</script>

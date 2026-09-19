@@ -1,0 +1,93 @@
+---
+import { supportIconAttributes, supportIconPaths } from '../../../src/support-icon';
+import BrowserInstall from '../components/BrowserInstall.astro';
+import ExternalLink from '../components/ExternalLink.astro';
+import ThemeProvider from '@astrojs/starlight/components/ThemeProvider.astro';
+import ThemeToggle from '../components/ThemeToggle.astro';
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Select website elements, add comments, and copy your feedback as a prompt for your AI agent with anmerko.">
+  <link rel="canonical" href="https://anmerko.com/">
+  <meta property="og:title" content="anmerko — Website feedback for AI">
+  <meta property="og:description" content="Turn website comments and screenshots into a clear brief for your AI agent.">
+  <meta property="og:url" content="https://anmerko.com/">
+  <title>anmerko — Website feedback for AI</title>
+  <ThemeProvider />
+  <link rel="icon" href="/favicon.png">
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+  <a href="#main" class="skip">Skip to content</a>
+  <header class="header wrap">
+    <a class="brand" href="/" aria-label="anmerko home"><img src="/favicon.png" width="30" height="30" alt="">anmerko</a>
+    <nav aria-label="Main navigation">
+      <a href="/docs/" aria-label="Documentation">Docs</a>
+      <ExternalLink href="https://github.com/htxryan/anmerko" label="GitHub" />
+      <ExternalLink href="https://github.com/htxryan/anmerko/issues/new" label="Report Issue" />
+    </nav>
+    <ThemeToggle />
+  </header>
+  <main id="main" class="wrap layout">
+    <section class="intro" aria-labelledby="headline">
+      <h1 id="headline">Turn website feedback into an AI prompt.</h1>
+      <p>Select elements or screenshot regions, add comments, then share them (via simple copy + paste) with your AI agent—with the page context included.</p>
+      <div class="demo-controls">
+        <button id="try-demo" class="demo-launch" aria-expanded="false" aria-describedby="demo-help" hidden>Try the Demo</button>
+        <span id="demo-help" class="demo-help">Local · clears on reload</span>
+      </div>
+      <p id="demo-status" class="demo-status" role="status" aria-live="polite"></p>
+      <noscript><p class="demo-help">Enable JavaScript to try the demo.</p></noscript>
+    </section>
+    <BrowserInstall />
+    <figure class="preview">
+      <video
+        controls
+        playsinline
+        preload="none"
+        poster="/product-illustration.svg"
+        width="800"
+        height="470"
+        aria-label="anmerko product overview"
+      >
+        <source src="/media/anmerko-overview.mp4" type="video/mp4">
+        <track kind="captions" src="/media/anmerko-overview.en.vtt" srclang="en" label="English">
+        <a href="/media/anmerko-overview.mp4">Watch the anmerko product overview video</a>
+      </video>
+    </figure>
+    <section class="features" aria-label="Why anmerko">
+      <article class="feature" aria-labelledby="easy-heading">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m13 2-9 12h7l-1 8 10-12h-7l1-8Z" /></svg>
+        </div>
+        <h2 id="easy-heading">Easy</h2>
+        <p>Simple and quick to use. Easily copy + paste comments to your agent of choice.</p>
+      </article>
+      <article class="feature" aria-labelledby="universal-heading">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></svg>
+        </div>
+        <h2 id="universal-heading">Universal</h2>
+        <p>Works on any website, on desktop or mobile. Capture feedback about anything.</p>
+      </article>
+      <article class="feature" aria-labelledby="private-heading">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></svg>
+        </div>
+        <h2 id="private-heading">Private</h2>
+        <p>Comments stay local until you choose to copy or export them. Free to use.</p>
+      </article>
+    </section>
+  </main>
+  <footer class="wrap">
+    <p>Made by <ExternalLink href="https://ryanhenderson.dev/" label="Ryan Henderson" /></p>
+    <ExternalLink class="support-link" href="https://buymeacoffee.com/htxryan" label="Buy me a coffee"><svg {...supportIconAttributes}>{supportIconPaths.map(d => <path d={d} />)}</svg></ExternalLink>
+  </footer>
+  <script>
+    import '../scripts/demo-launcher';
+  </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{
+  "retrievedAt": "2026-09-14T11:57:09.268Z",
+  "version": {
+    "id": 6484856,
+    "approval_notes": "",
+    "channel": "unlisted",
+    "compatibility": {
+      "firefox": {
+        "min": "142.0",
+        "max": "*"
+      },
+      "android": {
+        "min": "142.0",
+        "max": "*"
+      }
+    },
+    "edit_url": "https://addons.mozilla.org/en-US/developers/addon/briefmark/versions/6484856",
+    "file": {
+      "id": 5029020,
+      "created": "2026-09-14T11:46:29Z",
+      "hash": "sha256:2cf9be1f056685f1993d6e1f70913b3af330488f0726bd4decee2ec4419a570d",
+      "is_mozilla_signed_extension": false,
+      "size": 54074,
+      "status": "public",
+      "url": "https://addons.mozilla.org/firefox/downloads/file/5029020/briefmark-0.5.3.1.xpi",
+      "permissions": [
+        "activeTab",
+        "scripting",
+        "storage",
+        "clipboardWrite"
+      ],
+      "optional_permissions": [],
+      "host_permissions": [],
+      "data_collection_permissions": [
+        "none"
+      ],
+      "optional_data_collection_permissions": []
+    },
+    "is_disabled": false,
+    "is_strict_compatibility_enabled": false,
+    "license": null,
+    "release_notes": null,
+    "reviewed": "2026-09-14T11:51:18Z",
+    "source": "https://addons.mozilla.org/firefox/downloads/source/6484856",
+    "version": "0.5.3.1"
+  },
+  "sha256": "2cf9be1f056685f1993d6e1f70913b3af330488f0726bd4decee2ec4419a570d",
+  "payload": "matches exact unsigned archive",
+  "path": "briefmark-0.5.3.1-firefox.xpi"
+}

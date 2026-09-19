@@ -1,0 +1,212 @@
+name: Release validation
+run-name: Validate release ${{ inputs.version }} from ${{ inputs.source }}
+on:
+  workflow_call:
+    inputs:
+      source:
+        required: true
+        type: string
+      version:
+        required: false
+        type: string
+      candidate-run:
+        required: false
+        type: string
+      browsers:
+        required: false
+        type: string
+      signed-xpi:
+        required: false
+        type: string
+      manual-evidence:
+        required: false
+        type: string
+      publish:
+        required: false
+        type: boolean
+      proof:
+        required: false
+        type: boolean
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+jobs:
+  resolve:
+    name: Resolve release source
+    runs-on: ${{ fromJSON(github.event.repository.private && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_MODE != 'hosted' && '["self-hosted","Linux","ARM64","macbook-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    outputs:
+      source: ${{ steps.source.outputs.source }}
+      version: ${{ steps.source.outputs.version }}
+      fast-run: ${{ steps.source.outputs.fast-run }}
+      candidate-attempt: ${{ steps.source.outputs.candidate-attempt }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # This checkout supplies only immutable source-policy bytes for read-only
+      # PR proof. It includes main history so proof can hash a selected
+      # ancestor's tracked blobs without executing them. Publication resolves
+      # the exact requested source. The controller never runs scripts here.
+      - uses: actions/checkout@v7.0.1
+        if: inputs.proof
+        with:
+          ref: ${{ inputs.source }}
+          path: source-policy
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Resolve immutable main source and fast evidence
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE: ${{ inputs.source }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SIGNED_XPI: ${{ inputs.signed-xpi }}
+          MANUAL_EVIDENCE: ${{ inputs.manual-evidence }}
+          CANDIDATE_RUN: ${{ inputs.candidate-run }}
+          PUBLISH_RELEASE: ${{ inputs.publish || false }}
+          RELEASE_PROOF: ${{ inputs.proof || false }}
+          VALIDATION_POLICY_ROOT: ${{ inputs.proof && 'source-policy' || '.' }}
+        run: node scripts/release-candidate.mjs resolve
+      - name: Retain signed candidate input from the controller commit
+        if: inputs.signed-xpi != ''
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-signed-input-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ inputs.signed-xpi }}
+  candidate:
+    name: Prepare and test exact packages
+    needs: resolve
+    runs-on: ${{ fromJSON(github.event.repository.private && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_MODE != 'hosted' && '["self-hosted","Linux","ARM64","macbook-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.source }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm ci
+        working-directory: candidate
+      - name: Reuse the exact manually tested candidate bytes
+        if: inputs.candidate-run != ''
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-candidate-${{ needs.resolve.outputs.candidate-attempt }}
+          run-id: ${{ inputs.candidate-run }}
+          github-token: ${{ github.token }}
+          path: artifacts/release-candidate
+      - name: Build candidate packages and demo evidence once
+        env:
+          RELEASE_SOURCE: ${{ needs.resolve.outputs.source }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_BROWSERS: ${{ inputs.browsers || 'chrome,edge,firefox' }}
+          SIGNED_XPI: ${{ inputs.signed-xpi }}
+          MANUAL_EVIDENCE: ${{ inputs.manual-evidence }}
+          CANDIDATE_RUN: ${{ inputs.candidate-run }}
+          FAST_RUN: ${{ needs.resolve.outputs.fast-run }}
+        run: node scripts/release-candidate.mjs prepare
+      - run: npx playwright install --with-deps chromium
+      - name: Test candidate downloads with the current website and shared demo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-preview.mjs
+          npm run site:build
+          npm run site:check
+          npm run site:test
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-candidate-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/release-candidate/
+      - uses: actions/upload-artifact@v7.0.1
+        if: failure()
+        with:
+          name: release-candidate-diagnostics
+          retention-days: 7
+          path: |
+            artifacts/
+            test-results/
+  desktop:
+    name: Release desktop (${{ matrix.os }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Retain the Windows target for reactivation after issue #58.
+        exclude:
+          - os: windows-latest
+    uses: ./.github/workflows/desktop.yml
+    with:
+      os: ${{ matrix.os }}
+      chrome: true
+      firefox: true
+      source: ${{ needs.resolve.outputs.source }}
+      signed-xpi: ${{ inputs.signed-xpi }}
+      artifact-prefix: release
+  validate:
+    name: Release gate
+    needs: [resolve, candidate, desktop]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    runs-on: ${{ fromJSON(github.event.repository.private && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_MODE != 'hosted' && '["self-hosted","Linux","ARM64","macbook-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    outputs:
+      eligible: ${{ steps.gate.outputs.eligible }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Require successful candidate and every matrix job
+        env:
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+          DESKTOP_RESULT: ${{ needs.desktop.result }}
+        run: test "$CANDIDATE_RESULT" = success && test "$DESKTOP_RESULT" = success
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-candidate-${{ github.run_attempt }}
+          path: artifacts/release-candidate
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: release-desktop-*
+          path: artifacts/release-reports
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: release-signed-*
+          path: artifacts/release-reports
+      - name: Verify scenario completeness, exact hashes and platform eligibility
+        id: gate
+        env:
+          RELEASE_SOURCE: ${{ needs.resolve.outputs.source }}
+          DESKTOP_RESULT: ${{ needs.desktop.result }}
+          PUBLISH_RELEASE: ${{ inputs.publish || false }}
+        run: node scripts/release-candidate.mjs verify
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: validated-release-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/release-candidate/

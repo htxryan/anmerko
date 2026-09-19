@@ -1,0 +1,43 @@
+---
+title: Install in Chrome
+description: Install anmerko from the Chrome Web Store or use the approved manual download.
+---
+
+import Download from '../../../../components/Download.astro';
+
+Use **desktop Chrome 142 or later**. anmerko is available from the Chrome Web Store. Chrome for Android and iOS are not supported.
+
+## Install from the Chrome Web Store
+
+Open [anmerko in the Chrome Web Store](https://chromewebstore.google.com/detail/anmerko/oligkkknbmklalfnkipmheifammnpgpo), then:
+
+1. Select **Add to Chrome**.
+2. Review the browser prompt and select **Add extension**.
+3. Open Chrome's Extensions menu and pin anmerko to the toolbar.
+4. Open a regular website, refresh it, and click anmerko. [Select an element and save a comment](/docs/usage/inline-comments/) to check the installation.
+
+Chrome Web Store installations update automatically. [Export feedback you want to keep](/docs/send-to-your-agent/) before changing installations or browser profiles.
+
+## Manual alternative
+
+### Download the bundle
+
+<Download browser="chrome" />
+
+The public ZIP above works in both Chrome and Edge.
+
+### Install manually
+
+1. Extract the ZIP into a permanent folder. Keep that folder after installation: Chrome loads the extension from it.
+2. Enter `chrome://extensions` in the address bar and turn on **Developer mode**.
+3. Choose **Load unpacked**. Select the extracted folder that contains `manifest.json`, not the ZIP or a parent folder.
+4. Open Chrome's Extensions menu and pin the extension using the installed name shown above.
+5. Open a regular website, refresh it, and click the extension. [Select an element and save a comment](/docs/usage/inline-comments/) to check the installation.
+
+These steps use Chrome's [unpacked-extension installation flow](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked).
+
+### Update a manual installation
+
+Download the newer approved ZIP from this page. Save any open draft, then replace the contents of the **same extension folder** with the extracted files. Keep the folder's path unchanged. At `chrome://extensions`, click **Reload** on the extension's card, then refresh the websites where you use it.
+
+Do not remove the installed extension to update it. A different folder, browser profile, or switch to the store installation can create separate storage. [Export your feedback](/docs/send-to-your-agent/) first if changing installations; there is no automatic transfer or import.

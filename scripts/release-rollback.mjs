@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { digest, isSource, validateManifest } from './approved-release.mjs';
+import { assertPromotion } from './release-gate.mjs';
+const source = process.argv[2];
+assert.ok(isSource(source), 'Supply a full main commit containing a previously approved manifest');
+const git = args => execFileSync('git', args, { encoding: 'utf8', timeout: 30000 });
+git(['merge-base', '--is-ancestor', source, 'origin/main']);
+const current = JSON.parse(await readFile('releases/approved.json', 'utf8'));
+const previous = JSON.parse(git(['show', `${source}:releases/approved.json`]));
+const next = { ...previous, sequence: current.sequence + 1, previous: digest(JSON.stringify(current)), rollback: source };
+validateManifest(next); assertPromotion(current, next, previous);
+await writeFile('releases/approved.json', JSON.stringify(next, null, 2) + '\n');
+console.log(`Prepared rollback to approved source ${source}. Commit this manifest in a PR; Site checks and normal deployment restore its exact artifacts.`);

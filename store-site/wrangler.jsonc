@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "anmerko-support",
+  "compatibility_date": "2026-09-12",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "../artifacts/store-site",
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    { "pattern": "anmerko.com/support", "zone_name": "anmerko.com" },
+    { "pattern": "anmerko.com/support/*", "zone_name": "anmerko.com" }
+  ]
+}

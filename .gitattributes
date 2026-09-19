@@ -1,0 +1,2 @@
+# Keep copied HTML and CSS text-loader inputs identical on every build host.
+* text=auto eol=lf

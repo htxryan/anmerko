@@ -1,0 +1,31 @@
+node_modules/
+dist/
+dist-firefox/
+*.xpi
+!site/installers/*.xpi
+artifacts/
+test-results/
+playwright-report/
+.DS_Store
+*.zip
+.wrangler/
+.dev.vars*
+.env*
+site/dist/
+site/worker-configuration.d.ts
+site/.astro/
+
+# Immutable approved release assets, retained beyond CI artifact expiration.
+!releases/bootstrap/*.zip
+!releases/0-5-3/*.zip
+!releases/0-5-3/*.xpi
+
+/candidate/
+/releases/preview/
+
+# Keep implementation plans out of version control.
+/tasks/
+
+# Raw operational captures belong outside the public source tree.
+/docs/evidence/anmerko/*
+!/docs/evidence/anmerko/verification-summary.md

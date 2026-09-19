@@ -1,0 +1,34 @@
+name: Store audit
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    if: github.repository == 'htxryan/anmerko' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ${{ fromJSON(github.event.repository.private && vars.LINUX_RUNNER_MODE != 'hosted' && '["self-hosted","Linux","ARM64","macbook-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Read store state using the existing production integrations
+        env:
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: node scripts/store-audit.mjs
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: store-audit
+          retention-days: 7
+          if-no-files-found: error
+          path: artifacts/store-audit.json

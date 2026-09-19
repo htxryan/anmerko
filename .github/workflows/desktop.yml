@@ -1,0 +1,168 @@
+name: Desktop validation
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      chrome:
+        required: true
+        type: boolean
+      firefox:
+        required: true
+        type: boolean
+      source:
+        required: false
+        type: string
+      artifact-prefix:
+        required: false
+        type: string
+        default: anmerko
+      signed-xpi:
+        required: false
+        type: string
+jobs:
+  desktop:
+    name: Browser scenarios
+    # Defense in depth for callers outside the matrices while Windows is on hold (#58).
+    if: ${{ !cancelled() && !startsWith(inputs.os, 'windows-') }}
+    # Private, internal macOS jobs use the local VM. Public repositories and
+    # fork pull requests stay on the requested GitHub-hosted macOS runner.
+    # Branded Linux Chrome/Edge require hosted x64.
+    runs-on: ${{ fromJSON(startsWith(inputs.os, 'macos') && github.event.repository.private && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","macOS","ARM64","macbook-macos-vm"]' || format('["{0}"]', inputs.os)) }}
+    # The retained registrations share one VM. Queue its trusted macOS
+    # browser jobs across every reusable-workflow caller; other jobs remain
+    # unique per invocation and retain their normal parallelism.
+    concurrency:
+      group: ${{ startsWith(inputs.os, 'macos') && github.event.repository.private && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'anmerko-private-macos-vm-desktop' || format('desktop-{0}-{1}-{2}-{3}-{4}-{5}-{6}-{7}', github.run_id, github.run_attempt, inputs['artifact-prefix'], inputs.os, inputs.source || github.sha, inputs.chrome, inputs.firefox, inputs['signed-xpi']) }}
+      queue: max
+    timeout-minutes: 25
+    env:
+      SE_AVOID_STATS: 'true'
+    steps:
+      - name: Isolate downloaded test browsers on persistent runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        # Firefox can update a cached 142 installation in place. A fresh job
+        # cache preserves the requested version and leaves personal caches alone.
+        run: echo "SE_CACHE_PATH=$RUNNER_TEMP/selenium" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.source || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
+          package-manager-cache: false
+      - name: Read the signed candidate without modifying the source checkout
+        if: inputs.signed-xpi != ''
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-signed-input-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-signed
+      - name: Resolve signed candidate file
+        if: inputs.signed-xpi != ''
+        id: signed-file
+        shell: bash
+        run: |
+          node --input-type=module -e "import { readdirSync, appendFileSync } from 'node:fs'; import { join } from 'node:path'; const dir = join(process.env.RUNNER_TEMP, 'release-signed'); const files = readdirSync(dir); if (files.length !== 1 || !files[0].endsWith('.xpi')) throw Error('Expected one signed XPI'); appendFileSync(process.env.GITHUB_OUTPUT, 'path=' + join(dir, files[0]) + '\n');"
+      - run: npm ci
+        id: dependencies
+      - name: Build Chromium extension once for Chrome and Edge
+        if: inputs.chrome
+        id: chromium-build
+        run: npm run build
+      - name: Prepare stable Chromium browsers
+        if: inputs.chrome
+        id: edge-install
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != Linux ] && node --input-type=module -e "import { resolveBrowser } from './scripts/test-desktop.mjs'; console.log(resolveBrowser('edge'));"; then
+            echo 'Using the runner-provided stable Edge, as for Chrome. Tests record its actual version.'
+          else
+            # Runner-bundled Chromium channels can hang during extension startup.
+            npx playwright install --force chrome msedge
+          fi
+      - name: Test Chrome
+        if: ${{ !cancelled() && steps.chromium-build.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a npm run test:desktop -- --browser chrome
+          else
+            npm run test:desktop -- --browser chrome
+          fi
+      - name: Test Edge
+        if: ${{ !cancelled() && steps.chromium-build.outcome == 'success' && steps.edge-install.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a npm run test:desktop -- --browser edge
+          else
+            npm run test:desktop -- --browser edge
+          fi
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ always() && inputs.chrome }}
+        with:
+          name: ${{ inputs.artifact-prefix }}-desktop-chromium-${{ inputs.os }}
+          retention-days: 7
+          path: |
+            artifacts/desktop-chrome-*/
+            artifacts/desktop-edge-*/
+      - name: Build Firefox extension once for stable and minimum versions
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' && inputs.firefox }}
+        id: firefox-build
+        run: npm run build:firefox
+      # Keep running independent suites after a failure to preserve diagnostics.
+      # Any failed step still fails the job and both required aggregate checks.
+      - name: Test Firefox stable
+        if: ${{ !cancelled() && steps.firefox-build.outcome == 'success' }}
+        run: npm run test:firefox
+        env:
+          FIREFOX_VERSION: stable
+      - name: Preserve Firefox stable screenshots
+        if: ${{ !cancelled() && steps.firefox-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          mkdir -p artifacts/firefox-stable
+          for file in artifacts/*firefox*.png artifacts/firefox-example-prompt.md; do
+            if [ -f "$file" ]; then mv "$file" artifacts/firefox-stable/; fi
+          done
+      - name: Test Firefox 142.0
+        if: ${{ !cancelled() && steps.firefox-build.outcome == 'success' }}
+        run: npm run test:firefox
+        env:
+          FIREFOX_VERSION: '142.0'
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ always() && inputs.firefox }}
+        with:
+          name: ${{ inputs.artifact-prefix }}-desktop-firefox-${{ inputs.os }}
+          retention-days: 7
+          path: |
+            artifacts/desktop-firefox-*/
+            artifacts/firefox-stable/
+            artifacts/*firefox*.png
+            artifacts/firefox-example-prompt.md
+      - name: Test signed Firefox stable installation and upgrade
+        if: ${{ !cancelled() && inputs.signed-xpi != '' && steps.firefox-build.outcome == 'success' }}
+        run: npm run test:firefox
+        env:
+          FIREFOX_VERSION: stable
+          FIREFOX_XPI: ${{ steps.signed-file.outputs.path }}
+      - name: Test signed Firefox 142 installation and upgrade
+        if: ${{ !cancelled() && inputs.signed-xpi != '' && steps.firefox-build.outcome == 'success' }}
+        run: npm run test:firefox
+        env:
+          FIREFOX_VERSION: '142.0'
+          FIREFOX_XPI: ${{ steps.signed-file.outputs.path }}
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ always() && inputs.firefox }}
+        with:
+          # Signed-baseline reports have no candidate payload hashes; retain
+          # them separately so the unsigned payload gate only sees candidates.
+          name: ${{ inputs.artifact-prefix }}-signed-firefox-${{ inputs.os }}
+          retention-days: 7
+          path: artifacts/firefox-signed-*/

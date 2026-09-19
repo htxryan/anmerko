@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "anmerko",
+  "version": "0.5.3",
+  "description": "Attach comments to webpage elements and copy them as an AI prompt.",
+  "minimum_chrome_version": "142",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "clipboardWrite",
+    "sidePanel"
+  ],
+  "action": {
+    "default_title": "Annotate with anmerko"
+  },
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

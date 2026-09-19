@@ -1,0 +1,18 @@
+{
+  "_privacy": "Private publisher, product, team, and dashboard identifiers are supplied outside Git. Public listing and bundle identities are preserved.",
+  "chromeWebStore": {
+    "listingId": "oligkkknbmklalfnkipmheifammnpgpo",
+    "listingUrl": "https://chromewebstore.google.com/detail/anmerko/oligkkknbmklalfnkipmheifammnpgpo"
+  },
+  "mozillaAddOns": {
+    "addonId": "briefmark@briefmark.app",
+    "addonSlug": "anmerko",
+    "listingUrl": "https://addons.mozilla.org/en-US/firefox/addon/anmerko/",
+    "_verification": "Public 0.5.5 listing and Firefox desktop/Android compatibility verified from AMO on 19 September 2026. Native installation evidence is recorded separately."
+  },
+  "edgeAddOns": {
+    "listingId": "bfhobiphegcekelfokpcpeepoakkgcka",
+    "listingUrl": "https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka",
+    "storeId": "0RDCK9ZG102T"
+  }
+}

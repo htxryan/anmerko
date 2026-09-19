@@ -1,0 +1,49 @@
+---
+title: Install in Edge
+description: Install anmerko from Microsoft Edge Add-ons or use the approved manual download.
+---
+
+import Download from '../../../../components/Download.astro';
+
+Use current **Microsoft Edge on desktop or Android**. Edge on iOS is not supported.
+
+## Desktop: install from Microsoft Edge Add-ons
+
+1. Open [anmerko on Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka).
+2. Choose **Get**, then confirm **Add extension**.
+3. Show anmerko in the Extensions toolbar, open a regular website, and click it. [Add a comment](/docs/usage/) to confirm it works.
+
+The store manages updates. Export existing feedback before switching from an
+unpacked installation; browser-local data does not transfer automatically.
+
+## Android
+
+In current Edge for Android, open [anmerko on Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka) and follow the installation prompt. Open a regular HTTP(S) website and activate anmerko from Extensions. Use the floating comments panel to select an element, save feedback or capture a region.
+
+Desktop ZIPs and Load unpacked instructions below are **desktop-only**.
+
+## Manual alternative (desktop only)
+
+The download note below states the current approved build's installed name.
+
+### Download the bundle
+
+<Download browser="edge" />
+
+Chrome and Edge share this public ZIP.
+
+### Install manually
+
+1. Extract the ZIP into a permanent folder. Edge continues to load files from this folder, so keep it in place.
+2. Enter `edge://extensions` in the address bar and turn on **Developer mode**.
+3. Choose **Load unpacked**, then select the extracted folder containing `manifest.json`.
+4. Open Edge's Extensions menu and show the extension, using the installed name shown above, in the toolbar.
+5. Open a regular website, refresh it, and click the extension. [Add a comment](/docs/usage/) to confirm it works.
+
+Microsoft documents this flow as [sideloading an extension](https://learn.microsoft.com/en-us/microsoft-edge/extensions/getting-started/extension-sideloading).
+
+### Update a manual installation
+
+Download the newer approved bundle from this page. Save open drafts and replace the files in the **same extension folder**. At `edge://extensions`, click **Reload** on the extension's card and refresh your open websites.
+
+Keep the existing installation and browser profile during an ordinary update. Before changing folders, removing the extension, or switching to a store installation, [export your feedback](/docs/send-to-your-agent/); there is no automatic transfer or import.

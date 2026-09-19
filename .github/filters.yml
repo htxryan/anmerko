@@ -1,0 +1,129 @@
+# Shared toolchain and CI changes validate every target.
+common: &common
+  - '.github/workflows/check.yml'
+  - 'Taskfile.yml'
+  - '.github/workflows/desktop.yml'
+  - '.github/workflows/release.yml'
+  - '.github/workflows/release-validation.yml'
+  - 'scripts/ci-policy.mjs'
+  - 'scripts/runners/**'
+  - 'scripts/release-*.mjs'
+  - 'scripts/archive-release-candidate.mjs'
+  - '.github/filters.yml'
+  - '.github/actionlint.yaml'
+  - 'scripts/reuse-ci.mjs'
+  - 'package.json'
+  - 'package-lock.json'
+  - '.npmrc'
+  - '.gitattributes'
+
+# Both browsers share these build inputs. Installer approval is independent.
+extension: &extension
+  - *common
+  - 'src/**'
+  - 'public/**'
+  - 'scripts/build.mjs'
+  - 'scripts/build-version.mjs'
+  - 'scripts/browser-targets.mjs'
+  - 'scripts/package.mjs'
+  - 'tsconfig.json'
+
+lint:
+  - *common
+  - '**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx,astro,vue,svelte}'
+  - '**/tsconfig*.json'
+  - '.oxlintrc.json'
+  - '.oxlintignore'
+  - '.gitignore'
+
+chrome:
+  - *extension
+  - 'tests/**'
+  - 'tests-desktop/**'
+  - 'tests-shared/**'
+  - 'scripts/test-desktop.mjs'
+  - 'scripts/check-desktop-payloads.mjs'
+  - 'tests-dev/**'
+  # The installer suite also rebuilds Firefox's extracted review-source archive.
+  - 'scripts/package-firefox-source.mjs'
+  - 'playwright.config.ts'
+  - 'scripts/install-chrome.mjs'
+  - 'scripts/demo.mjs'
+  - 'demo/**'
+
+firefox:
+  - *extension
+  - 'tests-firefox/**'
+  - 'tests-shared/**'
+  - 'scripts/web-ext.mjs'
+  - 'scripts/sign-firefox.mjs'
+  - 'scripts/package-firefox-source.mjs'
+  - 'scripts/check-desktop-payloads.mjs'
+  - 'site/firefox-release.json'
+  - 'site/installers/*.xpi'
+  - 'demo/**'
+
+site:
+  - '.github/workflows/deploy.yml'
+  - *common
+  - 'releases/**'
+  - 'scripts/approved-release.mjs'
+  - 'scripts/verify-approved-release.mjs'
+  - 'scripts/deployment-eligibility.mjs'
+  - 'public/icons/128.png'
+  # The demo compiles the same UI components and styles as the extension.
+  - 'src/**'
+  # Published Markdown/MDX is compiled by Astro; repository docs need no build.
+  - 'site/**'
+  - 'store-site/**'
+  - 'scripts/build-store-site.mjs'
+  - 'playwright.site.config.ts'
+  - 'scripts/build-site.mjs'
+  - 'scripts/serve-site.mjs'
+  - 'scripts/verify-site-deployment.mjs'
+  - 'scripts/capture-deployment-state.mjs'
+  - 'tests-deployment/**'
+
+# These changes can affect browser integration or the release trust boundary.
+highrisk:
+  - *common
+  - 'public/**'
+  - 'src/platform.ts'
+  - 'src/background.ts'
+  - 'src/extension-*.ts'
+  - 'src/runtime.ts'
+  - 'src/sidebar*'
+  # Site, media and reporting helpers do not change browser behavior.
+  - 'scripts/build.mjs'
+  - 'scripts/build-version.mjs'
+  - 'scripts/browser-targets.mjs'
+  - 'scripts/package*.mjs'
+  - 'scripts/install-chrome.mjs'
+  - 'scripts/web-ext.mjs'
+  - 'scripts/sign-firefox.mjs'
+  - 'scripts/check-desktop-payloads.mjs'
+  - 'scripts/test-desktop.mjs'
+  - 'scripts/demo.mjs'
+  - 'scripts/build-release-demo.mjs'
+  - 'scripts/store-api.mjs'
+  - 'tests-shared/**'
+  - 'tests-desktop/**'
+  - 'tests-firefox/**'
+  - 'site/installers/**'
+  - 'site/firefox-release.json'
+  - 'releases/**'
+
+releasegate:
+  # These files decide whether proof runs and which attestation it accepts.
+  - '.github/workflows/check.yml'
+  - '.github/filters.yml'
+  - 'scripts/ci-policy.mjs'
+  - 'scripts/reuse-ci.mjs'
+  - '.github/workflows/release.yml'
+  - '.github/workflows/release-validation.yml'
+  - '.github/workflows/desktop.yml'
+  - 'scripts/release-*.mjs'
+  - 'scripts/archive-release-candidate.mjs'
+  - 'scripts/build-release-demo.mjs'
+  - 'scripts/check-desktop-payloads.mjs'
+  # Test-only edits run in Changed paths; they do not rebuild an old release.

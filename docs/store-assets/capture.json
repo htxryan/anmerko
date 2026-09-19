@@ -1,0 +1,34 @@
+{
+  "capturedAt": "2026-09-15T03:26:56.114Z",
+  "source": "78be4fef09ef8cb92fbe4f992806b2e0ddeaaf9f",
+  "extensionVersion": "0.5.3",
+  "browser": "Chrome/153.0.8010.36",
+  "website": "https://saladrecipefinder.com/",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "method": "Unpacked production Chrome manifest, activeTab action, shared floating UI, real screenshot capture; no UI substitutions.",
+  "captures": [
+    {
+      "file": "01-element-feedback.png",
+      "sha256": "f6be5bb6060eec91f696fe65ca38f0543e098b4f207a03108bad8fa9247481b0"
+    },
+    {
+      "file": "02-screenshot-feedback.png",
+      "sha256": "42f50216bdd72b1627eb6127e1cdb2fa075c82dc0f3fe052176c310bbfaf6c63"
+    },
+    {
+      "file": "03-global-comment.png",
+      "sha256": "1405e8673cc9b6593076c61c3202bf3bd9a85f4112e2b51d8a198fd2aa622df8"
+    },
+    {
+      "file": "04-prompt-export.png",
+      "sha256": "3738c999d22ec9312294a96dec77bc2b6b6e40a06e334f35584b4585ae8091d1"
+    },
+    {
+      "file": "05-settings.png",
+      "sha256": "b9819019c38fb3607a41efce27f1474c717efa761948a5a54e8ea65aed9d396a"
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+version: '3'
+tasks:
+  default:
+    cmds: [task --list]
+  setup:
+    desc: Install development dependencies and Chromium for tests
+    cmds: [npm ci, npx playwright install chromium]
+  runners:mac:start:
+    desc: Start the macOS runner VM
+    cmds: [scripts/runners/control.sh mac start]
+  runners:mac:stop:
+    desc: Stop the macOS runner VM (macOS jobs queue)
+    cmds: [scripts/runners/control.sh mac stop]
+  runners:linux:start:
+    desc: Start Linux runners and prefer them for future workflows
+    cmds: [scripts/runners/control.sh linux start]
+  runners:linux:stop:
+    desc: Stop Linux runners and use hosted Linux for future workflows
+    cmds: [scripts/runners/control.sh linux stop]
+  runners:start:
+    desc: Start all local runners
+    cmds: [scripts/runners/control.sh all start]
+  runners:stop:
+    desc: Stop all local runners
+    cmds: [scripts/runners/control.sh all stop]
+  build:
+    desc: Build the unpacked Chrome extension in dist/
+    cmds: [npm run build]
+  chrome:install:
+    desc: Build and update this checkout's existing anmerko installation in Chrome (macOS)
+    cmds: ['npm run chrome:install -- {{.CLI_ARGS}}']
+  check:
+    desc: Lint, typecheck, build, and run the extension and installer tests
+    cmds: [npm run check]
+  lint:
+    desc: Lint JavaScript, TypeScript, and Astro scripts
+    cmds: [npm run lint]
+  demo:
+    desc: Serve the local example website on port 4173
+    cmds: [npm run demo]
+  package:
+    desc: Build and zip the extension for local installation
+    cmds: [npm run package]
+  release:
+    desc: Start or resume the fully automated release from current main
+    cmds: ['npm run release -- {{.CLI_ARGS}}']
+  firefox:build:
+    desc: Build the Firefox and Android extension in dist-firefox/
+    cmds: [npm run build:firefox]
+  firefox:check:
+    desc: Build, validate, and test the production extension in Firefox
+    cmds: [npm run typecheck, npm run build:firefox, npm run lint:firefox, npm run test:firefox]
+  firefox:package:
+    desc: Create the unsigned Firefox package and Mozilla review source archive
+    cmds: [npm run package:firefox]
+  firefox:run:
+    desc: Temporarily load anmerko in desktop Firefox
+    deps: [firefox:build]
+    cmds: [npm run firefox:run]
+  firefox:android:
+    desc: Temporarily load anmerko on a connected Android device (ADB required)
+    deps: [firefox:build]
+    cmds: ['npm run firefox:android -- {{.CLI_ARGS}}']
+  firefox:sign:
+    desc: Submit an unlisted build to Mozilla and download a signed XPI (credentials required)
+    cmds: [npm run firefox:sign]
+  icons:
+    desc: Regenerate the extension icons with Chromium
+    cmds: [node scripts/icons.mjs]
+  site:build:
+    desc: Build website content with approved installer and demo bytes
+    cmds: [npm run site:build]
+  site:dev:
+    desc: Preview the brochure and documentation locally on port 4174
+    cmds: [npm run site:dev]
+  site:check:
+    desc: Verify the isolated support-site build
+    cmds: [npm run site:check]
+  site:test:
+    desc: Test site navigation, search, downloads, and responsive layouts
+    cmds: [npm run site:test]
+  site:deploy:
+    desc: Deploy local website output for separately authorized manual recovery
+    cmds: [npm run site:deploy]
