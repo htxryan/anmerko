@@ -38,7 +38,7 @@ export async function captureDeploymentState({
   if (!response.ok) throw new Error(`Previous approved manifest request failed (${response.status}) at ${manifestUrl}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   const manifest = JSON.parse(bytes.toString('utf8'));
-  if (manifest.schema !== 1 || !Number.isInteger(manifest.sequence)) throw new Error('Previous approved manifest has an invalid schema or sequence');
+  if (![1, 2].includes(manifest.schema) || !Number.isInteger(manifest.sequence)) throw new Error('Previous approved manifest has an invalid schema or sequence');
   await writeFile(`${outputDir}/previous-approved.json`, bytes);
   return { firstDeployment, manifestUrl };
 }

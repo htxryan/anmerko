@@ -17,35 +17,36 @@ test('new releases use the anmerko artifact family', () => {
   });
 });
 
-test('candidate archives preserve the filename family selected by state', () => {
-  const names = releaseArtifacts('0.5.4', 'briefmark');
+test('candidate archives retain the exact filenames committed by state', () => {
+  const names = releaseArtifacts('0.6.0');
   const files = Object.fromEntries(['chrome', 'listed', 'listedSource', 'web', 'webSource'].map(key => [names[key], 'a'.repeat(64)]));
-  assert.deepEqual(candidateArchiveFiles({ version: '0.5.4', files }), [
+  assert.deepEqual(candidateArchiveFiles({ version: '0.6.0', files }), [
     names.chrome, names.listed, names.listedSource, names.web, names.webSource, 'state-001.json',
   ]);
 });
 
-test('saved candidates resume exact old or new filenames and reject mixed Firefox files', () => {
-  const candidate = product => ({ version: '0.5.4', browsers: {
-    chrome: { filename: releaseArtifacts('0.5.4', product).chrome },
-    firefox: { filename: releaseArtifacts('0.5.4', product).listedXpi },
+test('saved candidates reject unknown products, mixed versions and wrong browser files', () => {
+  assert.throws(() => releaseArtifacts('0.6.0', 'retired-product'), /artifact family/);
+  const candidate = () => ({ version: '0.6.0', browsers: {
+    chrome: { filename: releaseArtifacts('0.6.0').chrome },
+    firefox: { filename: releaseArtifacts('0.6.0').listedXpi },
   } });
-  assert.equal(releaseArtifactsFromCandidate(candidate('briefmark')).product, 'briefmark');
-  assert.equal(releaseArtifactsFromCandidate(candidate('anmerko')).product, 'anmerko');
-  assert.equal(releaseArtifactsFromCandidate({ version: '0.5.4', browsers: {
-    firefox: { filename: releaseArtifacts('0.5.4', 'briefmark').listedXpi },
-  } }).product, 'briefmark');
-  const mixed = candidate('briefmark'); mixed.browsers.firefox.filename = releaseArtifacts('0.5.4').listedXpi;
-  assert.throws(() => releaseArtifactsFromCandidate(mixed), /exactly one/);
+  assert.equal(releaseArtifactsFromCandidate(candidate()).product, 'anmerko');
+  for (const filename of ['retired-product-0.6.0-firefox.xpi', releaseArtifacts('0.5.4').listedXpi,
+    releaseArtifacts('0.6.0').listed, releaseArtifacts('0.6.0').chrome]) {
+    const invalid = candidate(); invalid.browsers.firefox.filename = filename;
+    assert.throws(() => releaseArtifactsFromCandidate(invalid), /artifact family/);
+  }
 });
 
-test('resume selects only the artifact family committed by trusted state', () => {
-  const source = 'a'.repeat(64);
-  const state = (version, product) => ({ version, files: Object.fromEntries(
-    ['chrome', 'listed', 'listedSource', 'web', 'webSource'].map(key => [releaseArtifacts(version, product)[key], source])) });
-  assert.equal(releaseArtifactsFromState(state('0.5.4', 'briefmark')).product, 'briefmark');
-  assert.equal(releaseArtifactsFromState(state('0.6.0', 'anmerko')).product, 'anmerko');
-  assert.throws(() => releaseArtifactsFromState({ version: '0.6.0', files: {} }), /exactly one/);
-  const mixed = state('0.6.0', 'anmerko'); mixed.files['briefmark-0.6.0-firefox-source.zip'] = source;
-  assert.throws(() => releaseArtifactsFromState(mixed), /mixes old and new/);
+test('resume requires every current artifact and rejects foreign files', () => {
+  const names = releaseArtifacts('0.6.0');
+  const state = () => ({ version: '0.6.0', files: Object.fromEntries(
+    ['chrome', 'listed', 'listedSource', 'web', 'webSource'].map(key => [names[key], 'a'.repeat(64)])) });
+  assert.equal(releaseArtifactsFromState(state()).product, 'anmerko');
+  assert.throws(() => releaseArtifactsFromState({ version: '0.6.0', files: {} }), /artifact family/);
+  for (const filename of ['retired-product-0.6.0-firefox-source.zip', 'anmerko', '0.6.0']) {
+    const invalid = state(); invalid.files[filename] = 'a'.repeat(64);
+    assert.throws(() => releaseArtifactsFromState(invalid), /unknown artifact/);
+  }
 });

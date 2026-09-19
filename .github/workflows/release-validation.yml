@@ -111,7 +111,7 @@ jobs:
           run-id: ${{ inputs.candidate-run }}
           github-token: ${{ github.token }}
           path: artifacts/release-candidate
-      - name: Build candidate packages and demo evidence once
+      - name: Build candidate packages once
         env:
           RELEASE_SOURCE: ${{ needs.resolve.outputs.source }}
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}

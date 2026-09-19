@@ -49,12 +49,6 @@ for (const [browser, artifact] of Object.entries(candidate.browsers)) {
   next.browsers = { ...next.browsers, [browser]: { version: candidate.version, source: candidate.source,
     artifact: { filename: artifact.filename, sha256: artifact.sha256, location: `${url}/${artifact.filename}` } } };
 }
-next.demo = { version: candidate.version, source: candidate.source, entry: candidate.demo.entry, files: {} };
-for (const [route, artifact] of Object.entries(candidate.demo.files)) {
-  const path = join(directory, 'demo', artifact.file);
-  assert.equal(digest(await readFile(path)), artifact.sha256);
-  files.push(path); next.demo.files[route] = { location: `${url}/${artifact.file}`, sha256: artifact.sha256 };
-}
 validateManifest(next);
 await writeFile(join(directory, 'approved.json'), JSON.stringify(next, null, 2) + '\n');
 files.push(join(directory, 'approved.json'));
@@ -98,7 +92,7 @@ if (existing) {
 const prs = api(`pulls?state=all&head=htxryan:${branch}&base=main`);
 assert.ok(prs.length <= 1, 'Ambiguous promotion pull request');
 const pr = prs[0] || post('pulls', { base: 'main', head: branch, title: `Promote validated anmerko ${candidate.version}`,
-  body: `Promotes the exact packages and demo validated from ${candidate.source}.\n\nFull release validation: https://github.com/${repository}/actions/runs/${run.id}\n\nThe manifest records the previous release for rollback. Site CI and deployment verify approval and exact bytes again.\n` });
+  body: `Promotes the exact packages validated from ${candidate.source}.\n\nFull release validation: https://github.com/${repository}/actions/runs/${run.id}\n\nThe manifest records the previous release for rollback. Site CI and deployment verify approval and exact bytes again.\n` });
 assert.equal(pr.state, 'open', 'Promotion PR is closed; inspect it before retrying');
 console.log(pr.html_url);
 

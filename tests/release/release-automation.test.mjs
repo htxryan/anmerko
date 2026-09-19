@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import { activeTrustedCheck, candidateFingerprint, changesExtensionPayload, checkArtifactPrefix, requiredCheckJobs } from '../../scripts/release/release-automation.mjs';
 import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
-const inactive = active === 'htxryan/briefmark' ? 'htxryan/anmerko' : 'htxryan/briefmark';
+const inactive = 'htxryan/other';
 
 test('Check report prefix follows only the exact source package family', () => {
-  assert.equal(checkArtifactPrefix({ name: 'briefmark' }, '0.5.2'), 'briefmark');
+  assert.throws(() => checkArtifactPrefix({ name: 'retired-product' }, '0.5.2'), /artifact family/);
   assert.equal(checkArtifactPrefix({ name: 'anmerko' }, '0.5.5'), 'anmerko');
   assert.throws(() => checkArtifactPrefix({ name: 'other' }, '0.5.5'), /Unknown release artifact family/);
   assert.throws(() => checkArtifactPrefix({}, '0.5.5'), /package name is missing/);

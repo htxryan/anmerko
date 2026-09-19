@@ -26,9 +26,13 @@ export function validateArtifact(artifact) {
   if (artifact.filename !== undefined) assert.ok(safePath(artifact.filename) && !artifact.filename.includes('/'), 'Unsafe download filename');
 }
 export function validateManifest(manifest) {
-  assert.equal(manifest.schema, 1);
+  assert.equal(manifest.schema, 2);
+  const allowed = ['browsers', 'previous', 'schema', 'sequence', 'validation'];
+  if (manifest.rollback !== undefined) allowed.push('rollback');
+  assert.deepEqual(Object.keys(manifest).sort(), allowed.sort(), 'Approved manifest has unknown fields');
   assert.ok(Number.isSafeInteger(manifest.sequence) && manifest.sequence > 0);
   assert.ok(manifest.previous === null || /^[a-f0-9]{64}$/.test(manifest.previous));
+  assert.ok(manifest.validation && typeof manifest.validation.kind === 'string', 'Missing approval validation');
   assert.ok(manifest.browsers.chrome && manifest.browsers.firefox, 'Keep existing approved downloads');
   const filenames = new Set();
   for (const [browser, release] of Object.entries(manifest.browsers)) {
@@ -38,13 +42,6 @@ export function validateManifest(manifest) {
     assert.ok(release.artifact.filename && !filenames.has(release.artifact.filename), 'Missing or duplicate download filename');
     filenames.add(release.artifact.filename);
     validateArtifact(release.artifact);
-  }
-  assert.ok(isSource(manifest.demo.source));
-  assert.match(manifest.demo.version, /^\d+\.\d+\.\d+$/);
-  assert.ok(manifest.demo.files[manifest.demo.entry], 'Demo entry must be approved');
-  for (const [path, artifact] of Object.entries(manifest.demo.files)) {
-    assert.ok(path.startsWith('/_astro/') && safePath(path.slice(1)), 'Unsafe demo route');
-    validateArtifact(artifact);
   }
   return manifest;
 }
@@ -75,8 +72,8 @@ export async function artifactBytes(artifact, { root = '.', fetchImpl, execFileS
 }
 export async function copyApprovedDownloads(manifest, { root = '.', output = 'site/dist', fetchImpl } = {}) {
   validateManifest(manifest);
-  // Demo archives remain in historical release records. Astro builds the live
-  // demo from the shared UI source; approved downloads must never overwrite it.
+  // Astro builds the live demo from the current shared UI source. The approval
+  // manifest controls installer downloads only.
   const files = Object.values(manifest.browsers).map(release => [`/downloads/${release.artifact.filename}`, release.artifact]);
   // Verify every byte before modifying the destination.
   const verified = await Promise.all(files.map(async ([path, artifact]) => [path, await artifactBytes(artifact, { root, fetchImpl })]));

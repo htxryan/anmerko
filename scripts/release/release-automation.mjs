@@ -7,7 +7,7 @@ import { archivePayload, assertVersionedPackageReports, readReports } from './re
 import { artifactBytes, digest } from './approved-release.mjs';
 import { advanceReleaseState, assertTrustedCheck, compareVersions, firefoxWebsiteVersion, initialReleaseState, nextReleaseVersion, parseVersion, releaseDigest } from './release-state.mjs';
 import { activeRepository } from './release-repository.mjs';
-import { LEGACY_PRODUCT, releaseArtifacts } from './release-names.mjs';
+import { releaseArtifacts } from './release-names.mjs';
 
 const repository = activeRepository();
 const gh = args => execFileSync('gh', args, { encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
@@ -203,9 +203,7 @@ export async function resolveRelease({ api: apiCall = api, gh: ghCall = gh } = {
   } else {
     if (event !== 'workflow_dispatch') { output('run', 'false'); return; }
     const changed = apiCall(`compare/${approved.browsers.chrome.source}...${source}`).files || [];
-    const recoveryApproval = /^(chrome|firefox)-automated-recovery$/.test(approved.validation.kind)
-      && approved.browsers.chrome.version === packageJson.version;
-    const adopt = !changesExtensionPayload(changed) || recoveryApproval;
+    const adopt = !changesExtensionPayload(changed);
     if (adopt && approved.browsers.chrome.source === source && approved.browsers.firefox.source === source) {
       output('run', 'false');
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `No extension payload changes since the approved ${approved.browsers.chrome.version} release.\n`);
@@ -251,26 +249,13 @@ async function verifyCandidate() {
   const source = process.env.RELEASE_SOURCE, version = process.env.RELEASE_VERSION;
   const reports = await readReports('artifacts/check-reports');
   const testedVersion = JSON.parse(await readFile('package.json', 'utf8')).version;
-  const names = releaseArtifacts(version, process.env.ADOPT_EXISTING === 'true' ? LEGACY_PRODUCT : undefined);
+  const names = releaseArtifacts(version);
   const chromePath = join('artifacts', names.chrome);
   const firefoxPath = join('artifacts', names.web);
   if (process.env.ADOPT_EXISTING === 'true') {
     const approved = JSON.parse(await readFile('releases/approved.json', 'utf8'));
     assert.equal(approved.browsers.chrome.version, version, 'Adoption requires the approved Chrome version');
     await writeFile(chromePath, await artifactBytes(approved.browsers.chrome.artifact));
-    if (approved.validation.kind === 'firefox-automated-recovery' && version === '0.5.3') {
-      const recoveryFiles = {
-        'briefmark-0.5.3-firefox-unsigned.zip': '26b326565705fc6e6432e33c08c3bff2a61cd56082877dc5f428e57c9253efa1',
-        'briefmark-0.5.3-firefox-source.zip': '83f33cde2952cb13943feb15b43a18853df6b7f0e6c629ace9461d3cab1e0479',
-        'briefmark-0.5.3.1-firefox-unsigned.zip': approved.validation.unsignedSha256,
-        'briefmark-0.5.3.1-firefox-source.zip': approved.validation.sourceSha256,
-      };
-      for (const [name, sha256] of Object.entries(recoveryFiles)) {
-        const bytes = await readFile(join('releases/0-5-3', name));
-        assert.equal(digest(bytes), sha256, `Pinned Firefox recovery archive changed: ${name}`);
-        await writeFile(join('artifacts', name), bytes);
-      }
-    }
   }
   const chrome = archivePayload(chromePath), firefox = archivePayload(firefoxPath);
   assert.equal(JSON.parse(chrome['manifest.json']).version, version);

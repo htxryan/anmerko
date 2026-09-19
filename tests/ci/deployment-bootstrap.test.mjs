@@ -32,7 +32,7 @@ test('subsequent deployment records versions and requires the new-origin manifes
   const result = await captureDeploymentState({ outputDir, workers,
     newManifestUrl: 'https://anmerko.com/release-manifest.json',
     run: async () => ({ stdout: 'Version ID: known-good\n' }),
-    fetchImpl: async url => { assert.equal(url, 'https://anmerko.com/release-manifest.json'); return response({ schema: 1, sequence: 7 }); },
+    fetchImpl: async url => { assert.equal(url, 'https://anmerko.com/release-manifest.json'); return response({ schema: 2, sequence: 9 }); },
   });
   assert.equal(result.firstDeployment, false);
   assert.match(await readFile(join(outputDir, 'previous-support.txt'), 'utf8'), /known-good/);

@@ -63,8 +63,17 @@ export function assertSignedVariant(signed, unsigned, expectedVersion) {
   }
 }
 
+export function assertPromotionAuthor(user, appSlug = process.env.RELEASE_PR_APP_SLUG) {
+  const allowed = new Set(['github-actions[bot]']);
+  if (appSlug) {
+    assert.match(appSlug, /^[a-z0-9-]+$/, 'Invalid configured release App slug');
+    allowed.add(`${appSlug}[bot]`);
+  }
+  assert.ok(allowed.has(user?.login), 'Promotion PR has an unexpected author');
+}
+
 function assertOwnedPromotion(apiCall, pr, branch) {
-  assert.ok(['github-actions[bot]', 'briefmark-release-automation[bot]'].includes(pr.user?.login), 'Promotion PR has an unexpected author');
+  assertPromotionAuthor(pr.user);
   assert.equal(pr.head?.ref, branch); assert.equal(pr.head?.repo?.full_name, repository); assert.equal(pr.base?.ref, 'main');
   const head = apiCall(`git/ref/heads/${branch}`).object.sha;
   const commit = apiCall(`git/commits/${head}`); assert.equal(commit.parents.length, 1);

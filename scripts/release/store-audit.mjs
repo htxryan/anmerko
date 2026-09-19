@@ -11,7 +11,7 @@ const textAudit = value => {
   // AMO wraps outgoing links separately from their translations.
   if (value && typeof value === 'object' && Object.hasOwn(value, 'url')) value = value.url;
   const values = typeof value === 'string' ? [value] : Object.values(value || {}).filter(v => typeof v === 'string');
-  return { configured: values.some(Boolean), locales: typeof value === 'string' ? [] : localeKeys(value), legacyBrand: values.some(v => /briefmark/i.test(v)), canonicalOrigin: values.some(v => v.includes('https://anmerko.com')), currentNameOnly: values.length > 0 && values.every(v => v === 'anmerko') };
+  return { configured: values.some(Boolean), locales: typeof value === 'string' ? [] : localeKeys(value), canonicalOrigin: values.some(v => v.includes('https://anmerko.com')), currentNameMentioned: values.some(v => /\banmerko\b/i.test(v)), currentNameOnly: values.length > 0 && values.every(v => v === 'anmerko') };
 };
 const pickEnum = (value, allowed) => allowed.includes(value) ? value : null;
 const boolean = value => typeof value === 'boolean' ? value : null;
@@ -70,7 +70,7 @@ export async function auditAmo({ fetch = globalThis.fetch, jwt, addonId, maxPage
     identityPreserved: true, defaultLocale: localeKeys({ [addon.default_locale]: true })[0] || null,
     authorEndpointAccessConfirmed: true,
     authorRoles: { owners: authors.filter(value => value.role === 'owner').length, developers: authors.filter(value => value.role === 'developer').length },
-    slug: pickEnum(addon.slug, ['briefmark', 'anmerko']),
+    slugConfigured: typeof addon.slug === 'string' && addon.slug.length > 0, slugCurrent: addon.slug === 'anmerko',
     status: pickEnum(addon.status, ['public', 'deleted', 'disabled', 'rejected', 'nominated', 'incomplete']),
     disabled: boolean(addon.is_disabled),
     fields: Object.fromEntries(['name', 'summary', 'description', 'homepage', 'support_url', 'developer_comments'].map(key => [key, textAudit(addon[key])])),

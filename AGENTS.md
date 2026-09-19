@@ -2,7 +2,7 @@
 
 [anmerko](README.md) is a website feedback extension targeting Chrome, Edge, and Firefox on desktop, plus Edge and Firefox for Android, with an Astro/Starlight documentation site.
 
-The live product name is lowercase `anmerko`; its canonical origin and repository are `https://anmerko.com` and `htxryan/anmerko`. The prelaunch preview had zero real users, so legacy data migration and preview-to-store transition testing are not release requirements. Preserve registered store identities, signed installer bytes, and verifiable release records. Keep the working published support contact `support@briefmark.app` until a tested replacement is approved. Public release uses a freshly audited snapshot in a new independent repository; keep the original repository and its history private.
+The live product name is lowercase `anmerko`; its canonical origin and repository are `https://anmerko.com` and `htxryan/anmerko`. The prelaunch preview had zero real users, so legacy data migration and preview-to-store transition testing are not release requirements. Preserve registered store identities, signed installer bytes, and verifiable release records. Manage support mailbox configuration outside Git and verify delivery before changing store contact fields. Public release uses a freshly audited snapshot in a new independent repository; keep the original repository and its history private.
 
 Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and queries; do not reinstate archive compatibility or observation gates. Store publication and supported-platform installation must be verified before activating channel CTAs.
 

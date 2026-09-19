@@ -90,7 +90,7 @@ test('real release drivers resume a lost first button, publish through Deploy, a
       stores: { chrome: 'pending-review', firefox: 'pending-review' }, promotion, complete: false };
     let stage = 'merge', prRunState = 'success';
     const promotionApi = path => {
-      if (path === 'pulls/62') return stage === 'merge' ? { state: 'open', user: { login: 'briefmark-release-automation[bot]' },
+      if (path === 'pulls/62') return stage === 'merge' ? { state: 'open', user: { login: 'github-actions[bot]' },
         head: { ref: promotion.branch, repo: { full_name: activeRepositoryName } }, base: { ref: 'main' } }
         : { state: 'closed', merged_at: '2026-09-14T01:00:00Z' };
       if (path === 'actions/runs/700') return { status: 'completed', conclusion: 'success' };
@@ -211,7 +211,7 @@ test('real release drivers resume a lost first button, publish through Deploy, a
       if (path.startsWith('contents/releases/approved.json')) return content(approvedSamePayload);
       if (path.startsWith('contents/package.json')) return content({ name: 'anmerko', version: '0.5.4' });
       if (path === 'releases?per_page=100') return [{ ...pending, draft: false, prerelease: false,
-        name: 'Briefmark 0.5.4 automated release', assets: [{ name: 'state-004.json' }] }];
+        name: 'anmerko 0.5.4 automated release', assets: [{ name: 'state-004.json' }] }];
       if (path.startsWith('compare/')) return { files: [] };
       assert.fail(`Unexpected no-op API call: ${path}`);
     };

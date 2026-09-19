@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { digest, isSource } from './approved-release.mjs';
 import { desktopScenarios } from '../../tests/shared/desktop-scenarios.mjs';
 import { requiredOperatingSystems } from '../ci/ci-policy.mjs';
-import { activeRepository, HISTORICAL_REPOSITORIES } from './release-repository.mjs';
+import { activeRepository, RELEASE_REPOSITORIES } from './release-repository.mjs';
 
 export function assertFastEvidence(run, source, repository = activeRepository()) {
   assert.ok(isSource(source), 'Source must be an immutable commit');
@@ -17,7 +17,7 @@ export function assertFastEvidence(run, source, repository = activeRepository())
 }
 export function assertMainAttestation(record, run, source, version) {
   assert.equal(record.schema, 2);
-  assert.ok(HISTORICAL_REPOSITORIES.includes(record.repository), 'Release evidence has an unexpected repository');
+  assert.ok(RELEASE_REPOSITORIES.includes(record.repository), 'Release evidence has an unexpected repository');
   assert.equal(record.sha, source);
   assert.equal(record.runId, run.id); assert.equal(record.runAttempt, run.run_attempt);
   assert.equal(record.event, run.event); assert.equal(record.ref, 'refs/heads/main');
@@ -86,12 +86,13 @@ export function assertReleaseEvidence(candidate) {
   }
 }
 export function assertPromotion(current, next, rollback) {
+  assert.equal(next.schema, 2, 'Approved promotions require schema 2');
   assert.equal(next.sequence, current.sequence + 1, 'Invalid release sequence');
   assert.equal(next.previous, digest(JSON.stringify(current)), 'Stale previous approved manifest');
   if (next.rollback) {
     assert.ok(rollback, 'Missing approved rollback target');
     assert.deepEqual(next.browsers, rollback.browsers, 'Invalid rollback installers');
-    assert.deepEqual(next.demo, rollback.demo, 'Invalid rollback demo');
+    assert.equal(rollback.schema, 2, 'Rollback target must use schema 2');
   }
 }
 

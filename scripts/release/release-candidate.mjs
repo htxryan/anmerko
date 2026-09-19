@@ -6,7 +6,6 @@ import { resolve, join } from 'node:path';
 import { digest, isSource } from './approved-release.mjs';
 import { assertFastEvidence, assertMainAttestation, assertReleaseEvidence, selectEvidenceSource, verifyFastEvidence } from './release-gate.mjs';
 import { archivePayload, assertPackageReports, assertSignedFirefox, readReports } from './release-artifacts.mjs';
-import { buildReleaseDemo } from '../site/build-release-demo.mjs';
 import { workflowVersion } from '../ci/ci-policy.mjs';
 import { findReusableCheck, readSource } from '../ci/reuse-ci.mjs';
 import { activeRepository } from './release-repository.mjs';
@@ -140,7 +139,6 @@ async function prepare() {
     browsers[browser] = { filename, sha256: digest(await readFile(join(directory, filename))) };
   }
   const approved = await json('releases/approved.json');
-  const demo = previousCandidate?.demo || await buildReleaseDemo(root, join(directory, 'demo'));
   if (previousCandidate) assert.equal(previousCandidate.previous, digest(JSON.stringify(approved)), 'Stale saved candidate');
   let manual = null;
   if (process.env.MANUAL_EVIDENCE) {
@@ -152,7 +150,7 @@ async function prepare() {
   }
   const record = { schema: 1, source, version, scope: 'full', workflowVersion: workflowVersion(),
     fastRun: Number(process.env.FAST_RUN), previous: digest(JSON.stringify(approved)),
-    requestedBrowsers: selected, browsers, demo, manual };
+    requestedBrowsers: selected, browsers, manual };
   await writeFile(join(directory, 'candidate.json'), JSON.stringify(record, null, 2) + '\n');
 }
 
@@ -178,7 +176,6 @@ async function verify() {
     } else assert.deepEqual(archivePayload(file), chromium);
     candidate.automated.packages[browser] = artifact.sha256;
   }
-  for (const artifact of Object.values(candidate.demo.files)) assert.equal(digest(await readFile(join(directory, 'demo', artifact.file))), artifact.sha256);
   let eligible = true, reason;
   try {
     assert.deepEqual(Object.keys(candidate.browsers).sort(), candidate.requestedBrowsers.toSorted(), 'Missing requested signed package');

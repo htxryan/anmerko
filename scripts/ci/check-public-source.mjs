@@ -3,7 +3,6 @@ import { lstat, readFile, readlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const allowedEmails = new Set([
-  'support@briefmark.app',
   'briefmark@briefmark.app',
 ]);
 const exampleEmailDomains = new Set(['example.com', 'example.net', 'example.org', 'invalid', 'test']);

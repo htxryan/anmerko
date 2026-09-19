@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { advanceReleaseState, assertTrustedCheck, chooseRelease, firefoxWebsiteVersion, initialReleaseState, nextReleaseVersion, shouldResume } from '../../scripts/release/release-state.mjs';
 import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
-const inactive = active === 'htxryan/briefmark' ? 'htxryan/anmerko' : 'htxryan/briefmark';
+const inactive = 'htxryan/other';
 
 test('selects a new patch above package, approved, and store families', () => {
   assert.equal(nextReleaseVersion({ packageVersion: '0.5.3', approvedVersions: ['0.5.2'], storeVersions: [] }), '0.5.3');

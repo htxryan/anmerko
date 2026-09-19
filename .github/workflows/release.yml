@@ -153,6 +153,7 @@ jobs:
           WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
           RELEASE_PR_TOKEN: ${{ steps.release-app.outputs.token }}
+          RELEASE_PR_APP_SLUG: ${{ steps.release-app.outputs.app-slug }}
         run: node scripts/release/release-deliver.mjs
       - name: Retain promotion evidence in its authorizing run
         if: steps.release.outputs.ready == 'true'

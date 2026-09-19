@@ -9,7 +9,7 @@ import { digest } from '../../scripts/release/approved-release.mjs';
 import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const source = 'a'.repeat(40), hash = 'b'.repeat(64);
 const active = activeRepository();
-const inactive = active === 'htxryan/briefmark' ? 'htxryan/anmerko' : 'htxryan/briefmark';
+const inactive = 'htxryan/other';
 function candidate() {
   return { schema: 1, source, scope: 'full', workflowVersion: hash, version: '1.0.0', previous: hash,
     browsers: { chrome: { sha256: hash } },
@@ -51,12 +51,12 @@ test('fast source evidence must be completed, successful and from trusted main C
   assert.throws(() => assertFastEvidence(run, source, inactive));
 });
 test('promotion serializes on previous manifest and rollback must restore an approved manifest', () => {
-  const current = { sequence: 3, browsers: { chrome: 'current' }, demo: 'current demo' };
-  const next = { sequence: 4, previous: digest(JSON.stringify(current)), browsers: { chrome: 'new' }, demo: 'new demo' };
+  const current = { schema: 2, sequence: 3, browsers: { chrome: 'current' } };
+  const next = { schema: 2, sequence: 4, previous: digest(JSON.stringify(current)), browsers: { chrome: 'new' } };
   assert.doesNotThrow(() => assertPromotion(current, next));
   assert.throws(() => assertPromotion({ ...current, sequence: 4 }, next), /stale|sequence/);
   assert.throws(() => assertPromotion(current, { ...next, sequence: 3 }), /sequence/);
-  const approved = { browsers: { chrome: 'old' }, demo: 'old demo' };
+  const approved = { schema: 2, browsers: { chrome: 'old' } };
   assert.throws(() => assertPromotion(current, { ...next, rollback: 'old' }, approved), /rollback/);
   assert.doesNotThrow(() => assertPromotion(current, { ...next, ...approved, rollback: 'old' }, approved));
 });
@@ -64,7 +64,7 @@ test('promotion serializes on previous manifest and rollback must restore an app
 test('direct main checks must carry the current schema, scope and policy fingerprint', async () => {
   const { assertMainAttestation } = await import('../../scripts/release/release-gate.mjs');
   const run = { id: 123, run_attempt: 1, event: 'push' };
-  const record = { schema: 2, repository: 'htxryan/briefmark', sha: source, scope: 'fast', workflowVersion: hash,
+  const record = { schema: 2, repository: active, sha: source, scope: 'fast', workflowVersion: hash,
     runId: 123, runAttempt: 1, event: 'push', ref: 'refs/heads/main' };
   assert.doesNotThrow(() => assertMainAttestation(record, run, source, hash));
   assert.doesNotThrow(() => assertMainAttestation({ ...record, repository: 'htxryan/anmerko' }, run, source, hash));

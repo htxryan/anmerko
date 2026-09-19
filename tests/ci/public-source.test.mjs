@@ -46,7 +46,6 @@ test('public-source scan catches an account object without exposing its identifi
 
 test('public-source scan permits documented public identities and generic examples', () => {
   const source = [
-    ['support', 'briefmark.app'].join('@'),
     ['briefmark', 'briefmark.app'].join('@'),
     ['person', 'example.com'].join('@'),
     ['', 'home', 'runner', 'work'].join('/'),

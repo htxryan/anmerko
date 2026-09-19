@@ -4,10 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertSignedVariant, chromeReviewState, firefoxReviewNotes, promotableCheck, successfulDeploy } from '../../scripts/release/release-deliver.mjs';
-import { HISTORICAL_REPOSITORIES, activeRepository } from '../../scripts/release/release-repository.mjs';
+import { assertPromotionAuthor, assertSignedVariant, chromeReviewState, firefoxReviewNotes, promotableCheck, successfulDeploy } from '../../scripts/release/release-deliver.mjs';
+import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
-const inactive = HISTORICAL_REPOSITORIES.find(repository => repository !== active);
+const inactive = 'htxryan/other';
 
 test('Firefox reviewer instructions match each exact submitted version and source archive', () => {
   for (const version of ['0.5.5', '0.5.5.1']) {
@@ -80,4 +80,14 @@ test('private account identifiers come from the production environment', async (
   assert.match(deploy, /\[ -z "\$CLOUDFLARE_ACCOUNT_ID" \]/);
   const controller = await readFile('scripts/release/release-deliver.mjs', 'utf8');
   assert.match(controller, /publisherId: process\.env\.CWS_PUBLISHER_ID/);
+});
+
+
+test('promotion authors match the authenticated release App or built-in Actions identity', () => {
+  assert.doesNotThrow(() => assertPromotionAuthor({ login: 'anmerko-release[bot]' }, 'anmerko-release'));
+  assert.doesNotThrow(() => assertPromotionAuthor({ login: 'github-actions[bot]' }, 'anmerko-release'));
+  assert.throws(() => assertPromotionAuthor({ login: 'other[bot]' }, 'anmerko-release'), /unexpected author/);
+  assert.throws(() => assertPromotionAuthor({ login: 'anmerko-release' }, 'anmerko-release'), /unexpected author/);
+  assert.throws(() => assertPromotionAuthor({ login: 'anmerko-release[bot]' }, ''), /unexpected author/);
+  assert.throws(() => assertPromotionAuthor({ login: 'anmerko-release[bot]' }, 'anmerko-release[bot]'), /Invalid/);
 });

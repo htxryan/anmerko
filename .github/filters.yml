@@ -106,7 +106,6 @@ highrisk:
   - 'scripts/browsers/check-desktop-payloads.mjs'
   - 'scripts/browsers/test-desktop.mjs'
   - 'scripts/browsers/demo.mjs'
-  - 'scripts/site/build-release-demo.mjs'
   - 'scripts/release/store-api.mjs'
   - 'tests/shared/**'
   - 'tests/desktop/**'
@@ -127,6 +126,5 @@ releasegate:
   - '.github/workflows/desktop.yml'
   - 'scripts/release/release-*.mjs'
   - 'scripts/release/archive-release-candidate.mjs'
-  - 'scripts/site/build-release-demo.mjs'
   - 'scripts/browsers/check-desktop-payloads.mjs'
   # Test-only edits run in Changed paths; they do not rebuild an old release.

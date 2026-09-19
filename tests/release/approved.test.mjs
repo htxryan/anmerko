@@ -7,11 +7,10 @@ import { artifactBytes, copyApprovedDownloads, digest, findReleaseByTag, validat
 
 const source = 'a'.repeat(40);
 function manifest() {
-  return { schema: 1, sequence: 1, previous: null,
+  return { schema: 2, sequence: 1, previous: null, validation: { kind: 'release' },
     browsers: Object.fromEntries(['chrome', 'firefox'].map((name, index) => [name, {
       version: `0.5.${index}`, source, artifact: { location: `releases/${name}.zip`, filename: `${name}.zip`, sha256: digest(name) },
-    }])), demo: { version: '0.5.0', source, entry: '/_astro/demo.js',
-      files: { '/_astro/demo.js': { location: 'releases/demo.js', sha256: digest('approved demo') } } },
+    }])),
   };
 }
 test('site builds copy exact approved installers without loading or replacing the current demo', async t => {
@@ -33,27 +32,27 @@ test('site builds copy exact approved installers without loading or replacing th
 });
 test('rejects malformed identity, unsafe artifact paths and unpinned remote locations', () => {
   for (const mutate of [m => { m.browsers.chrome.source = 'main'; }, m => { m.browsers.chrome.artifact.filename = '../escape'; },
-    m => { m.demo.entry = '/outside.js'; }, m => { m.browsers.chrome.artifact.location = '../escape'; },
+    m => { m.demo = {}; }, m => { m.extra = true; }, m => { m.browsers.chrome.artifact.location = '../escape'; },
     m => { m.browsers.chrome.artifact.location = 'https://evil.example/file'; }, m => { m.browsers.chrome.artifact.sha256 = ''; }]) {
     const m = manifest(); mutate(m); assert.throws(() => validateManifest(m));
   }
 });
 test('accepts pinned release assets from the historical and renamed repositories only', () => {
-  for (const repository of ['briefmark', 'anmerko']) {
+  for (const repository of ['anmerko']) {
     const m = manifest();
-    m.browsers.chrome.artifact.location = `https://github.com/htxryan/${repository}/releases/download/automation-0-5-4-source/briefmark-0.5.4.zip`;
+    m.browsers.chrome.artifact.location = `https://github.com/htxryan/${repository}/releases/download/automation-0-5-4-source/anmerko-0.5.4.zip`;
     assert.equal(validateManifest(m), m);
   }
 
   for (const location of [
-    'https://github.com/someone/briefmark/releases/download/automation-0-5-4-source/briefmark-0.5.4.zip',
-    'https://github.com/htxryan/other/releases/download/automation-0-5-4-source/briefmark-0.5.4.zip',
-    'https://example.com/htxryan/anmerko/releases/download/automation-0-5-4-source/briefmark-0.5.4.zip',
-    'https://github.com/htxryan/anmerko/releases/download/../briefmark-0.5.4.zip',
-    'https://github.com/htxryan/anmerko/releases/download/%2e%2e/briefmark-0.5.4.zip',
+    'https://github.com/someone/anmerko/releases/download/automation-0-5-4-source/anmerko-0.5.4.zip',
+    'https://github.com/htxryan/other/releases/download/automation-0-5-4-source/anmerko-0.5.4.zip',
+    'https://example.com/htxryan/anmerko/releases/download/automation-0-5-4-source/anmerko-0.5.4.zip',
+    'https://github.com/htxryan/anmerko/releases/download/../anmerko-0.5.4.zip',
+    'https://github.com/htxryan/anmerko/releases/download/%2e%2e/anmerko-0.5.4.zip',
     'https://github.com/htxryan/anmerko/releases/download/automation-0-5-4-source/%2e%2e%2fsecret',
-    'https://github.com/htxryan/briefmark/releases/download/automation-0-5-4-source/.',
-    'https://github.com/htxryan/briefmark/releases/download/automation-0-5-4-source/..',
+    'https://github.com/htxryan/anmerko/releases/download/automation-0-5-4-source/.',
+    'https://github.com/htxryan/anmerko/releases/download/automation-0-5-4-source/..',
     'https://github.com/htxryan/anmerko/releases/download/automation-0-5-4-source/.',
     'https://github.com/htxryan/anmerko/releases/download/automation-0-5-4-source/..',
     'https://github.com/htxryan/anmerko/releases/download/automation-0-5-4-source/anmerko-0.5.4.zip\n',
