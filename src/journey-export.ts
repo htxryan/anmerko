@@ -101,7 +101,7 @@ function pushImage(lines: string[], manifest: JourneyManifestV1, step: JourneySt
 
 export function journeyImageFilename(journeyId: string, imageId: string): string {
   if (!validId(journeyId) || !validId(imageId)) throw new TypeError('Journey image IDs are invalid.');
-  return `journey-${journeyId}-image-${imageId}.png`;
+  return `journey-${journeyId.length}-${journeyId}-image-${imageId.length}-${imageId}.png`;
 }
 
 export function formatJourneyMarkdown(manifest: JourneyManifestV1, index = 1): string {
@@ -125,6 +125,7 @@ export function formatJourneyMarkdown(manifest: JourneyManifestV1, index = 1): s
 
   for (const step of reviewed.steps) {
     lines.push(`### Step ${step.seq} · ${stepKind(step)} · ${relativeTime(step.elapsedMs)}`, '',
+      `Step ID: ${inlineCode(step.id)}`,
       `Kind: ${inlineCode(step.kind)}`,
       `Observed at: ${inlineCode(step.observedAt)}`);
     pushReviewedText(lines, 'Source URL', step.sourceUrl);

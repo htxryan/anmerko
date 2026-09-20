@@ -94,12 +94,15 @@ test('preserves full URL text, step order, sequence gaps, and explicit image sta
 
 test('uses one deterministic image filename per identity across shared references', () => {
   const markdown = formatJourneyMarkdown(manifest());
-  const shared = 'journey-J1-image-I2.png';
+  const shared = 'journey-2-J1-image-2-I2.png';
 
   expect(journeyImageFilename('J1', 'I2')).toBe(shared);
-  expect(markdown.match(new RegExp(shared, 'g'))).toHaveLength(2);
+  expect(markdown.split(shared)).toHaveLength(3);
   expect(markdown).toContain('Shared navigation result: Yes');
-  expect(markdown).not.toContain('journey-J1-image-S2.png');
+  expect(markdown).not.toContain('journey-2-J1-image-2-S2.png');
+  expect(journeyImageFilename('a-image-b', 'c')).not.toBe(journeyImageFilename('a', 'b-image-c'));
+  expect(journeyImageFilename('a-image-b', 'c')).toBe('journey-9-a-image-b-image-1-c.png');
+  expect(journeyImageFilename('a', 'b-image-c')).toBe('journey-1-a-image-9-b-image-c.png');
   for (const invalid of ['', '../private', 'https://example.com/x', 'a/b', `x${'y'.repeat(128)}`]) {
     expect(() => journeyImageFilename(invalid, 'I2')).toThrow(TypeError);
     expect(() => journeyImageFilename('J1', invalid)).toThrow(TypeError);
@@ -118,6 +121,24 @@ test('renders reviewed value and redaction metadata without omitting retained el
   expect(markdown).toContain('Image redacted: Yes');
   expect(markdown).toContain('Stop reason: `user`');
   expect(markdown).toContain('Animated content may be intermediate.');
+
+  const selection = manifest();
+  const selectionStep = selection.steps.find(step => step.kind === 'field-change');
+  if (!selectionStep || selectionStep.kind !== 'field-change') throw new Error('missing field fixture');
+  selectionStep.enteredValue = {
+    kind: 'selection', values: [reviewed('Large'), reviewed('Green', true, false)],
+    multiple: true, truncated: true,
+  };
+  const selectionMarkdown = formatJourneyMarkdown(selection);
+  expect(selectionMarkdown).toContain('Entered selection allows multiple: Yes');
+  expect(selectionMarkdown).toContain('Entered selection truncated: Yes');
+  expect(selectionMarkdown).toContain('Entered selection value 2 review: Edited: Yes · Redacted: No');
+
+  const checked = manifest();
+  const checkedStep = checked.steps.find(step => step.kind === 'field-change');
+  if (!checkedStep || checkedStep.kind !== 'field-change') throw new Error('missing field fixture');
+  checkedStep.enteredValue = { kind: 'checked', checked: true };
+  expect(formatJourneyMarkdown(checked)).toContain('Entered checked state: Yes');
 
   const valuesOff = manifest();
   valuesOff.includeEnteredValues = false;
@@ -141,4 +162,15 @@ test('contains malicious Markdown, HTML, and fence runs as literal text', () => 
   expect(markdown).toContain('<img src=x onerror=alert(1)>');
   expect(markdown).not.toContain('Expected: [');
   expect(markdown).toContain('Target label:\n```\n](`javascript:alert(1)`)\n# target\n```');
+});
+
+test('emits immutable step IDs so shared navigation correlation is resolvable', () => {
+  const markdown = formatJourneyMarkdown(manifest());
+  const click = markdown.indexOf('Step ID: `S2`');
+  const navigation = markdown.indexOf('Step ID: `S3`');
+  const cause = markdown.indexOf('Caused by step ID: `S2`');
+
+  expect(click).toBeGreaterThan(-1);
+  expect(navigation).toBeGreaterThan(click);
+  expect(cause).toBeGreaterThan(navigation);
 });
