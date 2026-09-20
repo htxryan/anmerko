@@ -17,7 +17,7 @@ Write your feedback and choose **Save**, or press **Ctrl/⌘ + Enter**. A draft 
 
 ## Manage comments
 
-Click a numbered page marker to edit its comment. Hover over a comment card or focus it with the keyboard to reveal **Locate**, **Edit**, and **Delete**. **Locate** returns to an inline element or screenshot region when it is still available. Global comments have no target to locate.
+Click a numbered page marker to edit its comment. Hover over a comment card or focus it with the keyboard to reveal **Edit** and **Delete**. For inline and screenshot comments, **Locate** returns to the saved target when it is still available.
 
 [Settings](/docs/settings/#preferences) controls confirmation for deleting individual comments. **Delete All Comments** applies to the selected **This page** or **All pages** scope and always asks for confirmation.
 

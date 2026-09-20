@@ -183,25 +183,33 @@ test('desktop and mobile choices can be switched without losing keyboard navigat
   await switchToMobile.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('tablist')).toHaveAccessibleName('Choose your mobile browser');
-  await expect(page.getByRole('tab')).toHaveCount(2);
-  await expect(page.getByRole('tab', { name: 'Edge', exact: true })).toBeFocused();
+  await expect(page.getByRole('tab')).toHaveCount(3);
+  const edge = page.getByRole('tab', { name: 'Edge', exact: true });
+  await expect(edge).toBeFocused();
+  await expect(edge).toHaveAccessibleDescription('Android / iPhone');
+  const edgePanel = page.getByRole('tabpanel', { name: 'Edge' });
+  await expect(edgePanel).toContainText('Microsoft Edge for Android');
+  await expect(edgePanel.getByRole('link', { name: 'Install on Android', exact: true })).toHaveAttribute('href', 'https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka');
+  await expect(edgePanel).toContainText('Microsoft Edge for iPhone');
+  await expect(edgePanel.getByRole('link', { name: 'Install on iPhone', exact: true })).toHaveAttribute('href', '/docs/install/edge-iphone/');
   await expect(page.getByRole('link', { name: 'Chrome Web Store', exact: true })).toBeHidden();
-  for (const [name, href, requirements] of [
-    ['Firefox', 'https://addons.mozilla.org/en-US/firefox/addon/anmerko/', 'Firefox for Android 142 or later. Not available on iOS.'],
+  for (const [name, os, label, href, requirements] of [
+    ['Firefox', 'Android', 'Firefox Add-ons', 'https://addons.mozilla.org/en-US/firefox/addon/anmerko/', 'Firefox for Android 142 or later. Not available on iOS.'],
+    ['Orion', 'iPhone', 'Install in Orion', '/docs/install/orion-iphone/', 'Orion on iPhone'],
   ]) {
     const tab = page.getByRole('tab', { name, exact: true });
     await tab.click();
-    await expect(tab).toHaveAccessibleDescription('Android');
+    await expect(tab).toHaveAccessibleDescription(os);
     await expect(tab.getByText('SOON', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('tabpanel')).toHaveAccessibleName(name);
     await expect(page.getByRole('tabpanel')).toContainText(requirements);
-    await expect(page.getByRole('tabpanel').getByRole('link', { name: 'Firefox Add-ons', exact: true })).toHaveAttribute('href', href);
+    await expect(page.getByRole('tabpanel').getByRole('link', { name: label, exact: true })).toHaveAttribute('href', href);
     await expect(page.getByRole('link', { name: 'Download manually', exact: true })).toBeVisible();
   }
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tab', { name: 'Edge', exact: true })).toBeFocused();
   await page.keyboard.press('ArrowLeft');
-  await expect(page.getByRole('tab', { name: 'Firefox', exact: true })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Orion', exact: true })).toBeFocused();
   await page.getByRole('button', { name: 'Install for desktop browsers', exact: true }).click();
   await expect(page.getByRole('tab')).toHaveCount(3);
   await expect(page.getByRole('tab', { name: 'Edge', exact: true })).toBeFocused();
@@ -209,13 +217,22 @@ test('desktop and mobile choices can be switched without losing keyboard navigat
   // Resizing is not a device change and must not override the visitor's explicit choice.
   await page.setViewportSize({ width: 320, height: 844 });
   await expect(page.getByRole('tablist')).toHaveAccessibleName('Choose your desktop browser');
+  await page.getByRole('button', { name: 'Install for mobile browsers', exact: true }).click();
+  await page.getByRole('tab', { name: 'Orion', exact: true }).click();
+  await page.getByRole('tabpanel').getByRole('link', { name: 'Install in Orion', exact: true }).click();
+  await expect(page).toHaveURL(/\/docs\/install\/orion-iphone\/$/);
+  await expect(page.getByRole('heading', { name: 'Orion on iPhone', exact: true })).toBeVisible();
 });
 
 test('phones and tablets start on mobile choices, while touch laptops remain on desktop', async ({ browser }) => {
   const errors: string[] = [];
+  const iphone = devices['iPhone 13'];
   const scenarios = [
-    { name: 'android', device: devices['Pixel 5'], mobile: true, selected: 'Edge' },
-    { name: 'iphone', device: devices['iPhone 13'], mobile: true, selected: 'Edge' },
+    { name: 'android', device: devices['Pixel 5'], mobile: true, selected: 'Edge', desktopSelected: 'Chrome' },
+    { name: 'iphone', device: iphone, mobile: true, selected: 'Orion', desktopSelected: 'Chrome' },
+    { name: 'iphone-chrome', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'CriOS/140.0.0.0') }, mobile: true, selected: 'Orion', desktopSelected: 'Chrome' },
+    { name: 'iphone-edge', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'EdgiOS/140.0.0.0') }, mobile: true, selected: 'Edge', desktopSelected: 'Edge' },
+    { name: 'iphone-firefox', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'FxiOS/140.0.0.0') }, mobile: true, selected: 'Orion', desktopSelected: 'Firefox' },
     {
       name: 'ipad',
       device: {
@@ -224,8 +241,9 @@ test('phones and tablets start on mobile choices, while touch laptops remain on 
       },
       mobile: true,
       selected: 'Edge',
+      desktopSelected: 'Chrome',
     },
-    { name: 'touch-laptop', device: { ...devices['Desktop Chrome'], hasTouch: true }, mobile: false, selected: 'Chrome' },
+    { name: 'touch-laptop', device: { ...devices['Desktop Chrome'], hasTouch: true }, mobile: false, selected: 'Chrome', desktopSelected: 'Chrome' },
   ];
   for (const scenario of scenarios) {
     const { defaultBrowserType: _, ...device } = scenario.device;
@@ -239,15 +257,19 @@ test('phones and tablets start on mobile choices, while touch laptops remain on 
     try {
       await page.goto('http://127.0.0.1:4175/');
       await expect(page.getByRole('tablist')).toHaveAccessibleName(`Choose your ${scenario.mobile ? 'mobile' : 'desktop'} browser`);
-      await expect(page.getByRole('tab')).toHaveCount(scenario.mobile ? 2 : 3);
-      await expect(page.getByRole('button', { name: `Install for ${scenario.mobile ? 'desktop' : 'mobile'} browsers`, exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(page.getByRole('tab')).toHaveCount(3);
+      const platformSwitch = page.getByRole('button', { name: `Install for ${scenario.mobile ? 'desktop' : 'mobile'} browsers`, exact: true });
+      await expect(platformSwitch).toBeInViewport({ ratio: 1 });
       await expect(page.getByRole('link', { name: 'Download manually', exact: true })).toBeInViewport({ ratio: 1 });
       if (scenario.mobile) {
+        const switchBox = (await platformSwitch.boundingBox())!;
+        expect(page.viewportSize()!.height - switchBox.y - switchBox.height).toBeGreaterThanOrEqual(16);
         await expect(page.getByRole('tab', { name: scenario.selected, exact: true })).toHaveAttribute('aria-selected', 'true');
+        await expect(page.locator(`#tab-desktop-${scenario.desktopSelected.toLowerCase()}`)).toHaveAttribute('aria-selected', 'true');
         await expect(page.getByRole('tab', { name: 'Chrome', exact: true })).toBeHidden();
         await expect(page.getByRole('tab', { name: 'Brave', exact: true })).toBeHidden();
         await page.setViewportSize({ width: 320, height: 844 });
-        for (const name of ['Edge', 'Firefox']) {
+        for (const name of ['Edge', 'Firefox', 'Orion']) {
           await expect(page.getByRole('tab', { name, exact: true })).toBeInViewport({ ratio: 1 });
         }
       }
@@ -258,7 +280,7 @@ test('phones and tablets start on mobile choices, while touch laptops remain on 
       const layoutPath = `artifacts/anmerko-install-${scenario.name}-layout.json`;
       await writeFile(layoutPath, JSON.stringify(await page.evaluate(() => ({
           viewport: { width: innerWidth, height: innerHeight, scale: visualViewport?.scale },
-          elements: [...document.querySelectorAll('.intro, .install, .install-links, .releases, .platform-choice, .platform-switch')].map(element => ({
+          elements: [...document.querySelectorAll('.header, .layout, .intro, .intro h1, .intro > p, .demo-controls, .install, .install h2, .browser-tabs, .browser-panel, .install-links, .releases, .platform-choice, .platform-switch')].map(element => ({
             className: element.className,
             bounds: element.getBoundingClientRect().toJSON(),
             font: getComputedStyle(element).font,

@@ -16,7 +16,7 @@ Collect website comments and screenshots, then share them with your AI agent.
 
 ## Get started
 
-**anmerko** is a browser extension for desktop (Chrome, Edge, and Firefox) or mobile (Edge and Firefox for Android, and Orion for iPhone). It stores feedback in your browser and needs no account or API key. You choose when to export or share it.
+**anmerko** is a browser extension for desktop (Chrome, Edge, and Firefox) or mobile (Edge and Firefox for Android, and Edge and Orion for iPhone). It stores feedback locally in your browser. Choose when to copy or export it.
 
 [Install for desktop or mobile browsers](https://anmerko.com/docs/install/) to try it on any website.
 
@@ -24,26 +24,9 @@ Collect website comments and screenshots, then share them with your AI agent.
 
 ## Development
 
-Use Node.js 24+. From the repository root:
-
-```sh
-npm ci
-npx playwright install chromium
-npm run check
-npm run site:build
-```
-
-`site:build` compiles the current shared demo UI and uses approved installer bytes.
-Private release assets require authenticated `gh` or `GH_TOKEN` with repository read access.
-
-Development guides are kept in this repository:
-
 - [Contributing](docs/contributing.md)
 - [Build and test](docs/development.md)
 - [CI scopes, release validation and promotion](docs/release-process.md)
-- [Site deployment and rollback](docs/site-deployment.md)
-- [Store publishing and listing assets](docs/store/distribution.md)
-- [Project agent skills for Codex CLI, Claude Code, and OpenCode](.agents/README.md)
 
 ## License
 

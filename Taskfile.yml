@@ -79,6 +79,13 @@ tasks:
   site:test:
     desc: Test site navigation, search, downloads, and responsive layouts
     cmds: [npm run site:test]
+  site:preview:
+    desc: Build, check, and deploy a named workers.dev site preview
+    requires:
+      vars: [NAME]
+    env:
+      ANMERKO_PREVIEW_NAME: '{{.NAME}}'
+    cmds: [npm run site:preview]
   site:deploy:
     desc: Deploy local website output for separately authorized manual recovery
     cmds: [npm run site:deploy]

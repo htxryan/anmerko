@@ -6,7 +6,7 @@ description: Attach feedback to a specific element on the page.
 Use an inline comment when your feedback applies to a heading, button, image, form control, or another specific element.
 
 1. Open the website and activate anmerko from your browser's toolbar or Extensions menu.
-2. Choose **Select Element**, then click the target. Press **Esc** or choose **Cancel Selection** to stop without creating a comment.
+2. Choose **Select Element**, then click the target. Press **Esc** or choose **Cancel Selection** to cancel.
 3. If the selected element is too narrow, choose **Use Parent Element** to select its container.
 4. Write your feedback and choose **Save**, or press **Ctrl/⌘ + Enter**. **Edit in Sidebar** moves the editor from the page into the sidebar.
 

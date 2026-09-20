@@ -3,7 +3,7 @@ title: Screenshot comments
 description: Capture a visible region and add feedback to it.
 ---
 
-Use a screenshot comment when the feedback applies to a visual region rather than one selectable element.
+Use a screenshot comment for feedback about a visual region.
 
 1. Position the page, open **More Comment Options** beside **Select Element**, and choose **Take Screenshot**.
 2. Drag over the region you want to capture. Move the box or drag its corners to adjust it.

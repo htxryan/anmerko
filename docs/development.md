@@ -1,6 +1,6 @@
 # Build and test
 
-Use Node.js 24+ from the repository root. Work in a git worktree and submit changes through a PR. **Current browser targets are Chrome, Edge, and Firefox on desktop, plus Edge and Firefox for Android.**
+Use Node.js 24+ from the repository root. Work in a git worktree and submit changes through a PR. **Current browser targets are Chrome, Edge, and Firefox on desktop, Edge and Firefox for Android, and Edge and Orion for iPhone.**
 
 ## Quick start
 
@@ -40,7 +40,7 @@ npm run chrome:install -- --extension-id YOUR_EXTENSION_ID
 
 A missing/disabled installation, wrong profile, build error, or missing acknowledgement fails the command. Other platforms use Chrome's **Reload** button.
 
-The updater briefly creates development helpers and a loopback listener; it never reads feedback or changes permissions. Do not run another build during an update. Normal builds remove the helpers, and packaging rejects them.
+The updater briefly creates development helpers and a loopback listener. Wait for the update to finish before starting another build. Normal builds remove the helpers, and packaging rejects them.
 
 ## Website and documentation
 
@@ -54,13 +54,13 @@ npm run site:dev
 Preview: `http://127.0.0.1:4174`. The browser suite uses port 4175. Rebuild after content or shared UI changes.
 
 - `site/src/content/docs/docs/`: published Markdown/MDX; navigation in `site/astro.config.mjs`.
-- `docs/`: repository-only developer guides; never publish these.
+- `docs/`: repository-only developer guides.
 - `site/src/pages/index.astro`: landing page.
 - `site/support/`: source for the standalone help, privacy, and support routes.
-- `site/public/product-illustration.svg`: brochure-only artwork; do not upload it to extension stores.
+- `site/public/product-illustration.svg`: brochure-only artwork.
 - `site/public/screenshots/`: current UI captures on [Salad Recipe Finder](https://saladrecipefinder.com/), shared by documentation and [store listings](store/README.md).
 
-`site:build` compiles the current shared demo UI and copies hash-verified installers from `releases/approved.json`. It never packages current extension source as a download or serves archived demo code. Private release assets require authenticated `gh` with repository read access, or `GH_TOKEN` with contents read. Preserve signed artifacts unchanged. See [deployment](site-deployment.md).
+`site:build` compiles the current shared demo UI and copies hash-verified installers from `releases/approved.json`. Private release assets require authenticated `gh` with repository read access, or `GH_TOKEN` with contents read. Preserve signed artifacts unchanged. See [deployment](site-deployment.md).
 
 ## Architecture
 
@@ -100,7 +100,7 @@ For Firefox, run `npm run build:firefox`, `npm run package:firefox`, and `npm ru
 | `FIREFOX_HEADLESS=0` | Show the test browser |
 | `FIREFOX_XPI=/absolute/path/to/candidate.xpi` | Test signed installation, upgrade, and restart |
 
-The Mozilla wrapper pins Node 22.23.2 because its linter fails under Node 24. Firefox 142 requires local-path temporary loading. Its retargeted touch clicks need suppression until a fresh pointerdown; ZIP checks must wait for the end record. Keep those shared fixes covered by regressions. Desktop automation cannot establish Firefox Android installation and behavior; validate those flows in an actual Android runtime, including a disposable Android emulator. Signing and publication gates remain in [the release guide](release-process.md).
+The Mozilla wrapper pins Node 22.23.2 because its linter fails under Node 24. Firefox 142 requires local-path temporary loading. Its retargeted touch clicks need suppression until a fresh pointerdown; ZIP checks must wait for the end record. Keep those shared fixes covered by regressions. Validate Firefox Android installation and behavior in an Android runtime, including a disposable Android emulator. Signing and publication gates remain in [the release guide](release-process.md).
 
 The development-only `addons-linter` dependency currently inherits `image-size`
 through `web-ext`. A package override pins `image-size` 2.0.4 to address
@@ -134,22 +134,24 @@ The user selected pronunciation audition #2: the joined TTS-only respelling
 `ahn-mare-koh`, with Microsoft's stock `en-US-AvaMultilingualNeural` voice at
 `+5%` speaking rate. [Listen to the selected reference clip](store/audio/anmerko-pronunciation-reference.mp3).
 Its exact synthesis text is “Meet ahn-mare-koh. Website feedback, ready for AI.”
-Use the same respelling for spoken brand and domain occurrences. Plain-text
-respelling guides the voice; it is not a phoneme-level guarantee.
+Use the same respelling for spoken brand and domain occurrences.
 
 ## Edge Android support provenance
 
 The product owner confirmed anmerko works in Edge on Android on 15 September
-2026. See the [verification summary](evidence/anmerko/verification-summary.md). This platform confirmation is not a claim of independent agent native
-Android testing. Website regressions cover realistic EdgA detection, Android-only
+2026. See the [verification summary](evidence/anmerko/verification-summary.md). Website regressions cover realistic EdgA detection, device-specific
 CTA labels, keyboard selection and narrow layout. Loaded-extension touch tests
 use an EdgA UA, with sidePanel available in the Chromium harness, to protect
 floating-panel behavior, docking exclusion and tap/save/reopen persistence.
 Microsoft's [API support matrix](https://learn.microsoft.com/en-us/microsoft-edge/extensions/developer-guide/api-support)
-lists sidePanel as desktop-only. No Android version minimum or iOS support is
+lists sidePanel as desktop-only. No Android version minimum is
 inferred from the desktop browser requirement.
 
 Manual installation is a permanent alternative to stores. Store activation must
 retain the homepage Download manually link, all three approved download links,
 Chrome/Edge desktop unpacked instructions and Firefox signed-XPI desktop/Android
 steps. Never substitute an Edge Android ZIP installation path.
+
+## Edge iPhone installation
+
+Microsoft's [Edge App Store listing](https://apps.apple.com/us/app/microsoft-edge/id1288723196) advertises iOS extensions. The [iPhone guide](../site/src/content/docs/docs/install/edge-iphone.mdx) uses anmerko's [public Microsoft Edge Add-ons listing](https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka) as the primary installation path. If the store page does not work, the guide provides the public item's direct `edge://extensions/?id=<extension-id>` address as an alternative. Extension authors document that route in [Microsoft's extension tracker](https://github.com/microsoft/MicrosoftEdge-Extensions/issues/432#issuecomment-3917523103), with an [iPhone installation report](https://github.com/microsoft/MicrosoftEdge-Extensions/issues/432#issuecomment-3917868742). Keep the brochure's Edge iPhone action pointed at the guide so both paths remain available.

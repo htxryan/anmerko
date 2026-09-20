@@ -38,6 +38,7 @@ export default defineConfig({
           { label: 'Firefox', slug: 'docs/install/firefox-android' },
         ] },
         { label: 'iPhone', items: [
+          { label: 'Edge', slug: 'docs/install/edge-iphone' },
           { label: 'Orion', slug: 'docs/install/orion-iphone' },
         ] },
       ] },
@@ -55,7 +56,6 @@ export default defineConfig({
         { label: 'Example prompt', slug: 'docs/example-prompt' },
         { label: 'Privacy and limitations', slug: 'docs/privacy' },
         { label: 'Troubleshooting', slug: 'docs/troubleshooting' },
-        { label: 'Release notes', slug: 'docs/releases' },
       ] },
     ],
   })],

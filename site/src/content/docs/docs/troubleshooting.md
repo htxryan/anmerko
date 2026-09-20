@@ -17,7 +17,7 @@ The page may have changed. Your saved comment and captured text remain available
 
 ## Copy fails or images are missing
 
-Download **Markdown + Images**, extract the ZIP, and copy from `comments.md`. Attach the PNGs separately: **Copy Prompt** includes filenames only.
+Download **Markdown + Images**, extract the ZIP, and copy from `comments.md`. Attach the PNGs separately.
 
 ## Saving fails
 

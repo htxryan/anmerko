@@ -1,5 +1,12 @@
 ---
 import { browsers, platforms } from '../data/browsers';
+import androidIcon from '../assets/platforms/android.svg?raw';
+import appleIcon from '../assets/platforms/apple.svg?raw';
+
+const platformIcons: Record<string, string> = {
+  Android: androidIcon,
+  iPhone: appleIcon,
+};
 ---
 <section class="install-area" aria-labelledby="install-heading">
   <div class="install">
@@ -13,24 +20,36 @@ import { browsers, platforms } from '../data/browsers';
         return (
           <div data-browser-platform={platform} hidden={platform !== 'desktop'}>
             <div class="browser-tabs" role="tablist" aria-label={`Choose your ${platform} browser`}>
-              {options.map((browser, index) => (
-                <button class="browser-tab" type="button" role="tab" id={`tab-${browser.key}`} aria-label={browser.name} aria-controls={`panel-${browser.key}`} aria-selected={index === 0 ? 'true' : 'false'} aria-describedby={[!browser.store && `badge-${browser.key}`, browser.os && `os-${browser.key}`].filter(Boolean).join(' ') || undefined} tabindex={index === 0 ? 0 : -1}>
-                  <span class="browser-icon">
-                    <img class:list={{ 'browser-icon-soon': !browser.store }} src={`/browsers/${browser.id}.png`} width="28" height="28" alt="" />
-                    {!browser.store && <span class="browser-badge" id={`badge-${browser.key}`} aria-hidden="true">SOON</span>}
-                  </span>
-                  <span>{browser.name}</span>
-                  {browser.os && <span class="browser-os" id={`os-${browser.key}`}>{browser.os}</span>}
-                </button>
-              ))}
+              {options.map((browser, index) => {
+                const browserPlatformIcons = platform === 'mobile'
+                  ? (browser.os ?? []).map(os => platformIcons[os])
+                  : [];
+                return (
+                  <button class="browser-tab" type="button" role="tab" id={`tab-${browser.key}`} aria-label={browser.name} aria-controls={`panel-${browser.key}`} aria-selected={index === 0 ? 'true' : 'false'} aria-describedby={[!browser.actions && `badge-${browser.key}`, browser.os && `os-${browser.key}`].filter(Boolean).join(' ') || undefined} tabindex={index === 0 ? 0 : -1}>
+                    <span class="browser-icon">
+                      <img class:list={{ 'browser-icon-soon': !browser.actions }} src={`/browsers/${browser.id}.png`} width="28" height="28" alt="" />
+                      {browserPlatformIcons.map((platformIcon, badgeIndex) => (
+                        <span class:list={{ 'browser-platform-badge': true, 'browser-platform-badge-left': browserPlatformIcons.length > 1 && badgeIndex === 0 }} aria-hidden="true" set:html={platformIcon} />
+                      ))}
+                      {!browser.actions && <span class="browser-badge" id={`badge-${browser.key}`} aria-hidden="true">SOON</span>}
+                    </span>
+                    <span>{browser.name}</span>
+                    {browser.os && <span class="browser-os" id={`os-${browser.key}`}>{browser.os.join(' / ')}</span>}
+                  </button>
+                );
+              })}
             </div>
             {options.map((browser, index) => (
               <div class="browser-panel" role="tabpanel" id={`panel-${browser.key}`} aria-labelledby={`tab-${browser.key}`} tabindex="0" hidden={index !== 0}>
-                {browser.store ? (
-                  <>
-                    <p class="release">{browser.store.requirements}</p>
-                    <a class="store-button" href={browser.store.href}>{browser.store.label}</a>
-                  </>
+                {browser.actions ? (
+                  <div class="install-actions">
+                    {browser.actions.map(action => (
+                      <div class="install-action">
+                        <p class="release">{action.requirements}</p>
+                        <a class="install-button" href={action.href}>{action.label}</a>
+                      </div>
+                    ))}
+                  </div>
                 ) : <p class="coming-soon">{browser.pending}</p>}
               </div>
             ))}

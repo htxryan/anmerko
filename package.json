@@ -18,6 +18,7 @@
     "site:dev": "node scripts/site/serve-site.mjs",
     "site:check": "node --test tests/support/*.test.mjs",
     "site:test": "playwright test -c tests/playwright.site.config.ts",
+    "site:preview": "node scripts/deployment/deploy-site-preview.mjs",
     "site:deploy": "wrangler deploy --config site/wrangler.jsonc",
     "support:build": "node scripts/site/build-support-site.mjs",
     "support:deploy": "npm run support:build && wrangler deploy --config site/support/wrangler.jsonc",

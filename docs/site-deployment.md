@@ -24,6 +24,18 @@ npx wrangler rollback SUPPORT_VERSION_ID --config site/support/wrangler.jsonc
 
 Coordinate recovery with queued production runs. For durable installer rollback, use a [manifest PR](release-process.md).
 
+## Named previews
+
+Deploy a checked branch build to an isolated `workers.dev` Worker with:
+
+```sh
+task site:preview NAME=pr17
+```
+
+The suffix must contain 1–40 lowercase letters, numbers, or hyphens and must start and end with a letter or number. The task names the Worker `anmerko-site-preview-<name>` and serves the preview at its `workers.dev` address. It builds and checks the site before taking a snapshot, performs a Wrangler dry run, deploys that snapshot, and prints the preview URL. Reusing a name updates the same preview Worker.
+
+Authenticate first with `npx --no-install wrangler login`, or provide `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` through private environment configuration. Each run preserves its standalone Wrangler configuration, structured deployment output, and exact asset snapshot in the ignored `tasks/site-previews/` directory for inspection.
+
 ## Local validation
 
 ```sh
@@ -45,7 +57,7 @@ Astro supplies per-page CSP; the build hashes Starlight inline scripts and place
 
 The support build uses shared privacy Markdown and emits only help, privacy, headers, and 404 output. Tests reject stale installers and extra files. Verify `/support` redirects to `/support/`, help/privacy return 200, and unknown support paths return 404.
 
-`workers_dev` and `preview_urls` remain disabled; inspect actual domain bindings after route changes.
+The production Workers keep `workers_dev` and `preview_urls` disabled; inspect actual domain bindings after route changes.
 
 `www.anmerko.com` uses the separate `site/wrangler-www.jsonc` redirect Worker.
 Normal Deploy updates only site and support; a reviewed www configuration change

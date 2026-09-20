@@ -1,9 +1,19 @@
-Browser logos from https://github.com/alrra/browser-logos
+Chrome, Edge, Firefox, and Brave logos from https://github.com/alrra/browser-logos
 Revision: 58881b84c4d73adc03c06fa2c275a7abee02d935
 Unmodified 64x64 PNG assets, displayed at 28x28 CSS pixels.
 Browser names and logos belong to their respective owners.
 
-Repository license:
+Orion logo from https://orionbrowser.com/android-chrome-192x192.png
+Unmodified 192x192 PNG asset, displayed at 28x28 CSS pixels.
+Orion is a trademark of Kagi. The Orion logo is used to identify the browser.
+
+Android and Apple platform icons from Font Awesome Free by Fonticons, Inc.
+Source: https://github.com/FortAwesome/Font-Awesome/tree/14c65a3747d0f3b751f15831fc719236aea8729d/svgs/brands
+Unmodified SVG assets, styled to match the site theme.
+Icons licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
+Android and Apple are trademarks of their respective owners, used to identify platforms.
+
+alrra/browser-logos repository license:
 
 Copyright (c) Cătălin Mariș
 
