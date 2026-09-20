@@ -30,6 +30,55 @@ test('late enrichment preserves the live textarea, focus, selection and typed co
   expect(await field.evaluate(el => [el === (window as any).originalField, (el as HTMLTextAreaElement).selectionStart, (el as HTMLTextAreaElement).selectionEnd])).toEqual([true, 3, 8]);
 });
 
+test('remote composing keeps long Angular context and editor actions inside narrow viewports', async ({ page }) => {
+  test.setTimeout(60_000);
+  const angularContext = {
+    version: 1,
+    framework: 'angular',
+    provenance: 'angular-debug-ownership',
+    path: ['_AppComponent', '_PricingPageComponent', '_PlanCardComponentWithAnIntentionallyLongCompiledName'],
+    truncated: false,
+  };
+  let request = 0;
+  for (const theme of ['Light', 'Dark']) {
+    for (const width of [320, 390]) {
+      await run(page, 'harness.controller().present("overlay", true)');
+      await panel(page).getByRole('button', { name: 'Feedback settings' }).click();
+      await panel(page).getByRole('button', { name: theme, exact: false }).click();
+      await panel(page).getByRole('button', { name: 'Back', exact: true }).click();
+      await page.setViewportSize({ width, height: 900 });
+
+      await panel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
+      await run(page, 'harness.controller().present("remote", true)');
+      await page.locator('#hero-title').click();
+      await run(page, `harness.resolveContext(${request}, ${JSON.stringify(angularContext)})`);
+      request += 1;
+
+      const field = panel(page).getByLabel('Comment', { exact: true });
+      const remove = panel(page).getByRole('button', { name: 'Remove component hint' });
+      const cancel = panel(page).getByRole('button', { name: 'Cancel', exact: true });
+      const save = panel(page).getByRole('button', { name: 'Save', exact: true });
+      await expect(panel(page).locator('.component-context-path')).toHaveText(angularContext.path.join(' → '));
+      for (const locator of [panel(page), panel(page).locator('.editor'), remove, cancel, save]) {
+        await expect(locator).toBeInViewport({ ratio: 1 });
+        const bounds = await locator.boundingBox();
+        expect(bounds!.x).toBeGreaterThanOrEqual(0);
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      }
+      await expect(field).toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(remove).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(field).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(cancel).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(save).toBeFocused();
+      await cancel.click();
+    }
+  }
+});
+
 for (const action of ['save', 'cancel', 'detach', 'navigate', 'dispose', 'disable'] as const) {
   test(`${action} invalidates a pending lookup without changing saved or newer state`, async ({ page }) => {
     await select(page);
