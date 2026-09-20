@@ -124,21 +124,27 @@ test('comment menu supports keyboard navigation, dismissal, page scope and mixed
   const toggle = panel(page).getByRole('button', { name: 'More Comment Options' });
   const capture = panel(page).getByRole('menuitem', { name: 'Take Screenshot' });
   const global = panel(page).getByRole('menuitem', { name: 'New Global Comment' });
+  const journey = panel(page).getByRole('menuitem', { name: 'Record journey', exact: true });
   await toggle.press('ArrowDown');
   await expect(capture).toBeFocused();
+  const last = await journey.count() ? journey : global;
   await capture.press('ArrowDown');
   await expect(global).toBeFocused();
   await global.press('ArrowDown');
+  if (last === journey) {
+    await expect(journey).toBeFocused();
+    await journey.press('ArrowDown');
+  }
   await expect(capture).toBeFocused();
   await capture.press('End');
-  await expect(global).toBeFocused();
-  await global.press('Home');
+  await expect(last).toBeFocused();
+  await last.press('Home');
   await expect(capture).toBeFocused();
   await capture.press('Escape');
   await expect(toggle).toBeFocused();
   await toggle.press('ArrowUp');
-  await expect(global).toBeFocused();
-  await global.press('Tab');
+  await expect(last).toBeFocused();
+  await last.press('Tab');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await toggle.click();
   await page.locator('#hero-title').click();
