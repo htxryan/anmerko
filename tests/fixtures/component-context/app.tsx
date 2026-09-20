@@ -29,7 +29,7 @@ function PlanCard({ id = 'react-nested-button', label = 'Nested button' }) {
   return <article data-component="PlanCard"><Button id={id}>{label}</Button></article>;
 }
 
-const MemoPlanCard = memo(PlanCard);
+const MemoPlanCard = memo(PlanCard, () => true);
 MemoPlanCard.displayName = 'MemoPlanCard';
 
 class ClassPanel extends Component {
@@ -94,11 +94,11 @@ function finalizeFixture(attempt = 0) {
   }
   installPrivacyTraps(nested);
   const targets: Record<string, FixtureTarget> = {
-    nested: { id: 'react-nested-button', expectedPath: ['App', 'PricingPage', 'PlanCard', 'Button'], kind: 'nested' },
-    memo: { id: 'react-memo-button', expectedPath: ['App', 'PricingPage', 'MemoPlanCard', 'Button'], kind: 'memo' },
-    class: { id: 'react-class-button', expectedPath: ['App', 'PricingPage', 'ClassPanel', 'Button'], kind: 'class' },
-    portal: { id: 'react-portal-button', expectedPath: ['App', 'PricingPage', 'PortalPanel', 'Button'], kind: 'portal' },
-    shadow: { id: 'react-shadow-button', expectedPath: ['App', 'PricingPage', 'ShadowPanel', 'Button'], kind: 'open-shadow-portal' },
+    nested: { id: 'react-nested-button', expectedPath: ['App', 'PricingPage', 'PlanCard', 'FeedbackButton'], kind: 'nested' },
+    memo: { id: 'react-memo-button', expectedPath: ['App', 'PricingPage', 'PlanCard', 'FeedbackButton'], kind: 'memo' },
+    class: { id: 'react-class-button', expectedPath: ['App', 'PricingPage', 'ClassPanel', 'FeedbackButton'], kind: 'class' },
+    portal: { id: 'react-portal-button', expectedPath: ['App', 'PricingPage', 'PortalPanel', 'FeedbackButton'], kind: 'portal' },
+    shadow: { id: 'react-shadow-button', expectedPath: ['App', 'PricingPage', 'ShadowPanel', 'FeedbackButton'], kind: 'open-shadow-portal' },
   };
   const fixture: FixtureRecord = Object.freeze({
     ready: true,
