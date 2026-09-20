@@ -55,7 +55,9 @@ function pathValues(value: unknown): string[] | undefined {
     let totalCodePoints = 0;
     for (let index = 0; index < length; index++) {
       const name = properties[String(index)];
-      if (typeof name !== 'string' || !/\S/u.test(name) || /\p{Cc}/u.test(name)) return undefined;
+      // Bound code-unit work before scanning page/storage-provided strings.
+      if (typeof name !== 'string' || name.length > COMPONENT_CONTEXT_MAX_NAME_CODE_POINTS * 2
+        || !/\S/u.test(name) || /\p{Cc}/u.test(name)) return undefined;
       const codePoints = Array.from(name).length;
       if (codePoints > COMPONENT_CONTEXT_MAX_NAME_CODE_POINTS) return undefined;
       totalCodePoints += codePoints;
