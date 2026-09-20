@@ -80,6 +80,15 @@ function isSafeCounter(value: unknown, minimum = 0): value is number {
   return Number.isSafeInteger(value) && (value as number) >= minimum;
 }
 
+function validEpochForPhase(phase: JourneySession['phase'], value: unknown): value is number {
+  const minimum = phase === 'idle' || phase === 'saved' ? 0 : 1;
+  const transitionHeadroom = phase === 'starting' || phase === 'recording' ? 2
+    : phase === 'idle' ? 0
+      : 1;
+  return isSafeCounter(value, minimum)
+    && value <= Number.MAX_SAFE_INTEGER - transitionHeadroom;
+}
+
 function isId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= JOURNEY_LIMITS.maxIdCharacters && ID_PATTERN.test(value);
 }
@@ -99,11 +108,15 @@ function serializedBytes(value: unknown): number | undefined {
   }
 }
 
-function hasOwner(value: Record<string, unknown>, draft: JourneyDraftV1): boolean {
+function hasOwner(
+  value: Record<string, unknown>,
+  draft: JourneyDraftV1,
+  phase: Extract<JourneySession['phase'], 'starting' | 'recording' | 'reviewing' | 'saving'>,
+): boolean {
   return isId(value.sessionId)
     && isId(value.journeyId)
     && value.journeyId === draft.id
-    && isSafeCounter(value.epoch)
+    && validEpochForPhase(phase, value.epoch)
     && isSafeCounter(value.ownerTabId)
     && isSafeCounter(value.ownerWindowId);
 }
@@ -146,24 +159,24 @@ export function validateJourneySession(value: unknown): JourneySession | undefin
   if (size === undefined || size > SESSION_STATE_MAX_BYTES) return;
 
   if (value.phase === 'idle') {
-    if (!hasExactKeys(value, ['phase', 'epoch']) || !isSafeCounter(value.epoch)) return;
+    if (!hasExactKeys(value, ['phase', 'epoch']) || !validEpochForPhase(value.phase, value.epoch)) return;
     return structuredClone(value) as unknown as JourneySession;
   }
 
   if (value.phase === 'saved') {
     if (!hasExactKeys(value, ['phase', 'epoch', 'journeyId', 'revision'])
-      || !isSafeCounter(value.epoch) || !isId(value.journeyId) || !isSafeCounter(value.revision)) return;
+      || !validEpochForPhase(value.phase, value.epoch) || !isId(value.journeyId) || !isSafeCounter(value.revision)) return;
     return structuredClone(value) as unknown as JourneySession;
   }
 
   const draft = validateDraft(value.draft);
-  if (!draft || !hasOwner(value, draft)) return;
+  if (!draft) return;
 
   if (value.phase === 'starting') {
     if (!hasExactKeys(value, [
       'phase', 'sessionId', 'journeyId', 'epoch', 'ownerTabId', 'ownerWindowId',
       'documentToken', 'deadlineAt', 'draft',
-    ]) || !isId(value.documentToken) || !validDeadline(value.deadlineAt, draft)
+    ]) || !hasOwner(value, draft, value.phase) || !isId(value.documentToken) || !validDeadline(value.deadlineAt, draft)
       || !isUnstopped(draft) || draft.steps.length !== 0 || Object.keys(draft.images).length !== 0) return;
     return { ...value, draft } as JourneySession;
   }
@@ -172,7 +185,7 @@ export function validateJourneySession(value: unknown): JourneySession | undefin
     if (!hasExactKeys(value, [
       'phase', 'sessionId', 'journeyId', 'epoch', 'ownerTabId', 'ownerWindowId',
       'documentToken', 'deadlineAt', 'documentCounters', 'draft',
-    ]) || !isId(value.documentToken) || !validDeadline(value.deadlineAt, draft)
+    ]) || !hasOwner(value, draft, value.phase) || !isId(value.documentToken) || !validDeadline(value.deadlineAt, draft)
       || !isUnstopped(draft) || !isObject(value.documentCounters)
       || draft.steps.length === 0 || draft.steps[0].kind !== 'initial') return;
     if (!Object.entries(value.documentCounters).every(([id, counter]) => isId(id) && isSafeCounter(counter))
@@ -184,7 +197,7 @@ export function validateJourneySession(value: unknown): JourneySession | undefin
     if (!hasExactKeys(value, [
       'phase', 'sessionId', 'journeyId', 'epoch', 'ownerTabId', 'ownerWindowId',
       'warningAt', 'expiresAt', 'draft',
-    ]) || !draft.stoppedAt || !draft.stopReason || !hasNoPendingImages(draft)
+    ]) || !hasOwner(value, draft, value.phase) || !draft.stoppedAt || !draft.stopReason || !hasNoPendingImages(draft)
       || !validReviewTimes(value, draft)) return;
     return { ...value, draft } as JourneySession;
   }
@@ -192,7 +205,7 @@ export function validateJourneySession(value: unknown): JourneySession | undefin
   if (value.phase === 'saving') {
     if (!hasExactKeys(value, [
       'phase', 'sessionId', 'journeyId', 'epoch', 'ownerTabId', 'ownerWindowId', 'draft',
-    ]) || !draft.stoppedAt || !draft.stopReason || !hasNoPendingImages(draft)) return;
+    ]) || !hasOwner(value, draft, value.phase) || !draft.stoppedAt || !draft.stopReason || !hasNoPendingImages(draft)) return;
     return { ...value, draft } as JourneySession;
   }
 
@@ -210,7 +223,9 @@ function validateControl(value: unknown): Control | undefined {
     value,
     ['schemaVersion', 'status', 'generation', 'phase', 'epoch'],
     ['lifecycleAt'],
-  ) || !isSafeCounter(value.epoch) || !['idle', 'starting', 'recording', 'reviewing', 'saving', 'saved'].includes(String(value.phase))) return;
+  ) || !['idle', 'starting', 'recording', 'reviewing', 'saving', 'saved'].includes(String(value.phase))) return;
+  const phase = value.phase as JourneySession['phase'];
+  if (!validEpochForPhase(phase, value.epoch)) return;
   const needsLifecycle = value.phase === 'recording' || value.phase === 'reviewing' || value.phase === 'saving';
   if (needsLifecycle !== Object.hasOwn(value, 'lifecycleAt')) return;
   if (needsLifecycle && timestampMs(value.lifecycleAt) === undefined) return;
@@ -280,9 +295,24 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     return cleared;
   };
 
+  const tombstoneControl = async (): Promise<void> => {
+    const tombstone: WritingControl = {
+      schemaVersion: 1,
+      status: 'writing',
+      generation: Math.max(1, generation),
+    };
+    try { await storage.set({ [CONTROL_KEY]: tombstone }) } catch { /* cleanup failure remains explicit */ }
+  };
+
+  const clearRawOrTombstone = async (): Promise<boolean> => {
+    const cleared = await clearRaw();
+    if (!cleared) await tombstoneControl();
+    return cleared;
+  };
+
   const failStorage = async (): Promise<never> => {
     failed = true;
-    const cleared = await clearRaw();
+    const cleared = await clearRawOrTombstone();
     throw new JourneySessionStorageError(cleared ? 'storage-unavailable' : 'cleanup-failed');
   };
 
@@ -311,7 +341,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
   };
 
   const purgedIdle = async (epoch: number): Promise<JourneySession> => {
-    if (!await clearRaw()) throw new JourneySessionStorageError('cleanup-failed');
+    if (!await clearRawOrTombstone()) throw new JourneySessionStorageError('cleanup-failed');
     return { phase: 'idle', epoch };
   };
 
@@ -403,7 +433,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
         throw new JourneySessionStorageError('storage-unavailable');
       }
       if (snapshot.phase === 'idle') {
-        if (!await clearRaw()) {
+        if (!await clearRawOrTombstone()) {
           failed = true;
           throw new JourneySessionStorageError('cleanup-failed');
         }

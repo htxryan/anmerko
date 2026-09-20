@@ -58,6 +58,7 @@ class MemoryStorage {
   setCount = 0;
   removeCount = 0;
   failGet = false;
+  failSet = false;
   failSetAt?: number;
   failRemove = false;
   pauseSetAt?: number;
@@ -75,7 +76,7 @@ class MemoryStorage {
     const count = ++this.setCount;
     this.calls.push({ method: 'set', keys: Object.keys(items) });
     if (count === this.pauseSetAt) await new Promise<void>(resolve => { this.resume = resolve });
-    if (count === this.failSetAt) throw new Error('quota failed with private=value and PNG bytes');
+    if (this.failSet || count === this.failSetAt) throw new Error('quota failed with private=value and PNG bytes');
     for (const [key, value] of Object.entries(items)) this.data[key] = structuredClone(value);
   };
 
@@ -133,6 +134,65 @@ test('validation rejects unknown keys and invalid owner, epoch, counter, time, a
   ];
 
   for (const value of invalid) expect(validateJourneySession(value)).toBeUndefined();
+});
+
+test('owner phases require positive epochs with enough transition headroom', () => {
+  const starting = createJourneySession({
+    sessionId: 'session-1', journeyId: 'journey-1', ownerTabId: 42, ownerWindowId: 7,
+    documentToken: 'document-1', startedAt, deadlineAt,
+  });
+  const active = recording();
+  const review = reviewing();
+  const save = saving();
+
+  for (const state of [starting, active, review, save]) {
+    expect(validateJourneySession({ ...state, epoch: 0 })).toBeUndefined();
+  }
+  expect(validateJourneySession({ ...starting, epoch: Number.MAX_SAFE_INTEGER - 2 })).toBeDefined();
+  expect(validateJourneySession({ ...starting, epoch: Number.MAX_SAFE_INTEGER - 1 })).toBeUndefined();
+  expect(validateJourneySession({ ...active, epoch: Number.MAX_SAFE_INTEGER - 2 })).toBeDefined();
+  expect(validateJourneySession({ ...active, epoch: Number.MAX_SAFE_INTEGER - 1 })).toBeUndefined();
+  expect(validateJourneySession({ ...review, epoch: Number.MAX_SAFE_INTEGER - 1 })).toBeDefined();
+  expect(validateJourneySession({ ...review, epoch: Number.MAX_SAFE_INTEGER })).toBeUndefined();
+  expect(validateJourneySession({ ...save, epoch: Number.MAX_SAFE_INTEGER - 1 })).toBeDefined();
+  expect(validateJourneySession({ ...save, epoch: Number.MAX_SAFE_INTEGER })).toBeUndefined();
+  expect(validateJourneySession({
+    phase: 'saved', epoch: Number.MAX_SAFE_INTEGER, journeyId: 'journey-1', revision: 2,
+  })).toBeUndefined();
+  expect(validateJourneySession({ phase: 'idle', epoch: Number.MAX_SAFE_INTEGER })).toBeDefined();
+});
+
+test('control metadata rejects epochs that cannot complete their phase transitions', async () => {
+  const storage = new MemoryStorage();
+  const store = createJourneySessionStore(storage);
+  const starting = createJourneySession({
+    sessionId: 'session-1', journeyId: 'journey-1', ownerTabId: 42, ownerWindowId: 7,
+    documentToken: 'document-1', startedAt, deadlineAt,
+  });
+  await store.write(starting);
+  const controlKey = storage.calls.find(call => call.method === 'set')!.keys[0];
+  (storage.data[controlKey] as { epoch: number }).epoch = Number.MAX_SAFE_INTEGER;
+
+  const restored = await createJourneySessionStore(storage).read(Date.parse(startedAt) + 1);
+
+  expect(restored).toEqual({ phase: 'idle', epoch: 0 });
+  expect(validateJourneySession(restored)).toEqual(restored);
+  expect(storage.data).toEqual({});
+});
+
+test('maximum recoverable recording epoch can stop and expire without overflow', async () => {
+  const storage = new MemoryStorage();
+  const store = createJourneySessionStore(storage);
+  const active = { ...recording(), epoch: Number.MAX_SAFE_INTEGER - 2 };
+  await store.write(active);
+
+  const review = await store.read(Date.parse(deadlineAt));
+  expect(review).toMatchObject({ phase: 'reviewing', epoch: Number.MAX_SAFE_INTEGER - 1 });
+  if (review.phase !== 'reviewing') return;
+
+  const idle = await store.read(Date.parse(review.expiresAt));
+  expect(idle).toEqual({ phase: 'idle', epoch: Number.MAX_SAFE_INTEGER });
+  expect(validateJourneySession(idle)).toEqual(idle);
 });
 
 test('writes control and payload separately and returns isolated read copies', async () => {
@@ -320,7 +380,7 @@ test('reports unresolved cleanup when invalidation and removal both fail', async
   const store = createJourneySessionStore(storage);
   await store.write(recording());
   storage.setCount = 0;
-  storage.failSetAt = 1;
+  storage.failSet = true;
   storage.failRemove = true;
 
   const error = await store.write(reviewing()).catch(value => value);
@@ -329,6 +389,24 @@ test('reports unresolved cleanup when invalidation and removal both fail', async
   expect(error.code).toBe('cleanup-failed');
   expect(error.message).not.toContain('private=value');
   expect(storage.data).not.toEqual({});
+});
+
+test('failed deletion leaves a tombstone that a fresh store cannot revive', async () => {
+  const storage = new MemoryStorage();
+  const store = createJourneySessionStore(storage);
+  await store.write(recording());
+  const controlKey = storage.calls.find(call => call.method === 'set')!.keys[0];
+  storage.setCount = 0;
+  storage.failSetAt = 1;
+  storage.failRemove = true;
+
+  await expect(store.write(reviewing())).rejects.toMatchObject({ code: 'cleanup-failed' });
+  expect(storage.data[controlKey]).toMatchObject({ schemaVersion: 1, status: 'writing' });
+
+  storage.failRemove = false;
+  const restored = await createJourneySessionStore(storage).read(Date.parse(startedAt) + 1);
+  expect(restored).toEqual({ phase: 'idle', epoch: 0 });
+  expect(storage.data).toEqual({});
 });
 
 test('read failures never include adapter messages or stored payloads', async () => {
