@@ -13,7 +13,7 @@ type BridgeHarness = {
   listenerCount(): number;
 };
 type BridgeWindow = typeof globalThis & {
-  anmerkoJourneyPageBridge: { bindJourneyPage(): () => void };
+  anmerkoJourneyPageBridge: { bindJourneyPage(onDispose?: () => void): () => void };
   bridgeHarness: BridgeHarness;
   disposeJourneyPage: () => void;
   normalActions: number;
@@ -194,6 +194,26 @@ test('identifies one document, advances resize generation, and rejects non-backg
   expect(await page.locator('anmerko-journey-strip').count()).toBe(0);
 });
 
+test('each binding owns a fresh document token after explicit disposal and pagehide', async ({ page }) => {
+  const first = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value.documentToken;
+  await page.evaluate(() => (globalThis as BridgeWindow).disposeJourneyPage());
+  expect(await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.listenerCount())).toBe(0);
+
+  await page.evaluate(() => {
+    (globalThis as BridgeWindow).disposeJourneyPage = (globalThis as BridgeWindow).anmerkoJourneyPageBridge.bindJourneyPage();
+  });
+  const second = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value.documentToken;
+  expect(second).not.toBe(first);
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+  expect(await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.listenerCount())).toBe(0);
+  await page.evaluate(() => {
+    (globalThis as BridgeWindow).disposeJourneyPage = (globalThis as BridgeWindow).anmerkoJourneyPageBridge.bindJourneyPage();
+  });
+  const third = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value.documentToken;
+  expect(third).not.toBe(second);
+});
+
 test('starts only after a valid command, forwards one trusted click, updates status, and stops synchronously', async ({ page }) => {
   await page.evaluate(() => {
     document.body.innerHTML = '<button type="button">Normal action</button>';
@@ -208,10 +228,20 @@ test('starts only after a valid command, forwards one trusted click, updates sta
     documentToken: 'wrong-document', startedAt: new Date().toISOString() });
   expect(invalid).toEqual({ ok: false, error: 'Journey command unavailable.' });
   const startedAt = new Date().toISOString();
+  const wrongUrl = await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: `${identity.url}wrong`, count: 3, startedAt });
+  expect(wrongUrl).toEqual({ ok: false, error: 'Journey command unavailable.' });
+  const credentialUrl = identity.url.replace('http://', 'http://user:secret@');
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
-    documentToken: identity.documentToken, startedAt })).toMatchObject({ ok: true });
+    documentToken: identity.documentToken, expectedUrl: credentialUrl, count: 3, startedAt }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
+  const invalidCount = await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, count: -1, startedAt });
+  expect(invalidCount).toEqual({ ok: false, error: 'Journey command unavailable.' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, count: 3, startedAt })).toMatchObject({ ok: true });
   const strip = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip());
-  expect(strip?.text).toMatch(/Recording.*0 steps.*Stop/);
+  expect(strip?.text).toMatch(/Recording.*3 steps.*Stop/);
   expect(strip?.buttonHeight).toBeGreaterThanOrEqual(44);
   expect(strip?.hostMarkup).not.toContain('session-1');
 
@@ -235,6 +265,9 @@ test('starts only after a valid command, forwards one trusted click, updates sta
 
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'other', epoch: 2 }))
     .toEqual({ ok: false, error: 'Journey command unavailable.' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'session-1', epoch: 2,
+    documentToken: 'stale-document' })).toEqual({ ok: false, error: 'Journey command unavailable.' });
+  expect((await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))?.text).toMatch(/4 steps/);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'session-1', epoch: 2 })).toMatchObject({ ok: true });
   await expect(page.locator('anmerko-journey-strip')).toHaveCount(0);
   await page.getByRole('button', { name: 'Normal action' }).click();

@@ -1,11 +1,10 @@
 import { mount } from './content';
 import { extensionRuntime } from './extension-runtime';
 import type { Controller } from './runtime';
-import { journeysEnabled } from './journey-feature';
-import { bindJourneyPage } from './journey-page-bridge';
+import { ensureJourneyPage } from './journey-observer';
 
-const global = globalThis as typeof globalThis & { __anmerko?: Controller; __anmerkoJourneyPage?: () => void };
-if (journeysEnabled && !global.__anmerkoJourneyPage) global.__anmerkoJourneyPage = bindJourneyPage();
+const global = globalThis as typeof globalThis & { __anmerko?: Controller };
+ensureJourneyPage();
 if (!global.__anmerko) {
   global.__anmerko = mount(extensionRuntime(() => { delete global.__anmerko; }));
 }

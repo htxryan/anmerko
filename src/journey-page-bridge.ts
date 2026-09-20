@@ -42,7 +42,6 @@ type JourneyStrip = {
 
 type Message = Record<string, unknown> & { type?: unknown };
 
-const DOCUMENT_TOKEN = createUuid();
 const GENERIC_ERROR = 'Journey command unavailable.';
 const CAPTURE_HIDDEN_ATTRIBUTE = 'data-anmerko-capture-hidden';
 const UI_HOST_SELECTOR = 'anmerko-overlay, anmerko-image, anmerko-journey-strip';
@@ -75,6 +74,7 @@ function nextPaint(): Promise<void> {
 function mountJourneyStrip(
   sessionId: string,
   epoch: number,
+  initialCount: number,
   stop: (sessionId: string, epoch: number) => Promise<boolean>,
 ): JourneyStrip {
   const host = document.createElement('anmerko-journey-strip');
@@ -107,7 +107,8 @@ function mountJourneyStrip(
   recording.className = 'recording';
   recording.textContent = 'Recording';
   const count = document.createElement('span');
-  count.textContent = '0 steps';
+  const setCount = (value: number) => { count.textContent = `${value} ${value === 1 ? 'step' : 'steps'}`; };
+  setCount(initialCount);
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = 'Stop';
@@ -130,13 +131,14 @@ function mountJourneyStrip(
   (document.documentElement ?? document.body).append(host);
   return {
     host,
-    setCount(value) { count.textContent = `${value} ${value === 1 ? 'step' : 'steps'}`; },
+    setCount,
   };
 }
 
-export function bindJourneyPage(): () => void {
+export function bindJourneyPage(onDispose?: () => void): () => void {
   if (window.top !== window) return () => {};
   const api = extensionApi();
+  const documentToken = createUuid();
   let generation = 0;
   let viewportWidth = innerWidth;
   let viewportHeight = innerHeight;
@@ -154,7 +156,7 @@ export function bindJourneyPage(): () => void {
   const identity = (): PageIdentity => {
     recordViewportChange();
     return {
-      documentToken: DOCUMENT_TOKEN,
+      documentToken,
       url: stripUrlCredentials(location.href),
       viewport: { width: innerWidth, height: innerHeight },
       scroll: { x: scrollX, y: scrollY },
@@ -202,18 +204,26 @@ export function bindJourneyPage(): () => void {
 
   const start = (message: Message) => {
     if (!validId(message.sessionId) || !validEpoch(message.epoch)
-      || message.documentToken !== DOCUMENT_TOKEN || !validStartedAt(message.startedAt)) return failure();
+      || message.documentToken !== documentToken || !validStartedAt(message.startedAt)
+      || (message.count !== undefined && (!Number.isSafeInteger(message.count) || (message.count as number) < 0))) return failure();
+    if (message.expectedUrl !== undefined) {
+      if (typeof message.expectedUrl !== 'string') return failure();
+      try {
+        if (stripUrlCredentials(message.expectedUrl) !== message.expectedUrl
+          || message.expectedUrl !== stripUrlCredentials(location.href)) return failure();
+      } catch { return failure(); }
+    }
     if (recording) {
       return recording.sessionId === message.sessionId && recording.epoch === message.epoch
         ? success(identity()) : failure();
     }
     let strip: JourneyStrip | undefined;
     try {
-      strip = mountJourneyStrip(message.sessionId, message.epoch, sendStop);
+      strip = mountJourneyStrip(message.sessionId, message.epoch, (message.count as number | undefined) ?? 0, sendStop);
       const disposeRecorder = attachJourneyRecorder({
         sessionId: message.sessionId,
         epoch: message.epoch,
-        documentToken: DOCUMENT_TOKEN,
+        documentToken,
         startedAt: message.startedAt,
         onBatch(batch: JourneyEventBatchV1) {
           void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_EVENTS', batch }).catch(() => {});
@@ -229,7 +239,8 @@ export function bindJourneyPage(): () => void {
 
   const stop = (message: Message) => {
     if (!validId(message.sessionId) || !validEpoch(message.epoch) || !recording
-      || message.sessionId !== recording.sessionId || message.epoch < recording.epoch) return failure();
+      || message.sessionId !== recording.sessionId || message.epoch < recording.epoch
+      || (message.documentToken !== undefined && message.documentToken !== documentToken)) return failure();
     stopRecording();
     return success(identity());
   };
@@ -243,7 +254,7 @@ export function bindJourneyPage(): () => void {
   };
 
   const prepare = async (message: Message) => {
-    if (!validId(message.captureId) || message.documentToken !== DOCUMENT_TOKEN || preparedCapture) return failure();
+    if (!validId(message.captureId) || message.documentToken !== documentToken || preparedCapture) return failure();
     const hiddenHosts = Array.from(document.querySelectorAll<HTMLElement>(UI_HOST_SELECTOR)).map(element => ({
       element,
       captureHidden: element.getAttribute(CAPTURE_HIDDEN_ATTRIBUTE),
@@ -306,11 +317,13 @@ export function bindJourneyPage(): () => void {
   const dispose = () => {
     if (disposed) return;
     disposed = true;
-    stopRecording();
-    api.runtime.onMessage.removeListener(listener);
-    window.removeEventListener('resize', resize);
-    window.visualViewport?.removeEventListener('resize', resize);
-    window.removeEventListener('pagehide', dispose);
+    try {
+      stopRecording();
+      api.runtime.onMessage.removeListener(listener);
+      window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
+      window.removeEventListener('pagehide', dispose);
+    } finally { onDispose?.(); }
   };
   api.runtime.onMessage.addListener(listener);
   window.addEventListener('pagehide', dispose, { once: true });
