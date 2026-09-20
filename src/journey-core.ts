@@ -100,6 +100,7 @@ export interface JourneyImage {
 export interface JourneyDraftImage extends Omit<JourneyImage, 'captureUrl' | 'redacted'> {
   captureUrl: string;
   dataUrl?: string;
+  redacted?: boolean;
 }
 
 export interface JourneyManifestV1 {
@@ -462,7 +463,7 @@ function validateImage(value: unknown, path: string, errors: string[], reviewed:
   if (!isObject(value)) { errors.push(`${path} must be image metadata`); return 0; }
   exactKeys(value, reviewed
     ? ['capturedAt', 'captureUrl', 'width', 'height', 'byteLength', 'viewport', 'scroll', 'redacted']
-    : ['capturedAt', 'captureUrl', 'width', 'height', 'byteLength', 'viewport', 'scroll'], reviewed ? [] : ['dataUrl'], path, errors);
+    : ['capturedAt', 'captureUrl', 'width', 'height', 'byteLength', 'viewport', 'scroll'], reviewed ? [] : ['dataUrl', 'redacted'], path, errors);
   if (!validTimestamp(value.capturedAt)) errors.push(`${path}.capturedAt is invalid`);
   if (reviewed) {
     validateReviewedText(value.captureUrl, `${path}.captureUrl`, errors, true);
@@ -478,6 +479,7 @@ function validateImage(value: unknown, path: string, errors: string[], reviewed:
         if (!inspection.ok) errors.push(`${path}.dataUrl ${inspection.detail}`);
       }
     }
+    if (value.redacted !== undefined && typeof value.redacted !== 'boolean') errors.push(`${path}.redacted must be a boolean`);
   }
   if (!Number.isInteger(value.width) || (value.width as number) <= 0 || (value.width as number) > JOURNEY_LIMITS.maxImageLongestSide) errors.push(`${path}.width is invalid`);
   if (!Number.isInteger(value.height) || (value.height as number) <= 0 || (value.height as number) > JOURNEY_LIMITS.maxImageLongestSide) errors.push(`${path}.height is invalid`);
