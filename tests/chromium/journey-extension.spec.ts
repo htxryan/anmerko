@@ -455,6 +455,96 @@ test('recovers a recorder across background reboot and accepts a port batch post
   expect(recovered.draft.steps).toHaveLength(2);
 });
 
+for (const wake of [
+  { name: 'fragment', kind: 'same-document' as const, url: 'https://example.test/path?item=1#wake-target' },
+  { name: 'document', kind: 'document' as const, url: 'https://example.test/cold-document' },
+]) {
+  test(`preserves the trusted click before a cold-wake ${wake.name} navigation`, async ({ page }) => {
+    await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+    const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    const batch = {
+      schemaVersion: 1, sessionId: before.sessionId, epoch: before.epoch,
+      documentToken: before.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: `cold-${wake.name}-click`, observedAt: new Date().toISOString(), elapsedMs: 20,
+        sourceUrl: 'https://example.test/path?item=1#top',
+        target: { tag: 'button', selectorPath: ['button'], label: 'Navigate', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: `cold-${wake.name}-capture` },
+      }],
+    };
+
+    await page.evaluate(({ owner, batch, nextUrl, kind }) => {
+      const harness = (globalThis as HarnessWindow).harness;
+      harness.deferPermission = true;
+      harness.reboot();
+      const port = harness.connectPort('anmerko-journey-events-v1', owner);
+      harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch });
+      harness.tabs[1].url = nextUrl;
+      harness.identity = {
+        ...harness.identity,
+        documentToken: kind === 'document' ? 'cold-wake-document' : harness.identity.documentToken,
+        url: nextUrl,
+        generation: 0,
+      };
+      if (kind === 'document') delete harness.identity.recording;
+      harness.events[kind === 'document' ? 'committed' : 'fragment']
+        .emit({ tabId: 1, frameId: 0, url: nextUrl, documentLifecycle: 'active' });
+    }, { owner: ownerPage, batch, nextUrl: wake.url, kind: wake.kind });
+    await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releasePermission))).toBe(true);
+    await page.evaluate(() => {
+      const harness = (globalThis as HarnessWindow).harness;
+      harness.deferPermission = false;
+      harness.releasePermission?.();
+    });
+
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
+      .toBe(before.draft.steps.length + 2);
+    const recovered = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    expect(recovered.phase).toBe('recording');
+    expect(recovered.draft.steps.slice(-2).map((step: any) => step.kind)).toEqual(['click', 'navigation']);
+    expect(recovered.draft.steps.at(-2)).toMatchObject({ id: `cold-${wake.name}-click`, sourceUrl: batch.events[0].sourceUrl });
+    expect(recovered.draft.steps.at(-1)).toMatchObject({ navigation: { toUrl: wake.url } });
+  });
+}
+
+test('rejects a cold-wake click observed after its same-document navigation', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const nextUrl = 'https://example.test/path?item=1#navigation-first';
+  await page.evaluate(({ owner, state, url }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.deferPermission = true;
+    harness.reboot();
+    harness.tabs[1].url = url;
+    harness.identity.url = url;
+    harness.events.fragment.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+    const port = harness.connectPort('anmerko-journey-events-v1', owner);
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: 'late-old-url-click', observedAt: new Date().toISOString(), elapsedMs: 20,
+        sourceUrl: 'https://example.test/path?item=1#top',
+        target: { tag: 'button', selectorPath: ['button'], label: 'Late', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: 'late-old-url-capture' },
+      }],
+    } });
+  }, { owner: ownerPage, state: before, url: nextUrl });
+  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releasePermission))).toBe(true);
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.deferPermission = false;
+    harness.releasePermission?.();
+  });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
+    .toBe(before.draft.steps.length + 1);
+  const recovered = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(recovered.draft.steps.at(-1)).toMatchObject({ kind: 'navigation', navigation: { toUrl: nextUrl } });
+  expect(recovered.draft.steps.some((step: any) => step.id === 'late-old-url-click')).toBe(false);
+});
+
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands

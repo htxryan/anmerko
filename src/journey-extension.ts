@@ -163,11 +163,35 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let stateWriteFailureVersion = 0;
   let lastStateWriteError: unknown;
   let handlingStorageFailure = false;
+  const wakeQueueOverflowedTabs = new Set<number>();
   const connectedEventPorts = new Map<chrome.runtime.Port, { tabId: number; windowId: number }>();
-  const pendingWakeNavigations: Array<{
+  type PendingWakeEvent = {
+    type: 'navigation';
     details: { tabId: number; frameId: number; url: string; documentLifecycle?: string };
     kind: 'document' | 'same-document';
-  }> = [];
+  } | {
+    type: 'batch';
+    tabId: number;
+    run(): Promise<void>;
+    discard(): void;
+  };
+  const pendingWakeEvents: PendingWakeEvent[] = [];
+
+  const discardPendingWakeEvents = () => {
+    wakeQueueOverflowedTabs.clear();
+    for (const event of pendingWakeEvents.splice(0)) if (event.type === 'batch') event.discard();
+  };
+
+  const bufferWakeEvent = (event: PendingWakeEvent): boolean => {
+    if (pendingWakeEvents.length >= MAX_PENDING_WAKE_EVENTS) {
+      wakeQueueOverflowedTabs.add(event.type === 'navigation' ? event.details.tabId : event.tabId);
+      if (event.type === 'batch') event.discard();
+      return false;
+    }
+    pendingWakeEvents.push(event);
+    return true;
+  };
+  const wakeEventsWaiting = () => wakeQueueOverflowedTabs.size > 0 || pendingWakeEvents.length > 0;
 
   const enqueueRoutedEvent = (operation: () => Promise<void> | void) => {
     routedEvents = routedEvents.then(async () => {
@@ -522,8 +546,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (!initialized) {
       const state = controller.getState();
       if (activeState(state) && (details.tabId !== state.ownerTabId || details.frameId !== 0)) return;
-      if (pendingWakeNavigations.length >= MAX_PENDING_WAKE_EVENTS) pendingWakeNavigations.shift();
-      pendingWakeNavigations.push({ details: { ...details }, kind });
+      bufferWakeEvent({ type: 'navigation', details: { ...details }, kind });
       return;
     }
     enqueueRoutedEvent(async () => {
@@ -659,33 +682,49 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       return;
     }
 
-    const drainOwnerWakeEvents = (): 'document' | 'same-document' | undefined => {
-      const current = controller.getState();
-      if (current.phase !== 'recording') {
-        pendingWakeNavigations.length = 0;
-        return;
+    const drainOwnerWakeEvents = async (): Promise<'document' | 'same-document' | undefined> => {
+      let navigation: 'document' | 'same-document' | undefined;
+      const pending = pendingWakeEvents.splice(0);
+      for (const [index, event] of pending.entries()) {
+        const current = controller.getState();
+        if (current.phase !== 'recording') {
+          for (const remaining of pending.slice(index)) if (remaining.type === 'batch') remaining.discard();
+          return navigation;
+        }
+        if (event.type === 'batch') {
+          await event.run();
+          continue;
+        }
+        if (event.details.tabId !== current.ownerTabId || event.details.frameId !== 0
+          || (event.details.documentLifecycle !== undefined && event.details.documentLifecycle !== 'active')) continue;
+        routeNavigationNow(event.details, event.kind);
+        if (event.kind === 'document') navigation = 'document';
+        else navigation ??= 'same-document';
       }
-      const pending = pendingWakeNavigations.splice(0).filter(item => item.details.tabId === current.ownerTabId
-        && item.details.frameId === 0
-        && (item.details.documentLifecycle === undefined || item.details.documentLifecycle === 'active'));
-      for (const event of pending) routeNavigationNow(event.details, event.kind);
-      return pending.some(event => event.kind === 'document') ? 'document'
-        : pending.length > 0 ? 'same-document' : undefined;
+      return navigation;
     };
 
     for (let attempt = 0; attempt <= MAX_PENDING_WAKE_EVENTS; attempt += 1) {
-      if (drainOwnerWakeEvents() === 'document') return;
+      if (wakeQueueOverflowedTabs.has(state.ownerTabId)) {
+        discardPendingWakeEvents();
+        await controller.stop('capture-failed');
+        return;
+      }
+      wakeQueueOverflowedTabs.clear();
+      const wakeNavigation = await drainOwnerWakeEvents();
+      if (wakeQueueOverflowedTabs.has(state.ownerTabId)) continue;
+      if (wakeNavigation === 'document') return;
       state = controller.getState();
       if (state.phase !== 'recording') return;
 
       let tab: chrome.tabs.Tab;
       try { tab = await api.tabs.get(state.ownerTabId); }
       catch {
-        if (pendingWakeNavigations.length) continue;
+        if (wakeEventsWaiting()) continue;
         await controller.stop('tab-lost');
         return;
       }
-      if (pendingWakeNavigations.length) continue;
+      if (wakeEventsWaiting()) continue;
       if (!validInteger(tab.windowId) || tab.windowId !== state.ownerWindowId) {
         await controller.stop('tab-lost');
         return;
@@ -702,14 +741,14 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }
       const expectedUrl = recordingUrl(state);
       if (!expectedUrl || tabUrl !== expectedUrl) {
-        if (pendingWakeNavigations.length) continue;
+        if (wakeEventsWaiting()) continue;
         await controller.stop('capture-failed');
         return;
       }
       if (windowsApi?.get) {
         let focused = false;
         try { focused = Boolean((await windowsApi.get(state.ownerWindowId)).focused); } catch { /* Fail closed below. */ }
-        if (pendingWakeNavigations.length) continue;
+        if (wakeEventsWaiting()) continue;
         if (!focused) {
           await controller.stop('focus-lost');
           return;
@@ -718,11 +757,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       let identity: JourneyPageIdentity;
       try { identity = pageIdentity(await pageCommand(state.ownerTabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })); }
       catch {
-        if (pendingWakeNavigations.length) continue;
+        if (wakeEventsWaiting()) continue;
         await controller.stop('capture-failed');
         return;
       }
-      if (pendingWakeNavigations.length) continue;
+      if (wakeEventsWaiting()) continue;
       const current = controller.getState();
       if (current.phase !== 'recording') return;
       if (!identity.visible || identity.documentToken !== current.documentToken || identity.url !== expectedUrl
@@ -737,11 +776,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
           count: current.draft.steps.length, expectedUrl,
         });
       } catch {
-        if (pendingWakeNavigations.length) continue;
+        if (wakeEventsWaiting()) continue;
         await controller.stop('capture-failed');
         return;
       }
-      if (pendingWakeNavigations.length) continue;
+      if (wakeEventsWaiting()) continue;
       return;
     }
     await controller.stop('capture-failed');
@@ -754,8 +793,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     decorateForState(state);
     if (JSON.stringify(state) !== JSON.stringify(restored)) await persistState(state);
     else await syncJourneyAlarms(state);
-    if (state.phase === 'recording') await recoverRecordingOwner();
-    else pendingWakeNavigations.length = 0;
+    if (state.phase === 'recording') {
+      do { await recoverRecordingOwner(); }
+      while (controller.getState().phase === 'recording' && wakeEventsWaiting());
+    } else discardPendingWakeEvents();
     const current = controller.getState();
     if (current.phase === 'reviewing' && Date.now() >= Date.parse(current.warningAt)) showReviewWarning(current);
     initialized = true;
@@ -769,7 +810,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     await syncJourneyAlarms(idle);
     controller = makeController(idle);
     initializationError = undefined;
-    pendingWakeNavigations.length = 0;
+    discardPendingWakeEvents();
     decorateForState(idle);
     await Promise.all(Array.from(connectedEventPorts.values(), candidate => (
       stopStalePageRecorder(candidate.tabId, candidate.windowId)
@@ -959,7 +1000,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         return;
       }
       queued += 1;
-      enqueueRoutedEvent(async () => {
+      let settled = false;
+      const discard = () => {
+        if (settled) return;
+        settled = true;
+        queued -= 1;
+      };
+      const run = async () => {
         try {
           const current = controller.getState();
           if (current.phase !== 'recording' || current.ownerTabId !== senderTabId
@@ -976,8 +1023,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
           controller.acceptBatch(rawMessage.batch, senderTabId);
           await latestStateWrite;
         } catch { /* Malformed or stale page batches fail closed. */ }
-        finally { queued -= 1; }
-      });
+        finally { discard(); }
+      };
+      if (!initialized) {
+        if (!bufferWakeEvent({ type: 'batch', tabId: senderTabId, run, discard })) disconnectPort(port);
+        return;
+      }
+      enqueueRoutedEvent(run);
     };
     const disconnected = () => {
       connectedEventPorts.delete(port);
@@ -1051,7 +1103,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   ready = initialize().catch(async error => {
     initializationError = error;
     initialized = true;
-    pendingWakeNavigations.length = 0;
+    discardPendingWakeEvents();
     if (activeState(controller.getState())) await controller.stop('session-storage-limit');
     await clearJourneyAlarms();
   });
