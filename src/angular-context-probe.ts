@@ -100,7 +100,8 @@ export function angularComponentContextProbe(target: ComponentContextProbeTarget
       const name = nameDescriptor.value;
       if (name.length > 128) return null;
       const codePointLength = Array.from(name).length;
-      if (codePointLength < 2 || codePointLength > 64 || !/\S/u.test(name) || /\p{Cc}/u.test(name)) return null;
+      if (codePointLength < 2 || codePointLength > 64 || !/\S/u.test(name)
+        || /[\p{Cc}\p{Bidi_Control}\p{Zl}\p{Zp}]/u.test(name)) return null;
       return name;
     }
 
