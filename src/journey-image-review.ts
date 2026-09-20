@@ -65,10 +65,12 @@ export function reviewJourneyImage(
 ): Promise<JourneyImageReviewResult> {
   if (signal.aborted || !validDimensions(input)) return Promise.resolve({ kind: 'cancelled' });
 
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   let sourceDataUrl = input.dataUrl;
-  const view = element('section', 'journey-image-review');
+  const view = element('dialog', 'journey-image-review');
   view.setAttribute('role', 'dialog');
   view.setAttribute('aria-label', 'Mask screenshot');
+  view.setAttribute('aria-modal', 'true');
 
   const heading = element('h2', 'journey-image-review__heading');
   heading.textContent = 'Mask sensitive details';
@@ -124,6 +126,7 @@ export function reviewJourneyImage(
   actions.append(remove, cancel, apply);
   view.append(heading, help, stage, fields, error, actions);
   root.replaceChildren(view);
+  view.showModal();
 
   return new Promise(resolve => {
     const listeners = new AbortController();
@@ -176,12 +179,18 @@ export function reviewJourneyImage(
       preview?.remove();
       preview = null;
       sourceDataUrl = '';
+      if (view.open) view.close();
       view.remove();
+      if (returnFocus?.isConnected) returnFocus.focus();
       resolve(result);
     }
 
     const abort = () => finish({ kind: 'cancelled' });
     signal.addEventListener('abort', abort, { once: true });
+    view.addEventListener('cancel', event => {
+      event.preventDefault();
+      finish({ kind: 'cancelled' });
+    }, { signal: listeners.signal });
 
     function cancelGesture(clearPointers = false) {
       if (!drag) {
@@ -304,10 +313,27 @@ export function reviewJourneyImage(
     }, { signal: listeners.signal });
 
     document.addEventListener('keydown', event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      finish({ kind: 'cancelled' });
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        finish({ kind: 'cancelled' });
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls = [...view.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      )].filter(control => control.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls.at(-1);
+      const active = document.activeElement;
+      if (!first || !last) return;
+      if (event.shiftKey && (active === heading || active === first || !view.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !view.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
     }, { capture: true, signal: listeners.signal });
 
     cancel.addEventListener('click', () => finish({ kind: 'cancelled' }), { signal: listeners.signal });

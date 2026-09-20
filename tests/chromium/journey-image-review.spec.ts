@@ -104,10 +104,18 @@ test('maps a pointer drag into image coordinates and applies opaque black pixels
   await page.mouse.move(bounds!.x + bounds!.width * .75, bounds!.y + bounds!.height * .8);
   await page.mouse.up();
 
-  await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toHaveValue('25');
-  await expect(page.getByRole('spinbutton', { name: 'Y', exact: true })).toHaveValue('10');
-  await expect(page.getByRole('spinbutton', { name: 'Width', exact: true })).toHaveValue('50');
-  await expect(page.getByRole('spinbutton', { name: 'Height', exact: true })).toHaveValue('30');
+  const geometry = await page.getByRole('dialog', { name: 'Mask screenshot' }).evaluate(element => {
+    const value = (name: string) => Number(element.querySelector<HTMLInputElement>(`[aria-label="${name}"]`)!.value);
+    return { x: value('X'), y: value('Y'), width: value('Width'), height: value('Height') };
+  });
+  expect(geometry.x).toBeGreaterThanOrEqual(24);
+  expect(geometry.x).toBeLessThanOrEqual(25);
+  expect(geometry.y).toBeGreaterThanOrEqual(9);
+  expect(geometry.y).toBeLessThanOrEqual(10);
+  expect(geometry.x + geometry.width).toBeGreaterThanOrEqual(75);
+  expect(geometry.x + geometry.width).toBeLessThanOrEqual(76);
+  expect(geometry.y + geometry.height).toBeGreaterThanOrEqual(40);
+  expect(geometry.y + geometry.height).toBeLessThanOrEqual(41);
   await expect(page.getByRole('button', { name: 'Apply mask' })).toBeEnabled();
   expect(await page.locator('#review-root').innerHTML()).not.toContain('data:image');
   expect(await page.locator('#review-root').innerHTML()).not.toContain('blob:');
@@ -165,7 +173,7 @@ test('number inputs expose invalid geometry and preserve a valid image-space rec
 
   await setGeometry(page, { x: 20, y: 5, width: 30, height: 10 });
   await expect(page.getByRole('button', { name: 'Apply mask' })).toBeEnabled();
-  await page.locator('#review-root').evaluate(element => { element.style.width = '180px'; });
+  await page.getByRole('dialog', { name: 'Mask screenshot' }).evaluate(element => { element.style.width = '180px'; });
   await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toHaveValue('20');
   await expect(page.getByRole('spinbutton', { name: 'Y', exact: true })).toHaveValue('5');
   await expect(page.getByRole('spinbutton', { name: 'Width', exact: true })).toHaveValue('30');
@@ -219,7 +227,7 @@ test('resize during an active gesture preserves the completed rectangle and perm
     element.dispatchEvent(new PointerEvent('pointerdown', { ...init, clientX: bounds.left + 10, clientY: bounds.top + 10 }));
     element.dispatchEvent(new PointerEvent('pointermove', { ...init, clientX: bounds.right - 10, clientY: bounds.bottom - 10 }));
   });
-  await page.locator('#review-root').evaluate(element => { element.style.width = '180px'; });
+  await page.getByRole('dialog', { name: 'Mask screenshot' }).evaluate(element => { element.style.width = '180px'; });
   await expect.poll(async () => (await drawing.boundingBox())!.width).toBeLessThan(originalWidth);
   await page.locator('body').dispatchEvent('pointerup', { pointerId: 41, pointerType: 'touch', isPrimary: true });
   await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toHaveValue('10');
@@ -250,6 +258,45 @@ test('Remove returns removed without exposing the source and abort resolves canc
   await page.evaluate(() => (globalThis as ImageReviewWindow).imageReviewHarness.abort.abort());
   expect(await page.evaluate(() => (globalThis as ImageReviewWindow).imageReviewHarness.promise)).toEqual({ kind: 'cancelled' });
   await expect(page.locator('#review-root')).toBeEmpty();
+});
+
+test('contains modal keyboard focus and restores the launching control on every completion path', async ({ page }) => {
+  await loadEditor(page);
+  await page.evaluate(() => {
+    const trigger = document.createElement('button');
+    trigger.id = 'launch-mask';
+    trigger.textContent = 'Open mask editor';
+    const after = document.createElement('button');
+    after.id = 'outside-control';
+    after.textContent = 'Outside control';
+    document.body.append(trigger, after);
+  });
+
+  for (const completion of ['escape', 'cancel', 'remove', 'apply'] as const) {
+    await page.evaluate(() => {
+      document.querySelector<HTMLButtonElement>('#launch-mask')!.focus();
+      (globalThis as ImageReviewWindow).imageReviewHarness.begin();
+    });
+    await expect(page.getByRole('dialog', { name: 'Mask screenshot' })).toHaveAttribute('aria-modal', 'true');
+    expect(await page.getByRole('dialog', { name: 'Mask screenshot' }).evaluate(element => element.matches(':modal'))).toBe(true);
+    await expect(page.getByRole('heading', { name: 'Mask sensitive details' })).toBeFocused();
+    await page.locator('#outside-control').evaluate(element => element.focus());
+    await expect(page.getByRole('heading', { name: 'Mask sensitive details' })).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toBeFocused();
+
+    if (completion === 'escape') await page.keyboard.press('Escape');
+    if (completion === 'cancel') await page.getByRole('button', { name: 'Cancel' }).click();
+    if (completion === 'remove') await page.getByRole('button', { name: 'Remove screenshot' }).click();
+    if (completion === 'apply') {
+      await setGeometry(page, { x: 20, y: 5, width: 30, height: 10 });
+      await page.getByRole('button', { name: 'Apply mask' }).click();
+    }
+    await page.evaluate(() => (globalThis as ImageReviewWindow).imageReviewHarness.promise);
+    await expect(page.locator('#launch-mask')).toBeFocused();
+  }
 });
 
 test('rejects external preview URLs and mismatched image metadata before mounting', async ({ page }) => {

@@ -1,13 +1,19 @@
 .journey-image-review {
   box-sizing: border-box;
+  border: 0;
   display: grid;
   gap: 16px;
   max-height: 100%;
   max-width: 720px;
+  margin: auto;
   overflow: auto;
   padding: 16px;
   touch-action: pan-y;
   width: 100%;
+}
+
+.journey-image-review::backdrop {
+  background: rgb(15 23 42 / 55%);
 }
 
 .journey-image-review *,
