@@ -249,6 +249,53 @@ test('the core step and duration limits freeze capture for review', async () => 
   if (expired.phase === 'reviewing') expect(expired.draft.stopReason).toBe('duration-limit');
 });
 
+test('restores recording ownership and counters while abandoning old pending capture work', async () => {
+  const firstFixture = adapterFixture();
+  const first = createJourneyController(firstFixture.adapter);
+  await first.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let before = recording(first.getState());
+  first.acceptBatch(clickBatch(before, 4, 'recovered-step', 'recovered-capture'), 42);
+  before = recording(first.getState());
+  expect(before.draft.steps.at(-1)?.image).toEqual({ status: 'pending', captureId: 'recovered-capture' });
+
+  const recoveredFixture = adapterFixture();
+  const recovered = createJourneyController(recoveredFixture.adapter, before);
+  const state = recording(recovered.getState());
+
+  expect(state).toMatchObject({
+    sessionId: before.sessionId,
+    journeyId: before.journeyId,
+    epoch: before.epoch,
+    ownerTabId: before.ownerTabId,
+    ownerWindowId: before.ownerWindowId,
+    documentToken: before.documentToken,
+    documentCounters: { [before.documentToken]: 4 },
+  });
+  expect(state.draft.steps.map(step => step.seq)).toEqual([1, 2]);
+  expect(state.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'capture-error' });
+  expect(recoveredFixture.calls.capture).toHaveLength(0);
+  expect(recoveredFixture.calls.begin).toHaveLength(0);
+});
+
+test('applies an elapsed recording deadline at recovery and anchors review expiry to that deadline', async () => {
+  const firstFixture = adapterFixture();
+  const first = createJourneyController(firstFixture.adapter);
+  await first.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const before = recording(first.getState());
+  const recoveredFixture = adapterFixture();
+  recoveredFixture.nowMs = Date.parse(before.deadlineAt) + 60_000;
+
+  const recovered = createJourneyController(recoveredFixture.adapter, before);
+  const state = recovered.getState();
+
+  expect(state.phase).toBe('reviewing');
+  if (state.phase === 'reviewing') {
+    expect(state.draft.stopReason).toBe('duration-limit');
+    expect(state.draft.stoppedAt).toBe(before.deadlineAt);
+    expect(state.expiresAt).toBe(new Date(Date.parse(before.deadlineAt) + JOURNEY_LIMITS.maxReviewIdleMs).toISOString());
+  }
+});
+
 function adapterFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
   const delays: Array<ReturnType<typeof deferred<void>>> = [];
   const calls = {

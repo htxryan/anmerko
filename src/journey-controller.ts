@@ -71,9 +71,12 @@ export class JourneyControllerError extends Error {
 const POST_ACTION_DELAY_MS = 500;
 const NAVIGATION_WINDOW_MS = 5_000;
 
-export function createJourneyController(adapter: JourneyControllerAdapter): JourneyController {
-  let state: JourneySession = { phase: 'idle', epoch: 0 };
-  let workGeneration = 0;
+export function createJourneyController(
+  adapter: JourneyControllerAdapter,
+  restoredState: JourneySession = { phase: 'idle', epoch: 0 },
+): JourneyController {
+  let state = prepareRestoredState(restoredState, adapter.now?.() ?? Date.now());
+  let workGeneration = state.phase === 'idle' ? 0 : 1;
   let launching = false;
   let navigationAbort: AbortController | undefined;
   let pendingHandshake: PendingDocumentHandshake | undefined;
@@ -624,4 +627,32 @@ function captureFailureFromError(error: unknown): CaptureFailure {
 
 function captureFailure(reason: CaptureFailure): Error & { reason: CaptureFailure } {
   return Object.assign(new Error('Journey capture failed.'), { reason });
+}
+
+function prepareRestoredState(restoredState: JourneySession, nowMs: number): JourneySession {
+  if (restoredState.phase === 'starting') return failInitialImage(restoredState);
+  if (restoredState.phase === 'reviewing' && nowMs >= Date.parse(restoredState.expiresAt)) {
+    return { phase: 'idle', epoch: restoredState.epoch + 1 };
+  }
+  if (restoredState.phase !== 'recording') return restoredState;
+  if (nowMs >= Date.parse(restoredState.deadlineAt)) {
+    return stopJourney(restoredState, {
+      epoch: restoredState.epoch,
+      stoppedAt: restoredState.deadlineAt,
+      reason: 'duration-limit',
+    });
+  }
+  let recovered = restoredState;
+  for (const step of restoredState.draft.steps) {
+    if (step.image.status !== 'pending') continue;
+    const resolved = resolveJourneyCapture(recovered, {
+      epoch: recovered.epoch,
+      documentToken: recovered.documentToken,
+      captureId: step.image.captureId,
+      status: 'unavailable',
+      reason: 'capture-error',
+    });
+    if (resolved.phase === 'recording') recovered = resolved;
+  }
+  return recovered;
 }
