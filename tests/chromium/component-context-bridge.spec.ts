@@ -51,7 +51,7 @@ test('accepts only an own-extension top-frame HTTP(S) sender and an exact bounde
     [request, { ...sender, id: 'other-extension' }],
     [request, { ...sender, frameId: 1 }],
     [request, { ...sender, tab: undefined, url: 'chrome-extension://extension-id/sidebar.html' }],
-    [request, { ...sender, url: 'file:///tmp/page.html', tab: { id: 42, url: 'file:///tmp/page.html' } }],
+    [request, { ...sender, url: 'file:example.html', tab: { id: 42, url: 'file:example.html' } }],
   ] as const;
   for (const [message, source] of denied) expect(bridge.handle(message, source as chrome.runtime.MessageSender)).toBeUndefined();
   expect(calls).toBe(0);
