@@ -48,6 +48,8 @@
   --local: #8dceb0;
 }
 :host { all: initial !important; }
+/* Shadow !important rules outrank outer inline styles; this owned marker lets capture hide the host without weakening page-style isolation. */
+:host([data-anmerko-capture-hidden]) { display: none !important; visibility: hidden !important; }
 *, *::before, *::after { box-sizing: border-box; }
 .app { font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--text); letter-spacing: normal; text-align: left; }
 .journey-container { position:fixed; inset:0; z-index:2147483647; overflow:auto; background:var(--surface); }

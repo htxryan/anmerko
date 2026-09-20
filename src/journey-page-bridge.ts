@@ -22,8 +22,11 @@ type Recording = {
 
 type HiddenHost = {
   element: HTMLElement;
+  captureHidden: string | null;
+  display: string;
+  displayPriority: string;
   visibility: string;
-  priority: string;
+  visibilityPriority: string;
 };
 
 type PreparedCapture = {
@@ -41,6 +44,7 @@ type Message = Record<string, unknown> & { type?: unknown };
 
 const DOCUMENT_TOKEN = createUuid();
 const GENERIC_ERROR = 'Journey command unavailable.';
+const CAPTURE_HIDDEN_ATTRIBUTE = 'data-anmerko-capture-hidden';
 const UI_HOST_SELECTOR = 'anmerko-overlay, anmerko-image, anmerko-journey-strip';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 
@@ -166,8 +170,12 @@ export function bindJourneyPage(): () => void {
     clearTimeout(capture.timeout);
     for (const hidden of capture.hiddenHosts) {
       if (!hidden.element.isConnected) continue;
-      if (hidden.visibility) hidden.element.style.setProperty('visibility', hidden.visibility, hidden.priority);
+      if (hidden.display) hidden.element.style.setProperty('display', hidden.display, hidden.displayPriority);
+      else hidden.element.style.removeProperty('display');
+      if (hidden.visibility) hidden.element.style.setProperty('visibility', hidden.visibility, hidden.visibilityPriority);
       else hidden.element.style.removeProperty('visibility');
+      if (hidden.captureHidden === null) hidden.element.removeAttribute(CAPTURE_HIDDEN_ATTRIBUTE);
+      else hidden.element.setAttribute(CAPTURE_HIDDEN_ATTRIBUTE, hidden.captureHidden);
     }
   };
 
@@ -238,10 +246,17 @@ export function bindJourneyPage(): () => void {
     if (!validId(message.captureId) || message.documentToken !== DOCUMENT_TOKEN || preparedCapture) return failure();
     const hiddenHosts = Array.from(document.querySelectorAll<HTMLElement>(UI_HOST_SELECTOR)).map(element => ({
       element,
+      captureHidden: element.getAttribute(CAPTURE_HIDDEN_ATTRIBUTE),
+      display: element.style.getPropertyValue('display'),
+      displayPriority: element.style.getPropertyPriority('display'),
       visibility: element.style.getPropertyValue('visibility'),
-      priority: element.style.getPropertyPriority('visibility'),
+      visibilityPriority: element.style.getPropertyPriority('visibility'),
     }));
-    for (const hidden of hiddenHosts) hidden.element.style.setProperty('visibility', 'hidden', 'important');
+    for (const hidden of hiddenHosts) {
+      hidden.element.setAttribute(CAPTURE_HIDDEN_ATTRIBUTE, '');
+      hidden.element.style.setProperty('display', 'none', 'important');
+      hidden.element.style.setProperty('visibility', 'hidden', 'important');
+    }
     const capture: PreparedCapture = {
       captureId: message.captureId,
       hiddenHosts,
