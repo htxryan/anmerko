@@ -183,7 +183,9 @@ test('uses bounded visible text and structural selectors without reading editabl
         <button id="secret-id" name="secret-name" data-secret="attribute-secret" aria-label="aria-secret">${'Visible label '.repeat(20)}</button>
       </div></div></div></div></div></div></div></div></div></div></div></div></div></div>
       <input type="text" value="value-secret" placeholder="placeholder-secret" aria-label="aria-input-secret">
-      <div class="aggregate">Safe container text<textarea>editable-descendant-secret</textarea></div>
+      <div class="aggregate" role="private-account-token">Safe container text<textarea>editable-descendant-secret</textarea></div>
+      <div class="known-role" role="status">Ready</div>
+      <div class="large-tree" role="button" style="display:block;padding-top:40px"></div>
     </main>
   `);
   await page.evaluate(() => {
@@ -194,12 +196,20 @@ test('uses bounded visible text and structural selectors without reading editabl
       get() { (globalThis as RecorderWindow).valueReads++; return descriptor.get!.call(this); },
       set(value) { descriptor.set!.call(this, value); },
     });
+    const large = document.querySelector('.large-tree')!;
+    for (let index = 0; index < 2_000; index++) {
+      const span = document.createElement('span');
+      span.textContent = `visible-${index} `;
+      large.append(span);
+    }
   });
   await attach(page);
 
   await page.locator('#secret-id').click();
   await page.locator('input').click();
   await page.locator('.aggregate').click({ position: { x: 5, y: 5 } });
+  await page.locator('.known-role').click();
+  await page.locator('.large-tree').click({ position: { x: 5, y: 5 } });
 
   const recorded = await batches(page);
   const button = recorded[0].events[0].target;
@@ -212,7 +222,11 @@ test('uses bounded visible text and structural selectors without reading editabl
   expect(recorded[1].events[0].target).toMatchObject({ tag: 'input', role: 'textbox', label: 'text field' });
   expect(recorded[1].events[0].target.editable).toBe(true);
   expect(JSON.stringify(recorded[1])).not.toMatch(/value-secret|placeholder-secret|aria-input-secret/);
-  expect(recorded[2].events[0].target.label).toContain('Safe container text');
-  expect(recorded[2].events[0].target.label).not.toContain('editable-descendant-secret');
+  expect(recorded[2].events[0].target).toMatchObject({ label: 'div', editable: false });
+  expect(recorded[2].events[0].target.role).toBeUndefined();
+  expect(JSON.stringify(recorded[2])).not.toMatch(/private-account-token|Safe container text|editable-descendant-secret/);
+  expect(recorded[3].events[0].target).toMatchObject({ role: 'status', label: 'Ready' });
+  expect(Array.from(recorded[4].events[0].target.label)).toHaveLength(120);
+  expect(recorded[4].events[0].target.label).toMatch(/^visible-0 visible-1/);
   expect(await page.evaluate(() => (globalThis as RecorderWindow).valueReads)).toBe(0);
 });

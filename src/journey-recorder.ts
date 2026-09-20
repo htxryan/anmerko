@@ -11,8 +11,18 @@ export type JourneyRecorderOptions = {
 };
 
 const EDITABLE_TAGS = new Set(['input', 'select', 'textarea']);
+const EDITABLE_SELECTOR = 'input, select, textarea, [contenteditable]:not([contenteditable="false"])';
 const PRIVATE_TEXT_TAGS = new Set(['script', 'style', 'noscript']);
 const UI_HOSTS = new Set(['anmerko-overlay', 'anmerko-journey-strip']);
+const SEMANTIC_ROLES = new Set([
+  'alert', 'alertdialog', 'application', 'article', 'banner', 'button', 'cell', 'checkbox', 'columnheader',
+  'combobox', 'complementary', 'contentinfo', 'definition', 'dialog', 'document', 'feed', 'figure', 'form',
+  'grid', 'gridcell', 'group', 'heading', 'img', 'link', 'list', 'listbox', 'listitem', 'log', 'main', 'marquee',
+  'math', 'menu', 'menubar', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'meter', 'navigation', 'none',
+  'note', 'option', 'paragraph', 'presentation', 'progressbar', 'radio', 'radiogroup', 'region', 'row', 'rowgroup',
+  'rowheader', 'scrollbar', 'search', 'searchbox', 'separator', 'slider', 'spinbutton', 'status', 'switch', 'tab',
+  'table', 'tablist', 'tabpanel', 'term', 'textbox', 'timer', 'toolbar', 'tooltip', 'tree', 'treegrid', 'treeitem',
+]);
 const ROLE_BY_TAG: Record<string, string> = {
   a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
 };
@@ -39,7 +49,7 @@ function editableAncestor(element: Element): Element | null {
 
 function roleFor(element: Element): string | undefined {
   const explicit = element.getAttribute('role')?.split(/\s+/)[0].toLowerCase();
-  if (explicit && /^[a-z][a-z-]{0,39}$/.test(explicit)) return explicit;
+  if (explicit && SEMANTIC_ROLES.has(explicit)) return explicit;
   if (element.localName === 'a' && !element.hasAttribute('href')) return undefined;
   if (element.localName === 'input') {
     const type = (element.getAttribute('type') || 'text').toLowerCase();
@@ -70,19 +80,31 @@ function genericLabel(element: Element): string {
 function safeText(element: Element): string {
   const editable = editableAncestor(element);
   if (editable) return genericLabel(editable);
-  const chunks: string[] = [];
+  if (element.querySelector(EDITABLE_SELECTOR)) return genericLabel(element);
+  const characters: string[] = [];
+  let nodes = 0;
+  let pendingSpace = false;
+  const append = (text: string) => {
+    for (const character of text) {
+      if (/\s/u.test(character)) { pendingSpace = characters.length > 0; continue; }
+      if (pendingSpace && characters.length < 120) characters.push(' ');
+      pendingSpace = false;
+      if (characters.length < 120) characters.push(character);
+      if (characters.length === 120) return;
+    }
+  };
   const visit = (node: Node) => {
-    if (node instanceof Text) { chunks.push(node.data); return; }
+    if (++nodes > 256 || characters.length === 120) return;
+    if (node instanceof Text) { append(node.data); return; }
     if (!(node instanceof Element) && node !== element) return;
     if (node instanceof Element && node !== element) {
       if (isEditableElement(node) || PRIVATE_TEXT_TAGS.has(node.localName)
         || node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true') return;
     }
-    for (const child of node.childNodes) visit(child);
+    for (let child = node.firstChild; child && nodes < 256 && characters.length < 120; child = child.nextSibling) visit(child);
   };
   visit(element);
-  const text = chunks.join(' ').replace(/\s+/g, ' ').trim();
-  return Array.from(text || genericLabel(element)).slice(0, 120).join('');
+  return characters.join('') || genericLabel(element);
 }
 
 function selectorSegment(element: Element): string {
@@ -96,11 +118,11 @@ function selectorSegment(element: Element): string {
 function structuralSelector(element: Element): string[] {
   const segments: string[] = [];
   let current: Element | null = element;
-  while (current) {
-    segments.unshift(selectorSegment(current));
+  while (current && segments.length < 12) {
+    segments.push(selectorSegment(current));
     current = parentAcrossShadow(current);
   }
-  return segments.slice(-12);
+  return segments.reverse();
 }
 
 function eventTarget(event: MouseEvent): Element | null {
