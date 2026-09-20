@@ -54,7 +54,8 @@ export function vueComponentContextProbe(target: ComponentContextProbeTarget): s
       return selected;
     }
     function usableName(value: unknown, explicit: boolean): string | null {
-      if (typeof value !== 'string' || value.length > 128 || !/\S/u.test(value) || /\p{Cc}/u.test(value)) return null;
+      if (typeof value !== 'string' || value.length > 128 || !/\S/u.test(value)
+        || /[\p{Cc}\p{Bidi_Control}\p{Zl}\p{Zp}]/u.test(value)) return null;
       const length = Array.from(value).length;
       if (length > 64 || (!explicit && length < 2)) return null;
       return value;

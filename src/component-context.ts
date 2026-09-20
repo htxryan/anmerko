@@ -57,7 +57,7 @@ function pathValues(value: unknown): string[] | undefined {
       const name = properties[String(index)];
       // Bound code-unit work before scanning page/storage-provided strings.
       if (typeof name !== 'string' || name.length > COMPONENT_CONTEXT_MAX_NAME_CODE_POINTS * 2
-        || !/\S/u.test(name) || /\p{Cc}/u.test(name)) return undefined;
+        || !/\S/u.test(name) || /[\p{Cc}\p{Bidi_Control}\p{Zl}\p{Zp}]/u.test(name)) return undefined;
       const codePoints = Array.from(name).length;
       if (codePoints > COMPONENT_CONTEXT_MAX_NAME_CODE_POINTS) return undefined;
       totalCodePoints += codePoints;
