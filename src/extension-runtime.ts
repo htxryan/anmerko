@@ -1,5 +1,6 @@
 import { closeDock } from './docking';
 import styles from './panel.css';
+import journeyStyles from './journey.css';
 import type { Presentation, Runtime } from './runtime';
 
 import { extensionApi } from './platform';
@@ -152,7 +153,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
     attachStyles(shadow) {
       const sheet = document.createElement('style');
-      sheet.textContent = styles;
+      sheet.textContent = styles + (journeysEnabled ? journeyStyles : '');
       shadow.prepend(sheet);
     },
     async capture() {

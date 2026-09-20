@@ -1,7 +1,6 @@
 import type { JourneySession } from './journey-core';
 import type { CaptureFailure } from './journey-limits';
 import { privateImage } from './screenshot';
-import styles from './journey.css';
 
 export interface JourneyClient {
   read(): Promise<JourneySession>;
@@ -42,10 +41,9 @@ function elapsed(ms: number): string {
 // Mount only in a trusted extension surface (or an isolated demo adapter).
 // The website recording strip never receives this client or its draft.
 export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => void {
-  const style = node('style', styles);
   const view = node('section', undefined, 'journey-view');
   view.setAttribute('aria-label', 'Journey recording and review');
-  root.append(style, view);
+  root.append(view);
   let state: JourneySession = { phase: 'idle', epoch: 0 };
   let busy = false;
   let alive = true;
@@ -159,5 +157,5 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
 
   const unsubscribe = client.subscribe(() => { void refresh(); });
   void refresh();
-  return () => { alive = false; ++version; unsubscribe(); view.remove(); style.remove(); };
+  return () => { alive = false; ++version; unsubscribe(); view.remove(); };
 }

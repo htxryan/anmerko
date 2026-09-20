@@ -3,6 +3,10 @@ import { buildSync } from 'esbuild';
 
 const bundle = () => buildSync({ stdin: { contents: `
   import { mountJourneyUI } from './src/journey-ui';
+  import styles from './src/journey.css';
+  const style = document.createElement('style');
+  style.textContent = styles;
+  document.head.append(style);
   let state = { phase: 'idle', epoch: 0 };
   let changed = () => {};
   const calls = [];
