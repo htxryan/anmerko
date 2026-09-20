@@ -56,7 +56,6 @@ export default defineConfig({
         { label: 'Example prompt', slug: 'docs/example-prompt' },
         { label: 'Privacy and limitations', slug: 'docs/privacy' },
         { label: 'Troubleshooting', slug: 'docs/troubleshooting' },
-        { label: 'Release notes', slug: 'docs/releases' },
       ] },
     ],
   })],
