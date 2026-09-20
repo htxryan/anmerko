@@ -4,6 +4,19 @@ import { test } from 'node:test';
 
 const section = (filters, name, next) => filters.slice(filters.indexOf(`${name}:`), next ? filters.indexOf(`\n${next}:`) : undefined);
 
+test('all framework fixtures and page probes select the full browser matrix', async () => {
+  const filters = await readFile('.github/filters.yml', 'utf8');
+  for (const [name, next] of [['chrome', 'firefox'], ['firefox', 'site'], ['highrisk', 'releasegate']]) {
+    const scope = section(filters, name, next);
+    assert.ok(scope.includes("'tests/fixtures/component-context/**'"), `${name}: Angular and shared fixture-only edits must run browser checks`);
+    assert.ok(scope.includes("'scripts/browsers/setup-component-fixtures.mjs'"), `${name}: fixture setup must run browser checks`);
+  }
+  const highrisk = section(filters, 'highrisk', 'releasegate');
+  for (const path of ['src/react-context-probe.ts', 'src/vue-context-probe.ts', 'src/angular-context-probe.ts', 'src/component-context*.ts']) {
+    assert.ok(highrisk.includes(`'${path}'`), `${path} must force full browser validation`);
+  }
+});
+
 test('standalone release and deployment helpers select their required CI jobs', async () => {
   const filters = await readFile('.github/filters.yml', 'utf8');
   const common = section(filters, 'common', 'extension');
