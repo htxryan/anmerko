@@ -42,6 +42,8 @@ const DEFAULT_ACTION_TITLE = 'Annotate with anmerko';
 const RECORDING_ACTION_TITLE = 'Stop journey recording';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const LAUNCH_TTL_MS = 5 * 60 * 1_000;
+const OBSERVER_CONNECT_TIMEOUT_MS = 5_000;
+const OBSERVER_RETRY_MS = 50;
 const REQUIRED_JOURNEY_PERMISSIONS: chrome.permissions.Permissions = {
   origins: ['<all_urls>'], permissions: ['webNavigation'],
 };
@@ -126,6 +128,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let launchOpening = false;
   let reviewTabId: number | undefined;
   let reviewOpening: Promise<void> | undefined;
+  let navigationApi: typeof chrome.webNavigation | undefined;
+  let navigationListenersInstalled = false;
   let controller: JourneyController;
 
   const journeyLocation = (url: unknown): { kind: 'review' } | { kind: 'launch'; intent: string } | undefined => {
@@ -205,6 +209,53 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     const after = await focusedOwnerTab(tabId, before.windowId, before.url);
     if (identity.url !== after.url) throw new Error(GENERIC_ERROR);
     return identity;
+  };
+
+  const connect = async (tabId: number, expectedUrl: string): Promise<JourneyPageIdentity> => {
+    const sanitizedUrl = normalizedUrl(expectedUrl);
+    if (sanitizedUrl !== expectedUrl) throw new Error(GENERIC_ERROR);
+    const snapshot = controller.getState();
+    if (snapshot.phase !== 'recording' || snapshot.ownerTabId !== tabId) throw new Error(GENERIC_ERROR);
+    const stillCurrent = () => {
+      const current = controller.getState();
+      return current.phase === 'recording' && current.sessionId === snapshot.sessionId
+        && current.epoch === snapshot.epoch && current.ownerTabId === snapshot.ownerTabId
+        && current.ownerWindowId === snapshot.ownerWindowId && current.documentToken === snapshot.documentToken;
+    };
+    const hasGrant = async () => Boolean(api.permissions?.contains
+      && await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS));
+
+    await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
+    if (!stillCurrent()) throw new Error(GENERIC_ERROR);
+    const grantedBeforeInjection = await hasGrant();
+    if (!stillCurrent() || !grantedBeforeInjection || !api.scripting?.executeScript) throw new Error(GENERIC_ERROR);
+    await api.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      files: ['journey-observer.js'],
+      injectImmediately: true,
+    });
+    if (!stillCurrent()) throw new Error(GENERIC_ERROR);
+    const grantedAfterInjection = await hasGrant();
+    if (!stillCurrent() || !grantedAfterInjection) throw new Error(GENERIC_ERROR);
+    await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
+
+    const expiresAt = Date.now() + OBSERVER_CONNECT_TIMEOUT_MS;
+    while (stillCurrent() && Date.now() < expiresAt) {
+      let response: unknown;
+      try {
+        response = await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' });
+      } catch {
+        await delay(OBSERVER_RETRY_MS);
+        continue;
+      }
+      const identity = pageIdentity(response);
+      await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
+      if (!stillCurrent()) throw new Error(GENERIC_ERROR);
+      const grantStillPresent = await hasGrant();
+      if (!stillCurrent() || !grantStillPresent || identity.url !== sanitizedUrl) throw new Error(GENERIC_ERROR);
+      return identity;
+    }
+    throw new Error(GENERIC_ERROR);
   };
 
   const capture = async (
@@ -309,6 +360,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   controller = createJourneyController({
     identify,
+    connect,
     capture,
     async begin(tabId, input) {
       await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_START', ...input });
@@ -319,6 +371,65 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     changed,
   });
 
+  const routeNavigation = (
+    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
+    kind: 'document' | 'same-document',
+  ) => {
+    const state = controller.getState();
+    if (!activeState(state) || details.tabId !== state.ownerTabId || details.frameId !== 0
+      || (details.documentLifecycle !== undefined && details.documentLifecycle !== 'active')) return;
+    let url: string;
+    try { url = normalizedUrl(details.url); }
+    catch {
+      void controller.stop('protected-page');
+      return;
+    }
+    controller.observeNavigation({ ownerTabId: details.tabId, url, kind });
+  };
+  const committed = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
+    routeNavigation(details, 'document');
+  };
+  const historyUpdated = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
+    routeNavigation(details, 'same-document');
+  };
+  const fragmentUpdated = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
+    routeNavigation(details, 'same-document');
+  };
+  const installNavigationListeners = (): boolean => {
+    if (navigationListenersInstalled) return true;
+    const available = api.webNavigation;
+    if (!available?.onCommitted || !available.onHistoryStateUpdated || !available.onReferenceFragmentUpdated) return false;
+    available.onCommitted.addListener(committed);
+    available.onHistoryStateUpdated.addListener(historyUpdated);
+    available.onReferenceFragmentUpdated.addListener(fragmentUpdated);
+    navigationApi = available;
+    navigationListenersInstalled = true;
+    return true;
+  };
+  const removeNavigationListeners = () => {
+    if (!navigationListenersInstalled || !navigationApi) return;
+    const installedApi = navigationApi;
+    navigationApi = undefined;
+    navigationListenersInstalled = false;
+    try { installedApi.onCommitted.removeListener(committed); } catch { /* Permission removal can invalidate the API object. */ }
+    try { installedApi.onHistoryStateUpdated.removeListener(historyUpdated); } catch { /* Best-effort listener cleanup. */ }
+    try { installedApi.onReferenceFragmentUpdated.removeListener(fragmentUpdated); } catch { /* Best-effort listener cleanup. */ }
+  };
+  const ensureJourneyGrant = async (): Promise<void> => {
+    if (!api.permissions?.contains
+      || !await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS)
+      || !installNavigationListeners()) throw new JourneyCommandError('permission-required');
+  };
+  const journeyPermissionRemoved = (removed: chrome.permissions.Permissions) => {
+    const affected = removed.permissions?.includes('webNavigation') || Boolean(removed.origins?.length);
+    if (!affected) return;
+    launchGeneration += 1;
+    const stopping = activeState(controller.getState()) ? controller.stop('permission-revoked') : undefined;
+    removeNavigationListeners();
+    void stopping?.catch(() => {});
+  };
+  api.permissions?.onRemoved?.addListener(journeyPermissionRemoved);
+
   const stopForOwner = (reason: 'focus-lost' | 'tab-lost' | 'capture-failed') => {
     if (activeState(controller.getState())) void controller.stop(reason);
   };
@@ -328,9 +439,16 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
   const ownerUpdated = (tabId: number, change: { status?: string; url?: string }) => {
     const state = controller.getState();
-    if (activeState(state) && tabId === state.ownerTabId && (change.status === 'loading' || typeof change.url === 'string')) {
+    if (state.phase === 'starting' && tabId === state.ownerTabId && (change.status === 'loading' || typeof change.url === 'string')) {
       stopForOwner('capture-failed');
+    } else if (state.phase === 'recording' && tabId === state.ownerTabId && typeof change.url === 'string') {
+      try { normalizedUrl(change.url); }
+      catch { void controller.stop('protected-page'); }
     }
+  };
+  const ownerReplaced = (_addedTabId: number, removedTabId: number) => {
+    const state = controller.getState();
+    if (activeState(state) && removedTabId === state.ownerTabId) stopForOwner('tab-lost');
   };
   const ownerRemoved = (tabId: number) => {
     if (tabId === reviewTabId) reviewTabId = undefined;
@@ -345,6 +463,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   api.tabs.onActivated.addListener(ownerActivated);
   api.tabs.onUpdated.addListener(ownerUpdated);
   api.tabs.onRemoved.addListener(ownerRemoved);
+  api.tabs.onReplaced?.addListener(ownerReplaced);
   windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
 
   const reply = (
@@ -428,12 +547,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
 
   const startFallback = async (intent: LaunchIntent, generation: number): Promise<void> => {
-    if (!api.permissions?.contains) {
-      throw new JourneyCommandError('permission-required');
-    }
-    const granted = await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS);
+    await ensureJourneyGrant();
     if (generation !== launchGeneration) return;
-    if (!granted) throw new JourneyCommandError('permission-required');
     let identity: JourneyPageIdentity;
     try {
       const ownerTab = await api.tabs.update(intent.ownerTabId, { active: true });
@@ -482,6 +597,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       return reply((async () => {
         try { await focusedOwnerTab(ownerTabId, ownerWindowId); }
         catch { throw new JourneyCommandError('owner-unavailable'); }
+        if (generation !== launchGeneration) return;
+        await ensureJourneyGrant();
         if (generation !== launchGeneration) return;
         await controller.start({ ownerTabId, ownerWindowId, includeEnteredValues: false });
       })(), respond);
