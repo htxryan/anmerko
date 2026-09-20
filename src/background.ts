@@ -14,6 +14,7 @@ const screenshotService = createCaptureService(windowId => api.tabs.captureVisib
 const journeys = journeysEnabled ? bindJourneyExtension(screenshotService) : undefined;
 api.action.onClicked.addListener(tab => {
   if (journeys?.stopIfRecording()) return;
+  if (journeys?.openReviewIfAvailable()) return;
   if (!tab.id) return;
   if (!tab.url || !/^https?:/.test(tab.url)) {
     void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
