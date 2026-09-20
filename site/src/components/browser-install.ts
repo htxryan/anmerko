@@ -30,7 +30,7 @@ for (const group of groups) {
     if (index !== -1) selectTab(index);
   }
   const initialBrowser = group.dataset.browserPlatform === 'mobile' && /iPhone/i.test(ua)
-    ? 'orion'
+    ? (/EdgiOS\//i.test(ua) ? 'edge' : 'orion')
     : browserHint;
   selectDetectedBrowser(initialBrowser);
 

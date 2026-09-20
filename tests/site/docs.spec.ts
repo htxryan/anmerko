@@ -97,7 +97,7 @@ test('example prompt wraps inside its container without changing the copyable te
 test('docs support mobile navigation and keep content within the viewport', async ({ page }) => {
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
-    for (const route of ['/docs/', '/docs/install/', '/docs/install/chrome/', '/docs/install/edge/', '/docs/install/firefox/', '/docs/install/edge-android/', '/docs/install/firefox-android/', '/docs/install/orion-iphone/', '/docs/usage/', '/docs/usage/inline-comments/', '/docs/usage/screenshot-comments/', '/docs/usage/global-comments/', '/docs/send-to-your-agent/', '/docs/settings/']) {
+    for (const route of ['/docs/', '/docs/install/', '/docs/install/chrome/', '/docs/install/edge/', '/docs/install/firefox/', '/docs/install/edge-android/', '/docs/install/firefox-android/', '/docs/install/edge-iphone/', '/docs/install/orion-iphone/', '/docs/usage/', '/docs/usage/inline-comments/', '/docs/usage/screenshot-comments/', '/docs/usage/global-comments/', '/docs/send-to-your-agent/', '/docs/settings/']) {
       await page.goto(route);
       expect(await page.evaluate(() => document.documentElement.scrollWidth), route).toBeLessThanOrEqual(width);
     }
@@ -137,13 +137,18 @@ test('store guides identify each browser bundle and retain approved manual alter
   await expect(orion).toContainText('Install from File');
   await expect(orion).toContainText('Annotate This Page');
   await expect(orion).toContainText('You do not need Xcode or an Apple Developer membership.');
+  await page.goto('/docs/install/edge-iphone/');
+  const edgeIphone = page.locator('.sl-markdown-content');
+  await expect(edgeIphone.locator('pre')).toHaveText('edge://extensions/?id=bfhobiphegcekelfokpcpeepoakkgcka');
+  await expect(edgeIphone).toContainText(/Edge[’']s address bar/);
+  await expect(edgeIphone.locator('a[href^="edge:"]')).toHaveCount(0);
   await page.goto('/docs/install/');
   await expect(page.getByRole('heading', { name: 'Installation', exact: true })).toBeVisible();
   const content = page.locator('.sl-markdown-content');
   for (const [group, links] of [
     ['Desktop', [['Chrome', '/docs/install/chrome/'], ['Edge', '/docs/install/edge/'], ['Firefox', '/docs/install/firefox/']]],
     ['Android', [['Edge', '/docs/install/edge-android/'], ['Firefox', '/docs/install/firefox-android/']]],
-    ['iPhone', [['Orion', '/docs/install/orion-iphone/']]],
+    ['iPhone', [['Edge', '/docs/install/edge-iphone/'], ['Orion', '/docs/install/orion-iphone/']]],
   ] as const) {
     const section = content.getByRole('heading', { name: group, exact: true }).locator('xpath=../following-sibling::ul[1]');
     for (const [label, href] of links) await expect(section.getByRole('link', { name: label, exact: true })).toHaveAttribute('href', href);
@@ -158,6 +163,7 @@ test('store guides identify each browser bundle and retain approved manual alter
   await expect(desktop.getByRole('link', { name: 'Firefox', exact: true })).toHaveAttribute('href', '/docs/install/firefox/');
   await expect(android.getByRole('link', { name: 'Edge', exact: true })).toHaveAttribute('href', '/docs/install/edge-android/');
   await expect(android.getByRole('link', { name: 'Firefox', exact: true })).toHaveAttribute('href', '/docs/install/firefox-android/');
+  await expect(iphone.getByRole('link', { name: 'Edge', exact: true })).toHaveAttribute('href', '/docs/install/edge-iphone/');
   await expect(iphone.getByRole('link', { name: 'Orion', exact: true })).toHaveAttribute('href', '/docs/install/orion-iphone/');
   await expect(page.locator('a[href*="install/brave"]')).toHaveCount(0);
 });

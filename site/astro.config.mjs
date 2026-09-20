@@ -38,6 +38,7 @@ export default defineConfig({
           { label: 'Firefox', slug: 'docs/install/firefox-android' },
         ] },
         { label: 'iPhone', items: [
+          { label: 'Edge', slug: 'docs/install/edge-iphone' },
           { label: 'Orion', slug: 'docs/install/orion-iphone' },
         ] },
       ] },

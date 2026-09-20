@@ -184,7 +184,14 @@ test('desktop and mobile choices can be switched without losing keyboard navigat
   await page.keyboard.press('Enter');
   await expect(page.getByRole('tablist')).toHaveAccessibleName('Choose your mobile browser');
   await expect(page.getByRole('tab')).toHaveCount(3);
-  await expect(page.getByRole('tab', { name: 'Edge', exact: true })).toBeFocused();
+  const edge = page.getByRole('tab', { name: 'Edge', exact: true });
+  await expect(edge).toBeFocused();
+  await expect(edge).toHaveAccessibleDescription('Android / iPhone');
+  const edgePanel = page.getByRole('tabpanel', { name: 'Edge' });
+  await expect(edgePanel).toContainText('Microsoft Edge for Android');
+  await expect(edgePanel.getByRole('link', { name: 'Install on Android', exact: true })).toHaveAttribute('href', 'https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka');
+  await expect(edgePanel).toContainText('Microsoft Edge for iPhone');
+  await expect(edgePanel.getByRole('link', { name: 'Install on iPhone', exact: true })).toHaveAttribute('href', '/docs/install/edge-iphone/');
   await expect(page.getByRole('link', { name: 'Chrome Web Store', exact: true })).toBeHidden();
   for (const [name, os, label, href, requirements] of [
     ['Firefox', 'Android', 'Firefox Add-ons', 'https://addons.mozilla.org/en-US/firefox/addon/anmerko/', 'Firefox for Android 142 or later. Not available on iOS.'],
@@ -224,7 +231,7 @@ test('phones and tablets start on mobile choices, while touch laptops remain on 
     { name: 'android', device: devices['Pixel 5'], mobile: true, selected: 'Edge', desktopSelected: 'Chrome' },
     { name: 'iphone', device: iphone, mobile: true, selected: 'Orion', desktopSelected: 'Chrome' },
     { name: 'iphone-chrome', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'CriOS/140.0.0.0') }, mobile: true, selected: 'Orion', desktopSelected: 'Chrome' },
-    { name: 'iphone-edge', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'EdgiOS/140.0.0.0') }, mobile: true, selected: 'Orion', desktopSelected: 'Edge' },
+    { name: 'iphone-edge', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'EdgiOS/140.0.0.0') }, mobile: true, selected: 'Edge', desktopSelected: 'Edge' },
     { name: 'iphone-firefox', device: { ...iphone, userAgent: iphone.userAgent.replace(/Version\/[\d.]+/, 'FxiOS/140.0.0.0') }, mobile: true, selected: 'Orion', desktopSelected: 'Firefox' },
     {
       name: 'ipad',

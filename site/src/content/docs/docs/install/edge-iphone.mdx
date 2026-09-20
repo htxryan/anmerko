@@ -1,0 +1,53 @@
+---
+title: Edge on iPhone
+description: Install anmerko in Microsoft Edge on iPhone using its public extension ID.
+---
+
+Install the latest [Microsoft Edge from the App Store](https://apps.apple.com/us/app/microsoft-edge/id1288723196), then use Edge's built-in extension page to install anmerko.
+
+## Prepare Edge
+
+1. Open Edge on your iPhone.
+2. Open the browser menu and choose **Extensions**.
+3. If **Extensions** is missing, enter `edge://flags` in the address bar, search for **Edge iOS Web Extension**, and enable that option if it is shown. Restart Edge, then open **Extensions** again.
+
+## Install anmerko
+
+1. Copy this address:
+
+   ```text
+   edge://extensions/?id=bfhobiphegcekelfokpcpeepoakkgcka
+   ```
+
+2. Paste it directly into **Edge's address bar** and open it. This is an internal browser address, so it must be entered in Edge rather than opened as a website link.
+3. On the anmerko extension page, choose **Get** or **Add**, then confirm the requested permissions.
+4. Confirm that anmerko is enabled in **Extensions**.
+
+This opens anmerko's public Microsoft Edge Add-ons item by ID, including when it is absent from the suggested extensions list. You do not need to download a ZIP or unpack a folder.
+
+## Add comments
+
+1. Open the website you want to annotate in Edge.
+2. Open the browser menu, choose **Extensions**, and select **anmerko**. Allow website access if prompted.
+3. Add [inline comments](/docs/usage/inline-comments/), [screenshot comments](/docs/usage/screenshot-comments/), or [global comments](/docs/usage/global-comments/).
+4. [Copy the prompt or export Markdown and images](/docs/send-to-your-agent/).
+
+Manage or remove anmerko from Edge's **Extensions** menu.
+
+## Troubleshooting
+
+### The store page says the browser is incompatible
+
+Paste the full `edge://extensions/?id=bfhobiphegcekelfokpcpeepoakkgcka` address into Edge's address bar. Opening the ordinary Microsoft Edge Add-ons website is a different installation path.
+
+### The address opens a search instead
+
+Use the browser address bar, rather than a search box on a webpage, and include the complete `edge://extensions/?id=` prefix.
+
+### The extension does not open on a page
+
+Use a regular `http://` or `https://` website. Extensions cannot annotate Edge's start page, settings, or other internal pages. Reload the website, confirm anmerko is enabled, and select it again from **Extensions**.
+
+## Sources
+
+Microsoft describes iOS extension support in its [Edge App Store listing](https://apps.apple.com/us/app/microsoft-edge/id1288723196). The direct-ID installation sequence is documented by extension authors in [Microsoft's extension issue tracker](https://github.com/microsoft/MicrosoftEdge-Extensions/issues/432#issuecomment-3917523103), with an [iPhone installation report](https://github.com/microsoft/MicrosoftEdge-Extensions/issues/432#issuecomment-3917868742).

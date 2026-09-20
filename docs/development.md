@@ -1,6 +1,6 @@
 # Build and test
 
-Use Node.js 24+ from the repository root. Work in a git worktree and submit changes through a PR. **Current browser targets are Chrome, Edge, and Firefox on desktop, plus Edge and Firefox for Android.**
+Use Node.js 24+ from the repository root. Work in a git worktree and submit changes through a PR. **Current browser targets are Chrome, Edge, and Firefox on desktop, Edge and Firefox for Android, and Edge and Orion for iPhone.**
 
 ## Quick start
 
@@ -141,15 +141,19 @@ respelling guides the voice; it is not a phoneme-level guarantee.
 
 The product owner confirmed anmerko works in Edge on Android on 15 September
 2026. See the [verification summary](evidence/anmerko/verification-summary.md). This platform confirmation is not a claim of independent agent native
-Android testing. Website regressions cover realistic EdgA detection, Android-only
+Android testing. Website regressions cover realistic EdgA detection, device-specific
 CTA labels, keyboard selection and narrow layout. Loaded-extension touch tests
 use an EdgA UA, with sidePanel available in the Chromium harness, to protect
 floating-panel behavior, docking exclusion and tap/save/reopen persistence.
 Microsoft's [API support matrix](https://learn.microsoft.com/en-us/microsoft-edge/extensions/developer-guide/api-support)
-lists sidePanel as desktop-only. No Android version minimum or iOS support is
+lists sidePanel as desktop-only. No Android version minimum is
 inferred from the desktop browser requirement.
 
 Manual installation is a permanent alternative to stores. Store activation must
 retain the homepage Download manually link, all three approved download links,
 Chrome/Edge desktop unpacked instructions and Firefox signed-XPI desktop/Android
 steps. Never substitute an Edge Android ZIP installation path.
+
+## Edge iPhone installation
+
+Microsoft's [Edge App Store listing](https://apps.apple.com/us/app/microsoft-edge/id1288723196) advertises iOS extensions. Extension authors document installing a public Edge Add-ons item through `edge://extensions/?id=<extension-id>` in [Microsoft's extension tracker](https://github.com/microsoft/MicrosoftEdge-Extensions/issues/432#issuecomment-3917523103), with an [iPhone installation report](https://github.com/microsoft/MicrosoftEdge-Extensions/issues/432#issuecomment-3917868742). The [iPhone guide](../site/src/content/docs/docs/install/edge-iphone.mdx) uses anmerko's existing public store ID and an address to copy into Edge. Keep this path separate from Android's store link and Orion's local-folder package.
