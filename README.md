@@ -27,7 +27,6 @@ Collect website comments and screenshots, then share them with your AI agent.
 - [Contributing](docs/contributing.md)
 - [Build and test](docs/development.md)
 - [CI scopes, release validation and promotion](docs/release-process.md)
-- [Project agent skills for Codex CLI, Claude Code, and OpenCode](.agents/README.md)
 
 ## License
 
