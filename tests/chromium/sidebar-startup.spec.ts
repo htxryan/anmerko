@@ -150,6 +150,40 @@ test('native Float posts a one-way port command before close and reports a live-
   });
   await run(page, 'nativeHarness.failLayout()');
   await expect(panel.getByRole('status')).toContainText('Could not change layout');
+  await run(page, 'nativeHarness.delayNextQuery(); nativeHarness.reopen()');
+  await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
+  await run(page, 'nativeHarness.releaseQuery()');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  await run(page, 'nativeHarness.reply()');
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(2);
+});
+
+test('page lifecycle fallback reconnects a reused sidebar document', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply()');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  await run(page, 'nativeHarness.reopenFallback()');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+});
+
+test('a pending fresh connection cannot send page commands to the previous tab', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply(); nativeHarness.setActiveTab(2); nativeHarness.delayNextQuery(); nativeHarness.reconnect()');
+  await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
+  await run(page, 'nativeHarness.pageCommand()');
+  expect(await run(page, 'nativeHarness.pageTargets')).toEqual([]);
+  await run(page, 'nativeHarness.releaseQuery()');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  await run(page, 'nativeHarness.reply(); nativeHarness.pageCommand()');
+  expect(await run(page, 'nativeHarness.pageTargets')).toEqual([2]);
 });
 
 test('native Float cancels a pending replacement after posting with the current owner', async ({ page }) => {
@@ -176,7 +210,9 @@ test('native Float cancels a pending replacement after posting with the current 
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   expect(await run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'overlay']);
-  await run(page, 'nativeHarness.delayNextQuery(); nativeHarness.reopen()');
+  await run(page, `nativeHarness.delayNextQuery(); nativeHarness.reopen(2); nativeHarness.reopen(1, 'other.html')`);
+  expect(await run(page, 'nativeHarness.queryPending()')).toBe(false);
+  await run(page, 'nativeHarness.reopen()');
   await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
   await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
   expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(1);

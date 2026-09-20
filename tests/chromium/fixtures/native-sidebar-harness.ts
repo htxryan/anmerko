@@ -9,7 +9,7 @@ const event = () => {
   return { addListener(value: Listener) { listeners.add(value); }, removeListener(value: Listener) { listeners.delete(value); },
     emit(...args: any[]) { listeners.forEach(listener => listener(...args)); } };
 };
-const updated = event();
+const updated = event(), panelOpened = event();
 const ports: {
   onMessage: ReturnType<typeof event>;
   onDisconnect: ReturnType<typeof event>;
@@ -18,19 +18,22 @@ const ports: {
   closed: boolean;
 }[] = [];
 const requests: any[] = [];
-const pageMessages: unknown[] = [], layoutMessages: unknown[] = [];
+const pageMessages: unknown[] = [], pageTargets: number[] = [], layoutMessages: unknown[] = [];
 const layoutSequence: string[] = [];
 const backgroundModes: string[] = [];
 const backgroundOwners = new Map<number, object>();
 let delayQuery = false;
 let releaseQuery: (() => void) | undefined;
+let activeTabId = 1;
 Object.assign(globalThis, { chrome: {
   sidebarAction: {
     open: async () => {},
     close: async () => { layoutSequence.push('close'); },
   },
+  sidePanel: { onOpened: panelOpened },
   runtime: {
-    id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`, getManifest: () => ({ sidebar_action: {} }),
+    id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`,
+    getManifest: () => ({ sidebar_action: {}, side_panel: { default_path: 'sidebar.html' } }),
     onMessage: event(),
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
@@ -50,18 +53,19 @@ Object.assign(globalThis, { chrome: {
         delayQuery = false;
         await new Promise<void>(resolve => { releaseQuery = resolve; });
       }
-      return [{ id: 1 }];
+      return [{ id: activeTabId }];
     },
     onActivated: event(), onUpdated: updated,
-    async sendMessage(_tabId: number, message: unknown) { pageMessages.push(message); },
+    async sendMessage(tabId: number, message: unknown) { pageMessages.push(message); pageTargets.push(tabId); },
   },
   windows: { getCurrent: async () => ({ id: 1 }) },
   storage: { local: { async get() { return {}; } }, onChanged: event() },
 } });
-const controller = mount(extensionRuntime(() => {}));
+const runtime = extensionRuntime(() => {});
+const controller = mount(runtime);
 const state: ViewState = { url: `${location.origin}/page`, draft: null, scope: 'page', picking: false, settings: false };
 Object.assign(globalThis, { nativeHarness: {
-  requests, pageMessages, layoutMessages, layoutSequence, backgroundModes,
+  requests, pageMessages, pageTargets, layoutMessages, layoutSequence, backgroundModes,
   get startupRequests() { return requests.filter(request => !request.type); },
   get connections() { return ports.length; },
   reply(overrides: Partial<ViewState> = {}) { ports.at(-1)!.onMessage.emit({ ...requests.at(-1), ok: true, value: { ...state, ...overrides } }); },
@@ -75,7 +79,10 @@ Object.assign(globalThis, { nativeHarness: {
   },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
-  reopen() { window.dispatchEvent(new PageTransitionEvent('pageshow')); },
+  reopen(windowId = 1, path = 'sidebar.html') { panelOpened.emit({ windowId, path }); },
+  reopenFallback() { window.dispatchEvent(new PageTransitionEvent('pageshow')); },
+  setActiveTab(tabId: number) { activeTabId = tabId; },
+  async pageCommand() { await runtime.presentation!.startCapture().catch(() => {}); },
   delayNextQuery() { delayQuery = true; },
   queryPending() { return !!releaseQuery; },
   releaseQuery() { const release = releaseQuery; releaseQuery = undefined; release?.(); },

@@ -35,6 +35,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let sidebarRequestVersion: number | undefined;
   let closingLayoutVersion: number | undefined;
   let sidebarClosing = false;
+  let sidebarNeedsReconnect = false;
   let sidebarPort: chrome.runtime.Port | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
@@ -64,6 +65,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         });
         closingLayoutVersion = sidebarRequestVersion;
         sidebarClosing = true;
+        sidebarNeedsReconnect = true;
         ++connectionVersion;
         // Firefox requires close() in the original click, before any await/message hop.
         void closeDock(windowId || 0).catch(() => {});
@@ -133,6 +135,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       }
       async function connect() {
         if (sidebarClosing) return;
+        targetTab = undefined;
         const version = ++connectionVersion;
         try {
           const tabs = await api.tabs.query({ active: true, windowId });
@@ -144,27 +147,34 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           const port = connectionPort();
           port.postMessage({ tabId: targetTab, windowId, version });
           sidebarRequestVersion = version;
+          sidebarNeedsReconnect = false;
         } catch (error) {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
       }
       const reopen = () => {
-        if (signal.aborted || !sidebarClosing || document.hidden) return;
+        if (signal.aborted || (!sidebarClosing && !sidebarNeedsReconnect) || document.hidden) return;
         sidebarClosing = false;
         closingLayoutVersion = undefined;
         sidebarRequestVersion = undefined;
         void connect();
       };
+      const panelPath = api.runtime.getManifest().side_panel?.default_path;
+      const opened = (info: chrome.sidePanel.PanelOpenedInfo) => {
+        if (info.windowId === windowId && info.path === panelPath) reopen();
+      };
       const activated = (info: { tabId: number; windowId: number }) => { if (info.windowId === windowId) void connect(); };
       const updated = (tabId: number, change: { status?: string }) => { if (tabId === targetTab && change.status === 'complete') void connect(); };
       api.tabs.onActivated.addListener(activated);
       api.tabs.onUpdated.addListener(updated);
+      api.sidePanel?.onOpened?.addListener(opened);
       document.addEventListener('visibilitychange', reopen);
       window.addEventListener('pageshow', reopen);
       signal.addEventListener('abort', () => {
         ++connectionVersion;
         api.tabs.onActivated.removeListener(activated);
         api.tabs.onUpdated.removeListener(updated);
+        api.sidePanel?.onOpened?.removeListener(opened);
         document.removeEventListener('visibilitychange', reopen);
         window.removeEventListener('pageshow', reopen);
         sidebarPort?.disconnect();
