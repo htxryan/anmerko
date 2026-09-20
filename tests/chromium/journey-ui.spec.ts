@@ -11,19 +11,30 @@ const bundle = () => buildSync({ stdin: { contents: `
   let changed = () => {};
   const calls = [];
   let pendingStart = false;
+  let readError = false;
+  let discardCalls = 0;
   const client = {
-    read: async () => state,
+    read: async () => {
+      if (readError) throw new Error('Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.');
+      return state;
+    },
     start: async includeEnteredValues => {
       calls.push(includeEnteredValues);
       if (pendingStart) { state = {phase:'starting', draft:{steps:[]}}; changed(); return new Promise(() => {}); }
       throw new Error('Initial screenshot failed. Try again.');
     },
     stop: async () => { state = { phase:'idle',epoch:3 }; changed(); },
-    discard: async () => { state = { phase: 'idle', epoch: 3 }; changed(); },
+    discard: async () => { discardCalls++; readError = false; state = { phase: 'idle', epoch: 3 }; changed(); },
     subscribe: listener => { changed = listener; return () => {}; },
   };
   mountJourneyUI(document.body, client);
-  window.journeyHarness = { calls, pending: () => { pendingStart = true; }, set: next => { state = next; changed(); } };
+  window.journeyHarness = {
+    calls,
+    discardCalls: () => discardCalls,
+    failRead: () => { readError = true; changed(); },
+    pending: () => { pendingStart = true; },
+    set: next => { state = next; changed(); },
+  };
 `, resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
 
 test('launch is explicit, entered values stay off, and failed initial capture offers retry', async ({ page }) => {
@@ -67,4 +78,29 @@ test('stopped review shows complete URLs as text and explains missing screenshot
   expect(await page.locator('a[href]').count()).toBe(0);
   await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+});
+
+test('stopped review explains that a storage failure may lose the latest draft', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate(`journeyHarness.set({phase:'reviewing',epoch:2,draft:{
+    id:'J1',includeEnteredValues:false,stopReason:'session-storage-limit',steps:[],images:{},expected:'',actual:''
+  }})`);
+  await expect(page.getByRole('alert')).toHaveText(
+    'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.',
+  );
+});
+
+test('failed session loading offers an explicit storage reset', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyHarness.failRead()');
+  await expect(page.getByRole('alert')).toHaveText(
+    'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
+  );
+  await page.getByRole('button', { name: 'Reset journey storage', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  expect(await page.evaluate('journeyHarness.discardCalls()')).toBe(1);
 });

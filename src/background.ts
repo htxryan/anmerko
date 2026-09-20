@@ -53,20 +53,36 @@ api.action.onClicked.addListener(tab => {
   if (journeys?.stopIfRecording()) return;
   if (journeys?.openReviewIfAvailable()) return;
   if (!tab.id) return;
-  if (!tab.url || !/^https?:/.test(tab.url)) {
-    void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
+  const openRequestedPage = (preservedDock?: Promise<void>) => {
+    if (!tab.url || !/^https?:/.test(tab.url)) {
+      void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
+      return;
+    }
+    const reopened = sidebarReopened(tab.windowId);
+    const opening = supportsDocking() ? (preservedDock ?? openDock(tab.windowId)).then(() => {
+      // Firefox can keep an existing sidebar open after navigation. A fresh
+      // toolbar grant must retry its port-owned connection in that window.
+      if ('sidebar_action' in api.runtime.getManifest()) {
+        return api.runtime.sendMessage({ type: 'ANMERKO_CONNECT_SIDEBAR', windowId: tab.windowId }).catch(() => {});
+      }
+      return activateTab(tab.id!, 'remote', undefined, true);
+    }).then(reopened) : activateTab(tab.id!);
+    void opening.catch(() => activateTab(tab.id!)).catch(() => api.tabs.create({ url: api.runtime.getURL('unavailable.html') }));
+  };
+  if (!journeys) {
+    openRequestedPage();
     return;
   }
-  const reopened = sidebarReopened(tab.windowId);
-  const opening = supportsDocking() ? openDock(tab.windowId).then(() => {
-    // Firefox can keep an existing sidebar open after navigation. A fresh
-    // toolbar grant must retry its port-owned connection in that window.
-    if ('sidebar_action' in api.runtime.getManifest()) {
-      return api.runtime.sendMessage({ type: 'ANMERKO_CONNECT_SIDEBAR', windowId: tab.windowId }).catch(() => {});
-    }
-    return activateTab(tab.id!, 'remote', undefined, true);
-  }).then(reopened) : activateTab(tab.id);
-  void opening.catch(() => activateTab(tab.id!)).catch(() => api.tabs.create({ url: api.runtime.getURL('unavailable.html') }));
+  // Native sidebar APIs must be entered from the toolbar gesture. Start that
+  // request while lifecycle restoration decides whether this click is Stop.
+  const preservedDock = supportsDocking() ? openDock(tab.windowId) : undefined;
+  // Toolbar Stop handles the click without awaiting the native dock request.
+  // Observe its rejection while retaining the original promise so an idle
+  // click can fall back to the overlay when docking fails.
+  void preservedDock?.catch(() => {});
+  void journeys.handleToolbarClick().then(handled => {
+    if (!handled) openRequestedPage(preservedDock);
+  }).catch(() => {});
 });
 api.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== api.runtime.id) return;

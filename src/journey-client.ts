@@ -16,6 +16,7 @@ const BACKEND_GUIDANCE: Record<string, string> = {
   'initial-capture-failed': 'The initial journey screenshot failed. Try again.',
   'launch-expired': 'This launch expired. Reopen anmerko from the original website.',
   'permission-required': 'Allow the requested permissions, then try again.',
+  'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
 };
 
 function validOwner(value: JourneyOwner | undefined): value is { ownerTabId: number; ownerWindowId: number } {

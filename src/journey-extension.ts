@@ -2,12 +2,14 @@ import {
   createJourneyController,
   JourneyControllerError,
   type JourneyController,
+  type JourneyControllerAdapter,
   type JourneyPageIdentity,
 } from './journey-controller';
 import type { JourneyDraftImage, JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
 import { normalizeJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
+import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
 import { extensionApi } from './platform';
 
 export interface JourneyScreenshotService {
@@ -16,6 +18,8 @@ export interface JourneyScreenshotService {
 }
 
 export interface JourneyExtensionBinding {
+  ready: Promise<void>;
+  handleToolbarClick(): Promise<boolean>;
   stopIfRecording(): boolean;
   openReviewIfAvailable(): boolean;
 }
@@ -23,7 +27,7 @@ export interface JourneyExtensionBinding {
 type Message = Record<string, unknown> & { type?: unknown };
 type ActiveState = Extract<JourneySession, { phase: 'starting' | 'recording' }>;
 type JourneyCommandErrorCode = 'busy' | 'owner-unavailable' | 'initial-capture-failed'
-  | 'launch-expired' | 'permission-required';
+  | 'launch-expired' | 'permission-required' | 'session-storage-failed';
 type TrustedSurface =
   | { kind: 'sidebar' }
   | { kind: 'review'; tabId: number }
@@ -45,6 +49,11 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const LAUNCH_TTL_MS = 5 * 60 * 1_000;
 const OBSERVER_CONNECT_TIMEOUT_MS = 5_000;
 const OBSERVER_RETRY_MS = 50;
+const RECORDING_DEADLINE_ALARM = 'anmerko-journey-recording-deadline';
+const REVIEW_WARNING_ALARM = 'anmerko-journey-review-warning';
+const REVIEW_EXPIRY_ALARM = 'anmerko-journey-review-expiry';
+const JOURNEY_ALARMS = [RECORDING_DEADLINE_ALARM, REVIEW_WARNING_ALARM, REVIEW_EXPIRY_ALARM] as const;
+const MAX_PENDING_WAKE_EVENTS = 16;
 const REQUIRED_JOURNEY_PERMISSIONS: chrome.permissions.Permissions = {
   origins: ['<all_urls>'], permissions: ['webNavigation'],
 };
@@ -63,6 +72,7 @@ class JourneyCommandError extends Error {
 function failure(error?: unknown) {
   let code: JourneyCommandErrorCode | undefined;
   if (error instanceof JourneyCommandError) code = error.code;
+  else if (error instanceof JourneySessionStorageError) code = 'session-storage-failed';
   else if (error instanceof JourneyControllerError) {
     code = error.code === 'invalid-start' ? 'owner-unavailable' : error.code;
   }
@@ -97,6 +107,12 @@ function pageIdentity(value: unknown): JourneyPageIdentity {
     || !isRecord(value.viewport) || !validInteger(value.viewport.width, 1) || !validInteger(value.viewport.height, 1)
     || !isRecord(value.scroll) || !validNumber(value.scroll.x) || !validNumber(value.scroll.y)
     || !validInteger(value.generation) || typeof value.visible !== 'boolean') throw new Error(GENERIC_ERROR);
+  let recording: JourneyPageIdentity['recording'];
+  if (value.recording !== undefined) {
+    if (!isRecord(value.recording) || typeof value.recording.sessionId !== 'string'
+      || !SAFE_ID.test(value.recording.sessionId) || !validInteger(value.recording.epoch, 1)) throw new Error(GENERIC_ERROR);
+    recording = { sessionId: value.recording.sessionId, epoch: value.recording.epoch };
+  }
   return {
     documentToken: value.documentToken,
     url: normalizedUrl(value.url),
@@ -104,6 +120,7 @@ function pageIdentity(value: unknown): JourneyPageIdentity {
     scroll: { x: value.scroll.x, y: value.scroll.y },
     generation: value.generation,
     visible: value.visible,
+    ...(recording ? { recording } : {}),
   };
 }
 
@@ -120,6 +137,11 @@ function delay(ms: number): Promise<void> {
 
 export function bindJourneyExtension(screenshotService: JourneyScreenshotService): JourneyExtensionBinding {
   const api = extensionApi();
+  const sessionStore = createJourneySessionStore({
+    get: keys => api.storage.session.get(keys),
+    set: items => api.storage.session.set(items),
+    remove: keys => api.storage.session.remove(keys),
+  });
   const sidebarUrl = api.runtime.getURL('sidebar.html');
   const journeyUrl = api.runtime.getURL('journey.html');
   const windowsApi = api.windows as typeof chrome.windows | undefined;
@@ -132,6 +154,30 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let navigationApi: typeof chrome.webNavigation | undefined;
   let navigationListenersInstalled = false;
   let controller: JourneyController;
+  let ready: Promise<void>;
+  let initializationError: unknown;
+  let initialized = false;
+  let routedEvents: Promise<void> = Promise.resolve();
+  let stateWriteTail: Promise<void> = Promise.resolve();
+  let latestStateWrite: Promise<void> = Promise.resolve();
+  let stateWriteFailureVersion = 0;
+  let lastStateWriteError: unknown;
+  let handlingStorageFailure = false;
+  const connectedEventPorts = new Map<chrome.runtime.Port, { tabId: number; windowId: number }>();
+  const pendingWakeNavigations: Array<{
+    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string };
+    kind: 'document' | 'same-document';
+  }> = [];
+
+  const enqueueRoutedEvent = (operation: () => Promise<void> | void) => {
+    routedEvents = routedEvents.then(async () => {
+      await ready;
+      if (!initializationError) {
+        await operation();
+        await latestStateWrite;
+      }
+    }).catch(() => {});
+  };
 
   const journeyLocation = (url: unknown): { kind: 'review' } | { kind: 'launch'; intent: string } | undefined => {
     if (url === journeyUrl) return { kind: 'review' };
@@ -204,6 +250,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return { tab, url, windowId: tab.windowId };
   };
 
+  const hasJourneyGrant = async () => Boolean(api.permissions?.contains
+    && await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS));
+
   const identify = async (tabId: number): Promise<JourneyPageIdentity> => {
     const before = await focusedOwnerTab(tabId);
     const identity = pageIdentity(await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' }));
@@ -223,12 +272,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         && current.epoch === snapshot.epoch && current.ownerTabId === snapshot.ownerTabId
         && current.ownerWindowId === snapshot.ownerWindowId && current.documentToken === snapshot.documentToken;
     };
-    const hasGrant = async () => Boolean(api.permissions?.contains
-      && await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS));
-
     await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
     if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-    const grantedBeforeInjection = await hasGrant();
+    const grantedBeforeInjection = await hasJourneyGrant();
     if (!stillCurrent() || !grantedBeforeInjection || !api.scripting?.executeScript) throw new Error(GENERIC_ERROR);
     await api.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -236,7 +282,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       injectImmediately: true,
     });
     if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-    const grantedAfterInjection = await hasGrant();
+    const grantedAfterInjection = await hasJourneyGrant();
     if (!stillCurrent() || !grantedAfterInjection) throw new Error(GENERIC_ERROR);
     await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
 
@@ -252,7 +298,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       const identity = pageIdentity(response);
       await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
       if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-      const grantStillPresent = await hasGrant();
+      const grantStillPresent = await hasJourneyGrant();
       if (!stillCurrent() || !grantStillPresent || identity.url !== sanitizedUrl) throw new Error(GENERIC_ERROR);
       return identity;
     }
@@ -343,36 +389,118 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     void api.action.setTitle({ tabId, title: RECORDING_ACTION_TITLE }).catch(() => {});
   };
 
-  const changed = (state: JourneySession) => {
+  const clearJourneyAlarms = async () => {
+    await Promise.all(JOURNEY_ALARMS.map(name => api.alarms.clear(name).catch(() => false)));
+  };
+
+  const syncJourneyAlarms = async (state: JourneySession) => {
+    await clearJourneyAlarms();
+    try {
+      if (state.phase === 'recording') {
+        await api.alarms.create(RECORDING_DEADLINE_ALARM, { when: Date.parse(state.deadlineAt) });
+      } else if (state.phase === 'reviewing') {
+        await api.alarms.create(REVIEW_WARNING_ALARM, { when: Date.parse(state.warningAt) });
+        await api.alarms.create(REVIEW_EXPIRY_ALARM, { when: Date.parse(state.expiresAt) });
+      }
+    } catch {
+      throw new JourneySessionStorageError('storage-unavailable');
+    }
+  };
+
+  const failClosedAfterStorageError = (failedState: JourneySession) => {
+    if (handlingStorageFailure || !activeState(failedState) || !controller) return;
+    const current = controller.getState();
+    if (!activeState(current) || current.sessionId !== failedState.sessionId || current.epoch !== failedState.epoch) return;
+    handlingStorageFailure = true;
+    void controller.stop('session-storage-limit').finally(() => { handlingStorageFailure = false; });
+  };
+
+  const persistState = (state: JourneySession): Promise<void> => {
+    const operation = stateWriteTail.then(async () => {
+      await sessionStore.write(state);
+      await syncJourneyAlarms(state);
+    });
+    stateWriteTail = operation.catch(error => {
+      stateWriteFailureVersion += 1;
+      lastStateWriteError = error;
+      failClosedAfterStorageError(state);
+    });
+    latestStateWrite = operation;
+    return operation;
+  };
+
+  const decorateForState = (state: JourneySession) => {
     const nextDecoratedTabId = activeState(state) ? state.ownerTabId : undefined;
     if (decoratedTabId !== nextDecoratedTabId) {
       if (decoratedTabId !== undefined) resetAction(decoratedTabId);
       if (nextDecoratedTabId !== undefined) showRecordingAction(nextDecoratedTabId);
       decoratedTabId = nextDecoratedTabId;
     }
+  };
+
+  const changed = (state: JourneySession) => {
+    decorateForState(state);
     if (state.phase === 'recording') {
       void pageCommand(state.ownerTabId, {
         type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: state.sessionId,
         epoch: state.epoch, count: state.draft.steps.length,
       }).catch(() => {});
     }
+    void persistState(state).catch(() => {});
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
-  controller = createJourneyController({
-    identify,
-    connect,
-    capture,
-    async begin(tabId, input) {
-      await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_START', ...input });
-    },
-    async end(tabId, input) {
-      await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
-    },
-    changed,
-  });
+  const stopStalePageRecorder = async (tabId: number, windowId: number): Promise<void> => {
+    const state = controller.getState();
+    if (state.phase !== 'idle' && state.phase !== 'saved') return;
+    try {
+      const tab = await api.tabs.get(tabId);
+      if (tab.id !== tabId || tab.windowId !== windowId || !tab.url) return;
+      const tabUrl = normalizedUrl(tab.url);
+      const identity = pageIdentity(await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' }));
+      if (identity.url !== tabUrl || !identity.recording) return;
+      await pageCommand(tabId, {
+        type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: identity.recording.sessionId,
+        epoch: identity.recording.epoch, documentToken: identity.documentToken,
+      });
+    } catch { /* An absent or replaced owner page has no recorder to reconcile. */ }
+  };
 
-  const routeNavigation = (
+  const beginPageRecording = async (tabId: number, input: Parameters<JourneyControllerAdapter['begin']>[1]) => {
+    try {
+      await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_START', ...input });
+      return;
+    } catch (startError) {
+      try {
+        const identity = pageIdentity(await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' }));
+        if (!identity.recording || identity.documentToken !== input.documentToken || identity.url !== input.expectedUrl) throw startError;
+        await pageCommand(tabId, {
+          type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: identity.recording.sessionId,
+          epoch: identity.recording.epoch, documentToken: identity.documentToken,
+        });
+        await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_START', ...input });
+      } catch {
+        throw startError;
+      }
+    }
+  };
+
+  const makeController = (restored?: JourneySession) => createJourneyController({
+      identify,
+      connect,
+      capture,
+      async begin(tabId, input) {
+        await beginPageRecording(tabId, input);
+      },
+      async end(tabId, input) {
+        await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
+      },
+      changed,
+    }, restored);
+
+  controller = makeController();
+
+  const routeNavigationNow = (
     details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
     kind: 'document' | 'same-document',
   ) => {
@@ -386,6 +514,24 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       return;
     }
     controller.observeNavigation({ ownerTabId: details.tabId, url, kind });
+  };
+  const routeNavigation = (
+    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
+    kind: 'document' | 'same-document',
+  ) => {
+    if (!initialized) {
+      const state = controller.getState();
+      if (activeState(state) && (details.tabId !== state.ownerTabId || details.frameId !== 0)) return;
+      if (pendingWakeNavigations.length >= MAX_PENDING_WAKE_EVENTS) pendingWakeNavigations.shift();
+      pendingWakeNavigations.push({ details: { ...details }, kind });
+      return;
+    }
+    enqueueRoutedEvent(async () => {
+      let granted = false;
+      try { granted = await hasJourneyGrant(); } catch { /* Treat an unavailable permission check as revoked. */ }
+      if (granted) routeNavigationNow(details, kind);
+      else if (activeState(controller.getState())) await controller.stop('permission-revoked');
+    });
   };
   const committed = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
     routeNavigation(details, 'document');
@@ -417,49 +563,57 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     try { installedApi.onReferenceFragmentUpdated.removeListener(fragmentUpdated); } catch { /* Best-effort listener cleanup. */ }
   };
   const ensureJourneyGrant = async (): Promise<void> => {
-    if (!api.permissions?.contains
-      || !await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS)
-      || !installNavigationListeners()) throw new JourneyCommandError('permission-required');
+    if (!await hasJourneyGrant() || !installNavigationListeners()) throw new JourneyCommandError('permission-required');
   };
   const journeyPermissionRemoved = (removed: chrome.permissions.Permissions) => {
     const affected = removed.permissions?.includes('webNavigation') || Boolean(removed.origins?.length);
     if (!affected) return;
     launchGeneration += 1;
-    const stopping = activeState(controller.getState()) ? controller.stop('permission-revoked') : undefined;
     removeNavigationListeners();
-    void stopping?.catch(() => {});
+    enqueueRoutedEvent(async () => {
+      if (activeState(controller.getState())) await controller.stop('permission-revoked');
+    });
   };
   api.permissions?.onRemoved?.addListener(journeyPermissionRemoved);
 
-  const stopForOwner = (reason: 'focus-lost' | 'tab-lost' | 'capture-failed') => {
-    if (activeState(controller.getState())) void controller.stop(reason);
-  };
   const ownerActivated = (info: { tabId: number; windowId: number }) => {
-    const state = controller.getState();
-    if (activeState(state) && info.windowId === state.ownerWindowId && info.tabId !== state.ownerTabId) stopForOwner('focus-lost');
+    enqueueRoutedEvent(async () => {
+      const state = controller.getState();
+      if (activeState(state) && info.windowId === state.ownerWindowId && info.tabId !== state.ownerTabId) {
+        await controller.stop('focus-lost');
+      }
+    });
   };
   const ownerUpdated = (tabId: number, change: { status?: string; url?: string }) => {
-    const state = controller.getState();
-    if (state.phase === 'starting' && tabId === state.ownerTabId && (change.status === 'loading' || typeof change.url === 'string')) {
-      stopForOwner('capture-failed');
-    } else if (state.phase === 'recording' && tabId === state.ownerTabId && typeof change.url === 'string') {
-      try { normalizedUrl(change.url); }
-      catch { void controller.stop('protected-page'); }
-    }
+    enqueueRoutedEvent(async () => {
+      const state = controller.getState();
+      if (state.phase === 'starting' && tabId === state.ownerTabId && (change.status === 'loading' || typeof change.url === 'string')) {
+        await controller.stop('capture-failed');
+      } else if (state.phase === 'recording' && tabId === state.ownerTabId && typeof change.url === 'string') {
+        try { normalizedUrl(change.url); }
+        catch { await controller.stop('protected-page'); }
+      }
+    });
   };
   const ownerReplaced = (_addedTabId: number, removedTabId: number) => {
-    const state = controller.getState();
-    if (activeState(state) && removedTabId === state.ownerTabId) stopForOwner('tab-lost');
+    enqueueRoutedEvent(async () => {
+      const state = controller.getState();
+      if (activeState(state) && removedTabId === state.ownerTabId) await controller.stop('tab-lost');
+    });
   };
   const ownerRemoved = (tabId: number) => {
     if (tabId === reviewTabId) reviewTabId = undefined;
     for (const [id, intent] of launchIntents) if (intent.launchTabId === tabId) launchIntents.delete(id);
-    const state = controller.getState();
-    if (activeState(state) && tabId === state.ownerTabId) stopForOwner('tab-lost');
+    enqueueRoutedEvent(async () => {
+      const state = controller.getState();
+      if (activeState(state) && tabId === state.ownerTabId) await controller.stop('tab-lost');
+    });
   };
   const ownerFocusChanged = (windowId: number) => {
-    const state = controller.getState();
-    if (activeState(state) && windowId !== state.ownerWindowId) stopForOwner('focus-lost');
+    enqueueRoutedEvent(async () => {
+      const state = controller.getState();
+      if (activeState(state) && windowId !== state.ownerWindowId) await controller.stop('focus-lost');
+    });
   };
   api.tabs.onActivated.addListener(ownerActivated);
   api.tabs.onUpdated.addListener(ownerUpdated);
@@ -467,12 +621,177 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   api.tabs.onReplaced?.addListener(ownerReplaced);
   windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
 
+  api.alarms.onAlarm.addListener(alarm => {
+    if (!JOURNEY_ALARMS.includes(alarm.name as typeof JOURNEY_ALARMS[number])) return;
+    enqueueRoutedEvent(async () => {
+      const state = controller.getState();
+      if (alarm.name === RECORDING_DEADLINE_ALARM && state.phase === 'recording'
+        && Date.now() >= Date.parse(state.deadlineAt)) {
+        await controller.stop('duration-limit');
+      } else if (alarm.name === REVIEW_WARNING_ALARM && state.phase === 'reviewing'
+        && Date.now() >= Date.parse(state.warningAt) && Date.now() < Date.parse(state.expiresAt)) {
+        showReviewWarning(state);
+      } else if (alarm.name === REVIEW_EXPIRY_ALARM && state.phase === 'reviewing'
+        && Date.now() >= Date.parse(state.expiresAt)) {
+        await controller.discard();
+      }
+    });
+  });
+
+  const recordingUrl = (state: Extract<JourneySession, { phase: 'recording' }>): string | undefined => {
+    const step = state.draft.steps.at(-1);
+    return step?.kind === 'navigation' ? step.navigation.toUrl : step?.sourceUrl;
+  };
+
+  const showReviewWarning = (state: Extract<JourneySession, { phase: 'reviewing' }>) => {
+    void api.action.setBadgeText({ tabId: state.ownerTabId, text: '!' }).catch(() => {});
+    void api.action.setTitle({ tabId: state.ownerTabId, title: 'Journey review expires soon' }).catch(() => {});
+    void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
+  };
+
+  const recoverRecordingOwner = async (): Promise<void> => {
+    let state = controller.getState();
+    if (state.phase !== 'recording') return;
+    let granted = false;
+    try { granted = await hasJourneyGrant(); } catch { /* Fail closed below. */ }
+    if (!granted) {
+      await controller.stop('permission-revoked');
+      return;
+    }
+
+    const drainOwnerWakeEvents = (): 'document' | 'same-document' | undefined => {
+      const current = controller.getState();
+      if (current.phase !== 'recording') {
+        pendingWakeNavigations.length = 0;
+        return;
+      }
+      const pending = pendingWakeNavigations.splice(0).filter(item => item.details.tabId === current.ownerTabId
+        && item.details.frameId === 0
+        && (item.details.documentLifecycle === undefined || item.details.documentLifecycle === 'active'));
+      for (const event of pending) routeNavigationNow(event.details, event.kind);
+      return pending.some(event => event.kind === 'document') ? 'document'
+        : pending.length > 0 ? 'same-document' : undefined;
+    };
+
+    for (let attempt = 0; attempt <= MAX_PENDING_WAKE_EVENTS; attempt += 1) {
+      if (drainOwnerWakeEvents() === 'document') return;
+      state = controller.getState();
+      if (state.phase !== 'recording') return;
+
+      let tab: chrome.tabs.Tab;
+      try { tab = await api.tabs.get(state.ownerTabId); }
+      catch {
+        if (pendingWakeNavigations.length) continue;
+        await controller.stop('tab-lost');
+        return;
+      }
+      if (pendingWakeNavigations.length) continue;
+      if (!validInteger(tab.windowId) || tab.windowId !== state.ownerWindowId) {
+        await controller.stop('tab-lost');
+        return;
+      }
+      if (!tab.active) {
+        await controller.stop('focus-lost');
+        return;
+      }
+      let tabUrl: string;
+      try { tabUrl = normalizedUrl(tab.url); }
+      catch {
+        await controller.stop('protected-page');
+        return;
+      }
+      const expectedUrl = recordingUrl(state);
+      if (!expectedUrl || tabUrl !== expectedUrl) {
+        if (pendingWakeNavigations.length) continue;
+        await controller.stop('capture-failed');
+        return;
+      }
+      if (windowsApi?.get) {
+        let focused = false;
+        try { focused = Boolean((await windowsApi.get(state.ownerWindowId)).focused); } catch { /* Fail closed below. */ }
+        if (pendingWakeNavigations.length) continue;
+        if (!focused) {
+          await controller.stop('focus-lost');
+          return;
+        }
+      }
+      let identity: JourneyPageIdentity;
+      try { identity = pageIdentity(await pageCommand(state.ownerTabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })); }
+      catch {
+        if (pendingWakeNavigations.length) continue;
+        await controller.stop('capture-failed');
+        return;
+      }
+      if (pendingWakeNavigations.length) continue;
+      const current = controller.getState();
+      if (current.phase !== 'recording') return;
+      if (!identity.visible || identity.documentToken !== current.documentToken || identity.url !== expectedUrl
+        || identity.recording?.sessionId !== current.sessionId || identity.recording.epoch !== current.epoch) {
+        await controller.stop(identity.visible ? 'capture-failed' : 'focus-lost');
+        return;
+      }
+      try {
+        await pageCommand(current.ownerTabId, {
+          type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: current.sessionId, epoch: current.epoch,
+          documentToken: current.documentToken, startedAt: current.draft.startedAt,
+          count: current.draft.steps.length, expectedUrl,
+        });
+      } catch {
+        if (pendingWakeNavigations.length) continue;
+        await controller.stop('capture-failed');
+        return;
+      }
+      if (pendingWakeNavigations.length) continue;
+      return;
+    }
+    await controller.stop('capture-failed');
+  };
+
+  const initialize = async () => {
+    const restored = await sessionStore.read(Date.now());
+    controller = makeController(restored);
+    const state = controller.getState();
+    decorateForState(state);
+    if (JSON.stringify(state) !== JSON.stringify(restored)) await persistState(state);
+    else await syncJourneyAlarms(state);
+    if (state.phase === 'recording') await recoverRecordingOwner();
+    else pendingWakeNavigations.length = 0;
+    const current = controller.getState();
+    if (current.phase === 'reviewing' && Date.now() >= Date.parse(current.warningAt)) showReviewWarning(current);
+    initialized = true;
+    void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
+  };
+
+  const resetFailedInitialization = async (): Promise<void> => {
+    if (activeState(controller.getState())) await controller.stop('session-storage-limit').catch(() => {});
+    const idle = { phase: 'idle', epoch: controller.getState().epoch } as const;
+    await sessionStore.write(idle);
+    await syncJourneyAlarms(idle);
+    controller = makeController(idle);
+    initializationError = undefined;
+    pendingWakeNavigations.length = 0;
+    decorateForState(idle);
+    await Promise.all(Array.from(connectedEventPorts.values(), candidate => (
+      stopStalePageRecorder(candidate.tabId, candidate.windowId)
+    )));
+    void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
+  };
+
   const reply = (
     operation: Promise<unknown>,
     respond: (response: unknown) => void,
   ) => {
     operation.then(value => respond(success(value)), error => respond(failure(error)));
     return true;
+  };
+
+  const withPersistedState = async (operation: Promise<void>): Promise<void> => {
+    const failureVersion = stateWriteFailureVersion;
+    await operation;
+    let writeError: unknown;
+    try { await latestStateWrite; } catch (error) { writeError = error; }
+    if (stateWriteFailureVersion !== failureVersion) throw lastStateWriteError;
+    if (writeError) throw writeError;
   };
 
   const openLaunch = async (senderTabId: number, senderWindowId: number, senderUrl: string): Promise<void> => {
@@ -569,53 +888,46 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     await controller.start({ ownerTabId: intent.ownerTabId, ownerWindowId: intent.ownerWindowId, includeEnteredValues: false });
   };
 
-  const trustedCommand = (
-    message: Message,
-    surface: TrustedSurface,
-    respond: (response: unknown) => void,
-  ): boolean | void => {
+  const trustedCommand = async (message: Message, surface: TrustedSurface): Promise<unknown> => {
     if (message.type === 'ANMERKO_JOURNEY_STATE') {
-      respond(success(controller.getState()));
-      return;
+      return controller.getState();
     }
     if (message.type === 'ANMERKO_JOURNEY_START') {
       if (surface.kind === 'launch') {
         const generation = launchGeneration;
         const intent = consumeLaunchIntent(surface, message.intent);
-        if (!intent) {
-          respond(failure(new JourneyCommandError('launch-expired')));
-          return;
-        }
-        return reply(startFallback(intent, generation), respond);
+        if (!intent) throw new JourneyCommandError('launch-expired');
+        await withPersistedState(startFallback(intent, generation));
+        return;
       }
       if (surface.kind !== 'sidebar' || !validInteger(message.ownerTabId) || !validInteger(message.ownerWindowId)) {
-        respond(failure(new JourneyCommandError('owner-unavailable')));
-        return;
+        throw new JourneyCommandError('owner-unavailable');
       }
       const ownerTabId = message.ownerTabId;
       const ownerWindowId = message.ownerWindowId;
       const generation = launchGeneration;
-      return reply((async () => {
+      await withPersistedState((async () => {
         try { await focusedOwnerTab(ownerTabId, ownerWindowId); }
         catch { throw new JourneyCommandError('owner-unavailable'); }
         if (generation !== launchGeneration) return;
         await ensureJourneyGrant();
         if (generation !== launchGeneration) return;
         await controller.start({ ownerTabId, ownerWindowId, includeEnteredValues: false });
-      })(), respond);
+      })());
+      return;
     }
     if (message.type === 'ANMERKO_JOURNEY_STOP') {
       launchGeneration += 1;
-      if (!cancelLaunchIntent(surface, message.intent)) {
-        respond(failure(new JourneyCommandError('launch-expired')));
-        return;
-      }
-      return reply(controller.stop('user'), respond);
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      await withPersistedState(controller.stop('user'));
+      return;
     }
     if (message.type === 'ANMERKO_JOURNEY_DISCARD') {
       launchGeneration += 1;
-      return reply(controller.discard(), respond);
+      await withPersistedState(controller.discard());
+      return;
     }
+    throw new Error(GENERIC_ERROR);
   };
 
   const disconnectPort = (port: chrome.runtime.Port) => {
@@ -627,62 +939,147 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     const sender = port.sender;
     const senderTabId = sender?.tab?.id;
     const senderWindowId = sender?.tab?.windowId;
-    const state = controller.getState();
     let senderUrl: string | undefined;
     try { senderUrl = normalizedUrl(sender?.url); }
     catch { /* Invalid sender URLs are rejected below. */ }
     if (sender?.id !== api.runtime.id || sender.frameId !== 0 || !validInteger(senderTabId)
-      || !validInteger(senderWindowId) || !senderUrl
-      || !activeState(state) || senderTabId !== state.ownerTabId || senderWindowId !== state.ownerWindowId) {
+      || !validInteger(senderWindowId) || !senderUrl) {
       disconnectPort(port);
       return;
     }
+    if (connectedEventPorts.size >= MAX_PENDING_WAKE_EVENTS) {
+      disconnectPort(port);
+      return;
+    }
+    connectedEventPorts.set(port, { tabId: senderTabId, windowId: senderWindowId });
+    let queued = 0;
     const receive = (rawMessage: unknown) => {
-      if (!isRecord(rawMessage) || rawMessage.type !== 'ANMERKO_JOURNEY_EVENTS' || !isRecord(rawMessage.batch)) return;
-      const current = controller.getState();
-      if (current.phase !== 'recording' || current.ownerTabId !== senderTabId
-        || current.ownerWindowId !== senderWindowId || rawMessage.batch.sessionId !== current.sessionId
-        || rawMessage.batch.epoch !== current.epoch || rawMessage.batch.documentToken !== current.documentToken) return;
-      try { controller.acceptBatch(rawMessage.batch, senderTabId); } catch { /* Malformed page batches fail closed. */ }
+      if (queued >= MAX_PENDING_WAKE_EVENTS) {
+        disconnectPort(port);
+        return;
+      }
+      queued += 1;
+      enqueueRoutedEvent(async () => {
+        try {
+          const current = controller.getState();
+          if (current.phase !== 'recording' || current.ownerTabId !== senderTabId
+            || current.ownerWindowId !== senderWindowId) return;
+          if (!isRecord(rawMessage) || rawMessage.type !== 'ANMERKO_JOURNEY_EVENTS' || !isRecord(rawMessage.batch)
+            || rawMessage.batch.sessionId !== current.sessionId || rawMessage.batch.epoch !== current.epoch
+            || rawMessage.batch.documentToken !== current.documentToken) return;
+          let granted = false;
+          try { granted = await hasJourneyGrant(); } catch { /* Fail closed below. */ }
+          if (!granted) {
+            await controller.stop('permission-revoked');
+            return;
+          }
+          controller.acceptBatch(rawMessage.batch, senderTabId);
+          await latestStateWrite;
+        } catch { /* Malformed or stale page batches fail closed. */ }
+        finally { queued -= 1; }
+      });
     };
     const disconnected = () => {
+      connectedEventPorts.delete(port);
       port.onMessage.removeListener(receive);
       port.onDisconnect.removeListener(disconnected);
     };
     port.onMessage.addListener(receive);
     port.onDisconnect.addListener(disconnected);
+    enqueueRoutedEvent(async () => {
+      const current = controller.getState();
+      if (current.phase === 'idle' || current.phase === 'saved') {
+        await stopStalePageRecorder(senderTabId, senderWindowId);
+        disconnectPort(port);
+      } else if (!activeState(current) || current.ownerTabId !== senderTabId || current.ownerWindowId !== senderWindowId) {
+        disconnectPort(port);
+      }
+    });
   });
 
   api.runtime.onMessage.addListener((rawMessage, sender, respond) => {
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface) return trustedCommand(message, surface, respond);
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD'].includes(String(message.type))) {
+      return reply((async () => {
+        await ready;
+        if (initializationError) {
+          if (message.type !== 'ANMERKO_JOURNEY_DISCARD') throw initializationError;
+          await resetFailedInitialization();
+          return;
+        }
+        return trustedCommand(message, surface);
+      })(), respond);
+    }
     const senderTabId = sender.tab?.id;
     const senderWindowId = sender.tab?.windowId;
     if (!validInteger(senderTabId) || !validInteger(senderWindowId) || sender.frameId !== 0 || typeof sender.url !== 'string') return;
     let senderUrl: string;
     try { senderUrl = normalizedUrl(sender.url); } catch { return; }
     if (message.type === 'ANMERKO_JOURNEY_OPEN') {
-      return reply(openLaunch(senderTabId, senderWindowId, senderUrl), respond);
+      return reply((async () => {
+        await ready;
+        if (initializationError) throw initializationError;
+        return openLaunch(senderTabId, senderWindowId, senderUrl);
+      })(), respond);
     }
-    const state = controller.getState();
-    if (!activeState(state) || senderTabId !== state.ownerTabId || sender.tab?.windowId !== state.ownerWindowId) return;
-    if (message.type === 'ANMERKO_JOURNEY_STOP'
-      && message.sessionId === state.sessionId && message.epoch === state.epoch) {
-      launchGeneration += 1;
-      const operation = controller.stop('user');
-      return reply(operation, respond);
+    if (message.type === 'ANMERKO_JOURNEY_STOP') {
+      void (async () => {
+        await ready;
+        if (initializationError) {
+          respond(failure(initializationError));
+          return;
+        }
+        const state = controller.getState();
+        if (!activeState(state) || senderTabId !== state.ownerTabId || senderWindowId !== state.ownerWindowId
+          || message.sessionId !== state.sessionId || message.epoch !== state.epoch) {
+          respond(undefined);
+          return;
+        }
+        launchGeneration += 1;
+        try {
+          await withPersistedState(controller.stop('user'));
+          respond(success());
+        } catch (error) { respond(failure(error)); }
+      })();
+      return true;
     }
   });
 
+  installNavigationListeners();
+  ready = initialize().catch(async error => {
+    initializationError = error;
+    initialized = true;
+    pendingWakeNavigations.length = 0;
+    if (activeState(controller.getState())) await controller.stop('session-storage-limit');
+    await clearJourneyAlarms();
+  });
+
   return {
+    ready,
+    async handleToolbarClick() {
+      await ready;
+      if (initializationError) return false;
+      if (activeState(controller.getState())) {
+        await withPersistedState(controller.stop('user'));
+        return true;
+      }
+      const state = controller.getState();
+      if (state.phase === 'reviewing' || state.phase === 'saving') {
+        await openReview();
+        return true;
+      }
+      return false;
+    },
     stopIfRecording() {
+      if (!initialized || initializationError) return false;
       if (!activeState(controller.getState())) return false;
       void controller.stop('user');
       return true;
     },
     openReviewIfAvailable() {
+      if (!initialized || initializationError) return false;
       const state = controller.getState();
       if (state.phase !== 'reviewing' && state.phase !== 'saving') return false;
       void openReview().catch(() => {});

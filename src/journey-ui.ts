@@ -13,6 +13,8 @@ export interface JourneyClient {
   supportsEnteredValues?: boolean;
 }
 
+const JOURNEY_STORAGE_ERROR = 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.';
+
 const failures: Record<CaptureFailure, string> = {
   superseded: 'superseded by a later action',
   'navigation-timeout': 'the destination did not become ready in time',
@@ -51,6 +53,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let actionVersion = 0;
   let includeEnteredValues = false;
   let error = '';
+  let loadFailed = false;
 
   async function refresh() {
     const current = ++version;
@@ -59,9 +62,16 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (!alive || current !== version) return;
       if (next.phase === 'idle' && state.phase !== 'idle') includeEnteredValues = false;
       state = next;
+      loadFailed = false;
       render();
-    } catch {
-      if (alive && current === version) { error = 'Could not load the journey. Reopen anmerko and try again.'; render(); }
+    } catch (caught) {
+      if (alive && current === version) {
+        loadFailed = true;
+        error = caught instanceof Error && caught.message === JOURNEY_STORAGE_ERROR
+          ? JOURNEY_STORAGE_ERROR
+          : 'Could not load the journey. Reopen anmerko and try again.';
+        render();
+      }
     }
   }
 
@@ -122,6 +132,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } else {
       view.append(node('h1', 'Review journey'));
       view.append(node('p', `${state.draft.steps.length} retained steps · Entered values: ${state.draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
+      if (state.draft.stopReason === 'session-storage-limit') {
+        const notice = node('p', 'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.', 'journey-error');
+        notice.setAttribute('role', 'alert');
+        view.append(notice);
+      }
       const list = node('ol', undefined, 'journey-steps');
       for (const step of state.draft.steps) {
         const item = node('li'); item.value = step.seq;
@@ -149,6 +164,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       }
       view.append(list, action('Discard journey', () => client.discard()));
     }
+    if (loadFailed) view.append(action('Reset journey storage', () => client.discard()));
     if (error) {
       const alert = node('p', error, 'journey-error'); alert.setAttribute('role', 'alert'); view.append(alert);
     }

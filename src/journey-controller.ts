@@ -24,6 +24,7 @@ export interface JourneyPageIdentity {
   scroll: Point;
   generation: number;
   visible: boolean;
+  recording?: { sessionId: string; epoch: number };
 }
 
 export interface JourneyControllerAdapter {
@@ -242,6 +243,13 @@ export function createJourneyController(
         documentToken,
         adopted: false,
       };
+      const adopted = adoptJourneyDocument(next, {
+        epoch: next.epoch,
+        previousDocumentToken: next.documentToken,
+        documentToken,
+      });
+      if (adopted.phase !== 'recording') return;
+      next = adopted;
     }
     const beforeCommit = next;
     next = commitJourneyNavigation(beforeCommit, {
@@ -498,9 +506,12 @@ export function createJourneyController(
     launching = false;
     pendingHandshake = undefined;
     if (previous.phase !== 'starting' && previous.phase !== 'recording') return;
+    const stoppedAt = reason === 'duration-limit' && previous.phase === 'recording'
+      ? previous.deadlineAt
+      : new Date(Math.max(now(), Date.parse(previous.draft.startedAt))).toISOString();
     const stopped = stopJourney(previous, {
       epoch: previous.epoch,
-      stoppedAt: new Date(Math.max(now(), Date.parse(previous.draft.startedAt))).toISOString(),
+      stoppedAt,
       reason,
     });
     if (stopped !== previous) publish(stopped);

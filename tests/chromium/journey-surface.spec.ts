@@ -227,6 +227,16 @@ test('rejects invalid launch context before requesting access and sanitizes fail
   })).toBe('Finish or discard the existing journey before starting another.');
 
   await page.evaluate(() => {
+    (globalThis as HarnessWindow).surfaceHarness.response = {
+      ok: false, code: 'session-storage-failed', error: 'private storage details',
+    };
+  });
+  expect(await page.evaluate(async () => {
+    try { await (globalThis as HarnessWindow).surfaceHarness.client.read(); return 'no error'; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  })).toBe('Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.');
+
+  await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
     harness.response = { ok: false, code: '__proto__', error: 'private backend details' };
     harness.pending = harness.client.start(false);

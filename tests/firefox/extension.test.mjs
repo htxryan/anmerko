@@ -108,7 +108,7 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
     assert.equal(manifest.name, 'anmerko');
     assert.equal(manifest.version, JSON.parse(await readFile('package.json', 'utf8')).version);
-    assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+    assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'alarms', 'clipboardWrite']);
     assert.equal(manifest.host_permissions, undefined);
     assert.equal(manifest.browser_specific_settings.gecko.id, FIREFOX_GUID);
     for (const file of (await readdir(extension, { recursive: true, withFileTypes: true })).filter(file => file.isFile())) {

@@ -40,13 +40,13 @@ test('browser manifests keep the shared permissions, version, and Firefox identi
   assert.equal(firefox.sidebar_action.default_panel, 'sidebar.html');
   assert.equal(firefox.sidebar_action.default_title, 'anmerko');
   assert.equal(firefox.sidebar_action.open_at_install, false);
-  assert.deepEqual(firefox.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+  assert.deepEqual(firefox.permissions, ['activeTab', 'scripting', 'storage', 'alarms', 'clipboardWrite']);
   assert.equal(firefox.minimum_chrome_version, undefined);
   assert.equal(firefox.side_panel, undefined);
   assert.equal(firefox.host_permissions, undefined);
   const orion = manifest('orion');
   assert.equal(orion.version, version);
-  assert.deepEqual(orion.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+  assert.deepEqual(orion.permissions, ['activeTab', 'scripting', 'storage', 'alarms', 'clipboardWrite']);
   assert.deepEqual(orion.background, { scripts: ['background.js'] });
   assert.equal(orion.action.default_popup, 'popup.html');
   assert.equal(orion.minimum_chrome_version, undefined);
