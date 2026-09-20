@@ -217,6 +217,12 @@ export interface AdoptJourneyDocumentInput {
   documentToken: string;
 }
 
+export interface SupersedeJourneyImagesInput {
+  epoch: number;
+  observedAt: string;
+  excludeStepIds?: string[];
+}
+
 interface JourneyCaptureResolutionBase {
   epoch: number;
   documentToken: string;
@@ -676,7 +682,13 @@ export function acceptInitialImage(state: JourneySession, input: InitialImageInp
     }],
     images: { [input.imageId]: image },
   };
-  return { ...state, phase: 'recording', documentCounters: { [state.documentToken]: 0 }, draft };
+  const recording: RecordingJourneySession = {
+    ...state,
+    phase: 'recording',
+    documentCounters: { [state.documentToken]: 0 },
+    draft,
+  };
+  return recordingSessionFits(recording) ? recording : state;
 }
 
 export function failInitialImage(state: JourneySession): JourneySession {
@@ -748,6 +760,13 @@ export function acceptJourneyEventBatch(state: JourneySession, input: JourneyEve
     documentCounters: { ...state.documentCounters, [batch.documentToken]: batch.localCounter },
     draft: { ...state.draft, updatedAt, steps: [...state.draft.steps, ...steps] },
   };
+  if (!recordingSessionFits(next)) {
+    return stopJourney(state, {
+      epoch: state.epoch,
+      stoppedAt: chronologicalTimestamp(state, lastObservedAt),
+      reason: 'session-storage-limit',
+    });
+  }
   return next.draft.steps.length >= JOURNEY_LIMITS.maxSteps
     ? stopJourney(next, { epoch: next.epoch, stoppedAt: updatedAt, reason: 'step-limit' })
     : next;
@@ -786,6 +805,13 @@ export function commitJourneyNavigation(state: JourneySession, input: Navigation
       steps: [...state.draft.steps, step],
     },
   };
+  if (!recordingSessionFits(next)) {
+    return stopJourney(state, {
+      epoch: state.epoch,
+      stoppedAt: chronologicalTimestamp(state, input.observedAt),
+      reason: 'session-storage-limit',
+    });
+  }
   return next.draft.steps.length >= JOURNEY_LIMITS.maxSteps
     ? stopJourney(next, { epoch: next.epoch, stoppedAt: input.observedAt, reason: 'step-limit' })
     : next;
@@ -796,11 +822,34 @@ export function adoptJourneyDocument(state: JourneySession, input: AdoptJourneyD
     || input.previousDocumentToken !== state.documentToken || !validId(input.documentToken)
     || input.documentToken === input.previousDocumentToken
     || Object.hasOwn(state.documentCounters, input.documentToken)) return state;
-  return {
+  const next: RecordingJourneySession = {
     ...state,
     documentToken: input.documentToken,
     documentCounters: { ...state.documentCounters, [input.documentToken]: 0 },
   };
+  return recordingSessionFits(next) ? next : state;
+}
+
+export function supersedeJourneyImagesAfter(state: JourneySession, input: SupersedeJourneyImagesInput): JourneySession {
+  if (state.phase !== 'recording' || input.epoch !== state.epoch || !validTimestamp(input.observedAt)) return state;
+  const excluded = input.excludeStepIds ?? [];
+  if (!Array.isArray(excluded) || excluded.length > JOURNEY_LIMITS.maxSteps
+    || excluded.some(id => !validId(id)) || new Set(excluded).size !== excluded.length) return state;
+  const excludedIds = new Set(excluded);
+  const observedMs = Date.parse(input.observedAt);
+  let changed = false;
+  const steps = state.draft.steps.map(step => {
+    if (excludedIds.has(step.id) || step.image.status !== 'retained') return step;
+    const image = state.draft.images[step.image.imageId];
+    if (!image || Date.parse(image.capturedAt) < observedMs) return step;
+    changed = true;
+    return { ...step, image: { status: 'unavailable', reason: 'superseded' } as const };
+  }) as JourneyDraftStep[];
+  if (!changed) return state;
+  const referencedImageIds = new Set(steps.flatMap(step => step.image.status === 'retained' ? [step.image.imageId] : []));
+  const images = Object.fromEntries(Object.entries(state.draft.images)
+    .filter(([imageId]) => referencedImageIds.has(imageId)));
+  return { ...state, draft: { ...state.draft, steps, images } };
 }
 
 export function resolveJourneyCapture(state: JourneySession, input: JourneyCaptureResolution): JourneySession {
@@ -851,11 +900,12 @@ export function resolveJourneyCapture(state: JourneySession, input: JourneyCaptu
     steps,
     images: { ...state.draft.images, [input.imageId]: image },
   };
-  if (bytes(JSON.stringify(draft)) > JOURNEY_LIMITS.maxSessionBytes) {
+  const next: RecordingJourneySession = { ...state, draft };
+  if (!recordingSessionFits(next)) {
     const unavailable = resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: 'storage-limit' });
     return stopJourney(unavailable, { epoch: state.epoch, stoppedAt: image.capturedAt, reason: 'session-storage-limit' });
   }
-  return { ...state, draft };
+  return next;
 }
 
 export function stopJourney(state: JourneySession, input: { epoch: number; stoppedAt: string; reason: StopReason }): JourneySession {
@@ -880,4 +930,22 @@ export function stopJourney(state: JourneySession, input: { epoch: number; stopp
       steps,
     },
   };
+}
+
+function chronologicalTimestamp(state: RecordingJourneySession, candidate: string): string {
+  return new Date(Math.max(
+    Date.parse(candidate),
+    Date.parse(state.draft.startedAt),
+    Date.parse(state.draft.updatedAt),
+  )).toISOString();
+}
+
+function recordingSessionFits(state: RecordingJourneySession): boolean {
+  if (bytes(JSON.stringify(state)) > JOURNEY_LIMITS.maxSessionBytes) return false;
+  const terminal = stopJourney(state, {
+    epoch: state.epoch,
+    stoppedAt: chronologicalTimestamp(state, state.deadlineAt),
+    reason: 'session-storage-limit',
+  });
+  return bytes(JSON.stringify(terminal)) <= JOURNEY_LIMITS.maxSessionBytes;
 }

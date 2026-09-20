@@ -6,6 +6,7 @@ import {
   createJourneySession,
   resolveJourneyCapture,
   stopJourney,
+  supersedeJourneyImagesAfter,
   validateJourneyDraft,
   validateJourneyManifest,
   type JourneyDraftV1,
@@ -336,6 +337,88 @@ test('navigation changes the document token and rejects old-document or stale-ep
   expect(acceptJourneyEventBatch(navigated, staleBatch)).toBe(navigated);
 });
 
+test('navigation and event batches stop before publishing a draft over the session cap', () => {
+  const previous = nearSessionLimitRecording();
+  const previousBytes = Buffer.byteLength(JSON.stringify(previous));
+  expect(previousBytes).toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes);
+  expect(JOURNEY_LIMITS.maxSessionBytes - previousBytes).toBeLessThan(25_000);
+
+  const navigated = commitJourneyNavigation(previous, {
+    epoch: previous.epoch,
+    id: 'over-cap-navigation',
+    observedAt: '2026-09-20T12:00:02.000Z',
+    elapsedMs: 40_000,
+    sourceUrl: maximumFixtureUrl('navigation-source'),
+    toUrl: maximumFixtureUrl('navigation-destination'),
+    previousDocumentToken: previous.documentToken,
+    documentToken: previous.documentToken,
+    image: { status: 'unavailable', reason: 'superseded' },
+  });
+  expect(navigated.phase).toBe('reviewing');
+  if (navigated.phase === 'reviewing') {
+    expect(navigated.draft.stopReason).toBe('session-storage-limit');
+    expect(navigated.draft.steps).toEqual(previous.draft.steps);
+    expect(navigated.draft.images).toEqual(previous.draft.images);
+    expect(Buffer.byteLength(JSON.stringify(navigated))).toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes);
+  }
+
+  const batched = acceptJourneyEventBatch(previous, {
+    schemaVersion: 1,
+    sessionId: previous.sessionId,
+    epoch: previous.epoch,
+    documentToken: previous.documentToken,
+    localCounter: 7,
+    events: [{
+      kind: 'click',
+      id: 'over-cap-click',
+      observedAt: '2026-09-20T12:00:02.000Z',
+      elapsedMs: 40_000,
+      sourceUrl: maximumFixtureUrl('batch-source'),
+      target: {
+        tag: 'button', selectorPath: ['button'], label: 'Go', editable: false,
+        viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 }, point: { x: 100, y: 100 },
+      },
+      image: { status: 'unavailable', reason: 'superseded' },
+    }],
+  });
+  expect(batched.phase).toBe('reviewing');
+  if (batched.phase === 'reviewing') {
+    expect(batched.draft.stopReason).toBe('session-storage-limit');
+    expect(batched.draft.steps).toEqual(previous.draft.steps);
+    expect(batched.draft.images).toEqual(previous.draft.images);
+    expect(Buffer.byteLength(JSON.stringify(batched))).toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes);
+  }
+});
+
+test('a later-delivered action supersedes retained pixels captured at or after its observation', () => {
+  const recording = recordingSession();
+  const accepted = acceptJourneyEventBatch(recording, {
+    ...clickBatch(1, 'capture-later-action'),
+    events: [{
+      ...clickBatch(1, 'capture-later-action').events[0],
+      id: 'step-later-action',
+      observedAt: '2026-09-20T12:00:00.050Z',
+      elapsedMs: 200,
+    }],
+  });
+  const superseded = supersedeJourneyImagesAfter(accepted, {
+    epoch: 1,
+    observedAt: '2026-09-20T12:00:00.050Z',
+    excludeStepIds: ['step-later-action'],
+  });
+
+  expect(superseded.phase).toBe('recording');
+  if (superseded.phase === 'recording') {
+    expect(superseded.draft.steps[0].image).toEqual({ status: 'unavailable', reason: 'superseded' });
+    expect(superseded.draft.steps[1].image).toEqual({ status: 'pending', captureId: 'capture-later-action' });
+    expect(superseded.draft.images).toEqual({});
+  }
+  expect(supersedeJourneyImagesAfter(superseded, {
+    epoch: 2,
+    observedAt: '2026-09-20T12:00:00.050Z',
+  })).toBe(superseded);
+});
+
 test('capture resolution replaces one pending state with bounded image metadata', () => {
   const recording = recordingSession();
   const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
@@ -421,6 +504,71 @@ function recordingSession() {
       viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
     },
   });
+}
+
+function nearSessionLimitRecording() {
+  const imageByteLength = Math.floor(JOURNEY_LIMITS.maxJourneyImageBytes / 7);
+  const dataUrl = fixturePngDataUrl(imageByteLength);
+  const image = (capturedAt: string) => ({
+    capturedAt,
+    captureUrl: 'https://example.com/start',
+    width: 1,
+    height: 1,
+    byteLength: imageByteLength,
+    dataUrl,
+    viewport: { width: 390, height: 844 },
+    scroll: { x: 0, y: 0 },
+  });
+  const starting = createJourneySession({
+    sessionId: 'session-1', journeyId: 'journey-1', ownerTabId: 42, ownerWindowId: 7,
+    documentToken: 'document-1', startedAt: '2026-09-20T12:00:00.000Z',
+    deadlineAt: '2026-09-20T12:05:00.000Z', includeEnteredValues: true,
+  });
+  let session: JourneySession = acceptInitialImage(starting, {
+    id: 'step-initial', imageId: 'image-0', observedAt: '2026-09-20T12:00:00.100Z', elapsedMs: 100,
+    sourceUrl: 'https://example.com/start', image: image('2026-09-20T12:00:00.100Z'),
+  });
+  for (let index = 1; index <= 6; index += 1) {
+    session = acceptJourneyEventBatch(session, clickBatch(index, `capture-${index}`));
+    session = resolveJourneyCapture(session, {
+      epoch: 1,
+      documentToken: 'document-1',
+      captureId: `capture-${index}`,
+      status: 'retained',
+      imageId: `image-${index}`,
+      image: image(`2026-09-20T12:00:0${index}.100Z`),
+    });
+  }
+  for (let index = 1; index <= 21; index += 1) {
+    if (session.phase !== 'recording') throw new Error('Near-cap fixture stopped too early');
+    session = commitJourneyNavigation(session, {
+      epoch: 1,
+      id: `fixture-navigation-${index}`,
+      observedAt: `2026-09-20T12:00:01.${String(index).padStart(3, '0')}Z`,
+      elapsedMs: 10_000 + index,
+      sourceUrl: maximumFixtureUrl(`source-${index}`),
+      toUrl: maximumFixtureUrl(`destination-${index}`),
+      previousDocumentToken: session.documentToken,
+      documentToken: session.documentToken,
+      image: { status: 'unavailable', reason: 'superseded' },
+    });
+  }
+  if (session.phase !== 'recording') throw new Error('Near-cap fixture must remain recording');
+  expect(validateJourneyDraft(session.draft).ok).toBe(true);
+  return session;
+}
+
+function maximumFixtureUrl(label: string): string {
+  const prefix = `https://example.com/${label}/`;
+  return `${prefix}${'a'.repeat(32_700 - prefix.length)}`;
+}
+
+function fixturePngDataUrl(byteLength: number): string {
+  const png = new Uint8Array(byteLength);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png.set([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 8);
+  png.set([0, 0, 0, 1, 0, 0, 0, 1], 16);
+  return `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
 }
 
 function clickBatch(localCounter: number, captureId: string) {
