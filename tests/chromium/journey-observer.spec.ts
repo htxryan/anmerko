@@ -7,6 +7,9 @@ type ObserverWindow = typeof globalThis & {
     dispatch(message: unknown): Promise<any>;
     listenerCount(): number;
     sent: any[];
+    portMessages: any[];
+    portNames: string[];
+    disconnectedPorts: number[];
     stripText(): string | null;
   };
   __anmerkoJourneyPage?: () => void;
@@ -31,13 +34,14 @@ async function installHarness(page: Page) {
     const listeners: Array<(message: any, sender: MessageSender, respond: (value: unknown) => void) => boolean | void> = [];
     let stripRoot: ShadowRoot | null = null;
     const originalAttach = Element.prototype.attachShadow;
+    const ports: Array<{ disconnect(): void }> = [];
     Element.prototype.attachShadow = function(init) {
       const root = originalAttach.call(this, init);
       if (this.localName === 'anmerko-journey-strip') stripRoot = root;
       return root;
     };
     const harness: ObserverWindow['observerHarness'] = {
-      sent: [],
+      sent: [], portMessages: [], portNames: [], disconnectedPorts: [],
       dispatch(message) {
         const listener = listeners[0];
         if (!listener) return Promise.resolve(undefined);
@@ -64,6 +68,33 @@ async function installHarness(page: Page) {
           },
         },
         sendMessage: (message: unknown) => { harness.sent.push(structuredClone(message)); return Promise.resolve({ ok: true }); },
+        connect: ({ name }: { name: string }) => {
+          const disconnectListeners: Array<() => void> = [];
+          const index = ports.length;
+          let connected = true;
+          const port = {
+            postMessage(message: unknown) {
+              if (!connected) throw new Error('disconnected');
+              harness.portMessages.push(structuredClone(message));
+            },
+            disconnect() {
+              if (!connected) return;
+              connected = false;
+              harness.disconnectedPorts.push(index);
+              for (const listener of disconnectListeners) listener();
+            },
+            onDisconnect: {
+              addListener(listener: () => void) { disconnectListeners.push(listener); },
+              removeListener(listener: () => void) {
+                const listenerIndex = disconnectListeners.indexOf(listener);
+                if (listenerIndex >= 0) disconnectListeners.splice(listenerIndex, 1);
+              },
+            },
+          };
+          ports.push(port);
+          harness.portNames.push(name);
+          return port;
+        },
       },
     };
     (globalThis as ObserverWindow).observerHarness = harness;
@@ -90,15 +121,19 @@ test('observer reinjection reuses a live binding and restores a fresh inactive o
     type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1, documentToken: first.documentToken,
     expectedUrl: first.url, count: 2, startedAt,
   }), { first, startedAt })).toMatchObject({ ok: true });
+  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.portNames))
+    .toEqual(['anmerko-journey-events-v1']);
   expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.stripText())).toMatch(/2 steps/);
   await page.getByRole('button', { name: 'Owner action' }).click();
-  await expect.poll(() => page.evaluate(() => (globalThis as ObserverWindow).observerHarness.sent.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (globalThis as ObserverWindow).observerHarness.portMessages.length)).toBe(1);
+  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.sent)).toEqual([]);
 
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
   expect(await page.evaluate(() => ({
     listeners: (globalThis as ObserverWindow).observerHarness.listenerCount(),
     marker: Object.hasOwn(globalThis, '__anmerkoJourneyPage'),
   }))).toEqual({ listeners: 0, marker: false });
+  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.disconnectedPorts)).toEqual([0]);
   await expect(page.locator('anmerko-journey-strip')).toHaveCount(0);
 
   await page.addScriptTag({ content: enabledBundle });
@@ -109,14 +144,16 @@ test('observer reinjection reuses a live binding and restores a fresh inactive o
   }))).value;
   expect(restored.documentToken).not.toBe(first.documentToken);
   await page.getByRole('button', { name: 'Owner action' }).click();
-  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.sent.length)).toBe(1);
+  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.portMessages.length)).toBe(1);
 
   expect(await page.evaluate(({ restored, startedAt }) => (globalThis as ObserverWindow).observerHarness.dispatch({
     type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-2', epoch: 1, documentToken: restored.documentToken,
     expectedUrl: restored.url, count: 0, startedAt,
   }), { restored, startedAt })).toMatchObject({ ok: true });
+  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.portNames))
+    .toEqual(['anmerko-journey-events-v1', 'anmerko-journey-events-v1']);
   await page.getByRole('button', { name: 'Owner action' }).click();
-  await expect.poll(() => page.evaluate(() => (globalThis as ObserverWindow).observerHarness.sent.length)).toBe(2);
+  await expect.poll(() => page.evaluate(() => (globalThis as ObserverWindow).observerHarness.portMessages.length)).toBe(2);
 
   expect(await page.evaluate(() => {
     const dispose = (globalThis as ObserverWindow).__anmerkoJourneyPage!;
@@ -126,6 +163,7 @@ test('observer reinjection reuses a live binding and restores a fresh inactive o
       marker: Object.hasOwn(globalThis, '__anmerkoJourneyPage'),
     };
   })).toEqual({ listeners: 0, marker: false });
+  expect(await page.evaluate(() => (globalThis as ObserverWindow).observerHarness.disconnectedPorts)).toEqual([0, 1]);
   await expect(page.locator('anmerko-journey-strip')).toHaveCount(0);
 });
 
