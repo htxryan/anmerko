@@ -1,4 +1,5 @@
 import { COMPONENT_CONTEXT_DEFAULT, COMPONENT_CONTEXT_KEY } from './component-context';
+import { componentContextCapture } from './component-context-capture';
 import { createSupportIcon } from './support-icon';
 import { icon, renderIcons } from './icons';
 import { createCommentCard } from './comment-card';
@@ -76,6 +77,8 @@ export function mount(runtime: Runtime): Controller {
   let notes: Note[] = [];
   let noteViews: Array<() => void> = [];
   let disposeEditor: (() => void) | undefined;
+  let editorView: ReturnType<typeof createCommentCard> | undefined;
+  const componentCapture = componentContextCapture();
   let url = native ? '' : pageUrl();
   let title = native ? '' : document.title;
   let draft: Note | null = null;
@@ -263,6 +266,7 @@ export function mount(runtime: Runtime): Controller {
     componentContextEnabled = !!runtime.captureComponentContext && value === true;
     componentContextReady = true;
     componentContextLoading = false;
+    if (!componentContextEnabled) componentCapture.cancel();
     renderComponentPreference();
   }
   async function loadComponentPreference() {
@@ -287,6 +291,7 @@ export function mount(runtime: Runtime): Controller {
   $('.component-context-toggle').addEventListener('click', async () => {
     if (!runtime.captureComponentContext || componentContextLoading || componentContextSaving) return;
     const value = !(componentContextReady && componentContextEnabled);
+    if (!value) componentCapture.cancel();
     const version = ++componentContextVersion;
     componentContextSaving = true;
     renderComponentPreference();
@@ -331,6 +336,7 @@ export function mount(runtime: Runtime): Controller {
   }
   function applyState(state: ViewState) {
     if (!alive) return;
+    componentCapture.cancel();
     applyingState = true;
     url = state.url;
     if (native) title = state.pageTitle ?? '';
@@ -371,6 +377,7 @@ export function mount(runtime: Runtime): Controller {
       return;
     }
     try {
+      componentCapture.cancel();
       await integration?.changeLayout(mode, viewState(), mobile);
     } catch (error) {
       console.error('anmerko layout:', error);
@@ -550,7 +557,14 @@ export function mount(runtime: Runtime): Controller {
     const hierarchy = !native && missingHierarchy ? liveHierarchy(note) : null;
     const displayNote: Note = hierarchy && note.element
       ? { ...note, element: { ...note.element, hierarchy } } : note;
-    const view = createCommentCard(displayNote, number, editing);
+    const view = createCommentCard(displayNote, number, editing, editing ? () => {
+      componentCapture.cancel();
+      if (draft?.element && draft.id === note.id) {
+        delete draft.element.componentContext;
+        view.setComponentContext();
+        syncState();
+      }
+    } : undefined);
     if (native && missingHierarchy && samePage(note.pageUrl, url)) {
       // The sidebar has its own DOM. Ask the connected page for display-only
       // ancestry; do not scroll, highlight, or rewrite the saved comment.
@@ -608,6 +622,7 @@ export function mount(runtime: Runtime): Controller {
   function editNote(note: Note) {
     if (draft) { status('Save or cancel your current draft before editing another comment.', true); return; }
     setMinimized(false);
+    componentCapture.cancel();
     draft = structuredClone(note);
     composeOnPage = presentation === 'remote';
     setSettings(false);
@@ -643,6 +658,7 @@ export function mount(runtime: Runtime): Controller {
     const slot = $('.editor-slot');
     disposeEditor?.();
     disposeEditor = undefined;
+    editorView = undefined;
     slot.replaceChildren();
     $<HTMLButtonElement>('.select').disabled = !!draft || captureBusy || (native && !url);
     $<HTMLButtonElement>('.capture').disabled = !runtime.capture || !!draft || captureBusy || (native && !url);
@@ -671,6 +687,7 @@ export function mount(runtime: Runtime): Controller {
     const filtered = visibleNotes();
     const index = filtered.findIndex(note => note.id === draft!.id);
     const view = commentView(draft, index < 0 ? filtered.length + 1 : index + 1, true);
+    editorView = view;
     disposeEditor = view.dispose;
     slot.append(view.card);
     const textarea = slot.querySelector('textarea')!;
@@ -687,7 +704,11 @@ export function mount(runtime: Runtime): Controller {
           if (element && typeof element !== 'boolean' && draft?.element) { draft.element = element; renderEditor(); }
           else { parentButton.disabled = true; status('No parent element is available on this page.'); }
         } catch (error) { connectionError(error); }
-      } else if (draft?.element && parent && !saving && samePage(draft.pageUrl, pageUrl())) { draft.element = captureElement(parent); highlighted = parent; drawHighlight(); renderEditor(); }
+      } else if (draft?.element && parent && !saving && samePage(draft.pageUrl, pageUrl())) {
+        componentCapture.cancel();
+        draft.element = captureElement(parent); highlighted = parent; drawHighlight(); renderEditor();
+        enrichDraft(parent);
+      }
     });
     textarea.disabled = saving;
     slot.querySelector<HTMLButtonElement>('.save')!.disabled = saving;
@@ -697,7 +718,7 @@ export function mount(runtime: Runtime): Controller {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void commitDraft(); }
     });
     slot.querySelector('form')!.addEventListener('submit', event => { event.preventDefault(); void commitDraft(); });
-    slot.querySelector('.cancel')!.addEventListener('click', () => { if (!saving) { draft = null; highlighted = null; renderEditor(); drawHighlight(); status(); } });
+    slot.querySelector('.cancel')!.addEventListener('click', () => { if (!saving) { componentCapture.cancel(); draft = null; highlighted = null; renderEditor(); drawHighlight(); status(); } });
     renderNotes();
     slot.scrollIntoView({ block: 'nearest' });
     textarea.focus();
@@ -706,6 +727,7 @@ export function mount(runtime: Runtime): Controller {
   async function commitDraft() {
     if (!draft || saving) return;
     if (!draft.comment.trim()) { status('Write a comment before saving.', true); return; }
+    componentCapture.cancel();
     saving = true;
     const save = $<HTMLButtonElement>('.save');
     save.disabled = true;
@@ -776,6 +798,7 @@ export function mount(runtime: Runtime): Controller {
   }
   function selectElement(element?: Element) {
     if (!element || !element.isConnected || element === document.documentElement) return;
+    componentCapture.cancel();
     const time = new Date().toISOString();
     draft = { id: createUuid(), pageUrl: pageUrl(), pageTitle: document.title,
       comment: '', element: captureElement(element), createdAt: time, updatedAt: time };
@@ -784,6 +807,21 @@ export function mount(runtime: Runtime): Controller {
     highlighted = element;
     drawHighlight();
     renderEditor();
+    enrichDraft(element);
+  }
+  function enrichDraft(element: Element) {
+    const owner = draft;
+    const target = owner?.element;
+    if (!owner || !target || !componentContextReady || !componentContextEnabled || componentContextSaving || native) return;
+    const capturedUrl = pageUrl();
+    componentCapture.start(runtime, element, target.selectorPath,
+      () => alive && !saving && draft === owner && draft.element === target && pageUrl() === capturedUrl
+        && componentContextReady && componentContextEnabled && !componentContextSaving,
+      value => {
+        target.componentContext = value;
+        editorView?.setComponentContext(value);
+        syncState();
+      });
   }
   document.addEventListener('pointermove', event => {
     if (!picking) return;
@@ -1020,6 +1058,7 @@ export function mount(runtime: Runtime): Controller {
     if (title !== document.title) { title = document.title; syncState(); }
     const current = pageUrl();
     if (current !== url) {
+      componentCapture.cancel();
       captureAbort?.abort();
       url = current;
       locatedId = null;
@@ -1043,6 +1082,7 @@ export function mount(runtime: Runtime): Controller {
   function dispose() {
     if (!alive) return;
     alive = false;
+    componentCapture.cancel();
     minimizeAnimation?.cancel();
     captureAbort?.abort();
     abort.abort();
@@ -1063,6 +1103,7 @@ export function mount(runtime: Runtime): Controller {
   }
   function present(mode: PresentationMode, dock: boolean, state?: ViewState, notifySidebar = true) {
     if (!alive) return;
+    if (mode !== presentation) componentCapture.cancel();
     if (mode !== 'remote') captureAbort?.abort();
     canDock = dock && !mobile;
     presentation = mobile && mode === 'remote' ? 'overlay' : mode;
@@ -1080,6 +1121,7 @@ export function mount(runtime: Runtime): Controller {
     ready: Promise.resolve(), close, dispose, reveal, viewState, applyState, present, startCapture, status,
     sidebarClosed() {
       if (!alive || presentation !== 'remote') return;
+      componentCapture.cancel();
       captureAbort?.abort();
       presentation = 'minimized'; returnToDock = true; composeOnPage = false; renderEditor(); setPicking(false); setMinimized(true);
     },
