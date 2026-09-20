@@ -11,6 +11,12 @@
     "clipboardWrite",
     "sidePanel"
   ],
+  "optional_permissions": [
+    "webNavigation"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
     "default_title": "Annotate with anmerko"
   },
