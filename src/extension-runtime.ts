@@ -8,13 +8,6 @@ import type { Store } from './runtime';
 import { journeysEnabled } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 
-const ignoredSidebarTeardown = Symbol('ignored Firefox sidebar teardown');
-
-function isFirefoxSidebarTeardown(error: unknown): boolean {
-  return error instanceof Error
-    && error.message === "Actor 'Conduits' destroyed before query 'RuntimeMessage' was resolved";
-}
-
 export function extensionStore(): Store {
   const api = extensionApi();
   return {
@@ -39,6 +32,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;
+  let sidebarPort: chrome.runtime.Port | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
     return api.tabs.sendMessage(targetTab, { type, ...extra });
@@ -59,17 +53,18 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       } else if (remote) await api.runtime.sendMessage({ type: 'ANMERKO_VIEW_CHANGED', state }).catch(() => {});
     },
     async changeLayout(mode, state, mobile) {
+      if (native && ['overlay', 'minimized', 'closed'].includes(mode)) {
+        if (!sidebarPort) throw new Error('Could not change layout.');
+        sidebarPort.postMessage({
+          type: 'ANMERKO_SIDEBAR_LAYOUT', version: connectionVersion,
+          mode, state: state.url ? state : undefined,
+        });
+        // Firefox requires close() in the original click, before any await/message hop.
+        void closeDock(windowId || 0).catch(() => {});
+        return;
+      }
       const request = api.runtime.sendMessage({ type: 'ANMERKO_LAYOUT', mode, state: state.url ? state : undefined, tabId: targetTab, windowId, mobile });
-      const guardedRequest = native && mode !== 'dock'
-        ? request.catch(error => {
-          if (!isFirefoxSidebarTeardown(error)) throw error;
-          return ignoredSidebarTeardown;
-        })
-        : request;
-      // Firefox requires close() in the original click, before any await/message hop.
-      if (native && mode !== 'dock') void closeDock(windowId || 0).catch(() => {});
-      const result = await guardedRequest;
-      if (result === ignoredSidebarTeardown) return;
+      const result = await request;
       if (!result?.ok) throw new Error(result?.error || 'Could not change layout.');
     },
     locate: (note, parent) => pageCommand(parent ? 'ANMERKO_PARENT' : 'ANMERKO_LOCATE', { note }),
@@ -99,21 +94,24 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       api.runtime.onMessage.addListener(messageListener);
       signal.addEventListener('abort', () => api.runtime.onMessage.removeListener(messageListener), { once: true });
       if (!native) return;
-      let port: chrome.runtime.Port | undefined;
       function connectionPort() {
-        if (port) return port;
+        if (sidebarPort) return sidebarPort;
         const current = api.runtime.connect({ name: 'anmerko-sidebar' });
-        port = current;
+        sidebarPort = current;
         current.onMessage.addListener(result => {
-          if (signal.aborted || port !== current || result.version !== connectionVersion) return;
+          if (signal.aborted || sidebarPort !== current || result.version !== connectionVersion) return;
+          if (result.type === 'ANMERKO_SIDEBAR_LAYOUT_ERROR') {
+            if (result.code === 'layout-failed' && result.error === 'Could not change layout.') controller.status(result.error, true);
+            return;
+          }
           if (!result.ok) { controller.connectionFailed(result.error); return; }
           controller.applyState(result.value);
         });
         current.onDisconnect.addListener(() => {
-          if (signal.aborted || port !== current) return;
+          if (signal.aborted || sidebarPort !== current) return;
           // Firefox can unload its idle event page while the sidebar stays open.
           // Recreate the port on the next activation, not in an idle keepalive loop.
-          port = undefined;
+          sidebarPort = undefined;
           ++connectionVersion;
         });
         return current;
@@ -127,7 +125,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           if (!tab?.id) throw new Error('No active tab');
           targetTab = tab.id;
           // Startup and its response share the lifetime of this sidebar port.
-          connectionPort().postMessage({ tabId: targetTab, version });
+          connectionPort().postMessage({ tabId: targetTab, windowId, version });
         } catch (error) {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
@@ -140,7 +138,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         ++connectionVersion;
         api.tabs.onActivated.removeListener(activated);
         api.tabs.onUpdated.removeListener(updated);
-        port?.disconnect();
+        sidebarPort?.disconnect();
       }, { once: true });
       // Chrome can reuse the sidebar document after pagehide. Its mounted
       // controller stays connected until disposal or actual context destruction.

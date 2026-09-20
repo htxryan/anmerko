@@ -10,11 +10,9 @@ const event = () => {
 };
 const updated = event();
 const ports: { onMessage: ReturnType<typeof event>; onDisconnect: ReturnType<typeof event>; closed: boolean }[] = [];
-const requests: { tabId: number; version: number }[] = [];
+const requests: any[] = [];
 const pageMessages: unknown[] = [], layoutMessages: unknown[] = [];
 const layoutSequence: string[] = [];
-let deferLayout = false;
-let rejectLayout: ((error: Error) => void) | undefined;
 Object.assign(globalThis, { chrome: {
   sidebarAction: {
     open: async () => {},
@@ -23,22 +21,13 @@ Object.assign(globalThis, { chrome: {
   runtime: {
     id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`, getManifest: () => ({ sidebar_action: {} }),
     onMessage: event(),
-    sendMessage(message: unknown) {
-      layoutMessages.push(message);
-      if (!deferLayout) return Promise.resolve({ ok: true });
-      const request = new Promise<never>((_resolve, reject) => { rejectLayout = reject; });
-      const nativeCatch = request.catch.bind(request);
-      request.catch = handler => {
-        layoutSequence.push('request-catch');
-        return nativeCatch(handler);
-      };
-      return request;
-    },
+    async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
       const port = { onMessage: event(), onDisconnect: event(), closed: false };
       ports.push(port);
-      return { ...port, postMessage(request: typeof requests[number]) {
+      return { ...port, postMessage(request: any) {
         if (port.closed) throw new Error('Disconnected port');
+        if (request.type === 'ANMERKO_SIDEBAR_LAYOUT') layoutSequence.push('port-post');
         requests.push(request);
       }, disconnect() { port.closed = true; } };
     },
@@ -54,6 +43,7 @@ const controller = mount(extensionRuntime(() => {}));
 const state: ViewState = { url: `${location.origin}/page`, draft: null, scope: 'page', picking: false, settings: false };
 Object.assign(globalThis, { nativeHarness: {
   requests, pageMessages, layoutMessages, layoutSequence,
+  get startupRequests() { return requests.filter(request => !request.type); },
   get connections() { return ports.length; },
   reply(overrides: Partial<ViewState> = {}) { ports.at(-1)!.onMessage.emit({ ...requests.at(-1), ok: true, value: { ...state, ...overrides } }); },
   snapshot() { return controller.viewState(); },
@@ -61,6 +51,12 @@ Object.assign(globalThis, { nativeHarness: {
   disconnect() { const port = ports.at(-1)!; port.closed = true; port.onDisconnect.emit(); },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
-  deferLayout() { deferLayout = true; layoutSequence.length = 0; },
-  rejectLayout(message: string) { const reject = rejectLayout; rejectLayout = undefined; reject?.(new Error(message)); },
+  resetLayoutSequence() { layoutSequence.length = 0; },
+  failLayout() {
+    const start = requests.slice().reverse().find((request: any) => !request.type);
+    ports.at(-1)!.onMessage.emit({
+      type: 'ANMERKO_SIDEBAR_LAYOUT_ERROR', version: start.version,
+      code: 'layout-failed', error: 'Could not change layout.',
+    });
+  },
 } });

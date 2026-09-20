@@ -34,11 +34,41 @@ test('toolbar activation still broadcasts state to reconnect an already open sid
   }]);
 });
 
+test('an accepted port layout survives the intentional sidebar disconnect', async ({ page }) => {
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(1);
+  await run(page, 'sidebarHarness.clearPageCommands()');
+  await run(page, 'sidebarHarness.layout(1); sidebarHarness.disconnect()');
+  await expect.poll(() => run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_PRESENT' && message.mode === 'overlay')`)).toBe(true);
+  expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_SIDEBAR_CLOSED')`)).toBe(false);
+});
+
+test('background rejects sidebar ports without the exact extension-page sender', async ({ page }) => {
+  expect(await run(page, 'sidebarHarness.probeUntrustedConnections()')).toBe(0);
+});
+
+test('background revalidates the port-owned tab and window before changing layout', async ({ page }) => {
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(1);
+  await run(page, 'sidebarHarness.clearPageCommands(); sidebarHarness.setTabState(2, true); sidebarHarness.layout(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(2);
+  expect(await run(page, 'sidebarHarness.replies.at(-1)')).toEqual({
+    type: 'ANMERKO_SIDEBAR_LAYOUT_ERROR', version: 1,
+    code: 'layout-failed', error: 'Could not change layout.',
+  });
+  expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_PRESENT' && message.mode === 'overlay')`)).toBe(false);
+  expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_SIDEBAR_CLOSED')`)).toBe(true);
+});
+
 test('native controls wait for a page snapshot and disconnected settings cannot overwrite page state', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');
   await page.addScriptTag({ content: nativeBundle });
-  await expect.poll(() => run(page, 'nativeHarness.requests.length')).toBe(1);
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
   const prompt = panel.locator('.connection-prompt');
   const select = panel.getByRole('button', { name: 'Select Element', exact: true });
@@ -56,14 +86,17 @@ test('native controls wait for a page snapshot and disconnected settings cannot 
   await panel.getByRole('button', { name: 'Back', exact: true }).click();
   expect(await run(page, 'nativeHarness.pageMessages')).toEqual([]);
   await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
-  expect(await run(page, 'nativeHarness.layoutMessages')).toEqual([expect.objectContaining({ type: 'ANMERKO_LAYOUT', mode: 'overlay', state: undefined })]);
+  expect(await run(page, 'nativeHarness.layoutMessages')).toEqual([]);
+  expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay', state: undefined,
+  }));
   await run(page, 'nativeHarness.fail()');
   await expect(prompt).toBeVisible();
   await expect(select).toBeDisabled();
   await expect(options).toBeDisabled();
   await expect(globalComment).toBeDisabled();
   await run(page, 'nativeHarness.reconnect()');
-  await expect.poll(() => run(page, 'nativeHarness.requests.length')).toBe(2);
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
   await run(page, 'nativeHarness.reply()');
   await expect(prompt).toBeHidden();
   await expect(select).toBeEnabled();
@@ -89,23 +122,23 @@ test('native controls wait for a page snapshot and disconnected settings cannot 
   }]);
 });
 
-test('native Float attaches teardown handling before close and preserves unrelated layout failures', async ({ page }) => {
+test('native Float posts a one-way port command before close and reports a live-port failure', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');
   await page.addScriptTag({ content: nativeBundle });
-  await expect.poll(() => run(page, 'nativeHarness.requests.length')).toBe(1);
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   await run(page, 'nativeHarness.reply()');
   const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
 
-  await run(page, 'nativeHarness.deferLayout()');
+  await run(page, 'nativeHarness.resetLayoutSequence()');
   await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
-  expect(await run(page, 'nativeHarness.layoutSequence')).toEqual(['request-catch', 'close']);
-  await run(page, `nativeHarness.rejectLayout("Actor 'Conduits' destroyed before query 'RuntimeMessage' was resolved")`);
-  await expect(panel.getByRole('status')).not.toContainText('Could not change layout');
-
-  await run(page, 'nativeHarness.deferLayout()');
-  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
-  await run(page, `nativeHarness.rejectLayout('A different layout failure')`);
+  expect(await run(page, 'nativeHarness.layoutSequence')).toEqual(['port-post', 'close']);
+  expect(await run(page, 'nativeHarness.layoutMessages')).toEqual([]);
+  expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay',
+    state: expect.objectContaining({ url: 'http://127.0.0.1:4173/page' }),
+  });
+  await run(page, 'nativeHarness.failLayout()');
   await expect(panel.getByRole('status')).toContainText('Could not change layout');
 });
 
@@ -113,7 +146,7 @@ test('idle port shutdown preserves the current page, draft and unsaved settings 
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');
   await page.addScriptTag({ content: nativeBundle });
-  await expect.poll(() => run(page, 'nativeHarness.requests.length')).toBe(1);
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   await run(page, `nativeHarness.reply({
     draft: { id: 'unsaved', kind: 'page', pageUrl: location.origin + '/page', pageTitle: 'Review page', comment: 'Keep my unfinished comment', createdAt: '2026-09-15T00:00:00Z', updatedAt: '2026-09-15T00:00:00Z' },
     settings: true, preambleDraft: 'Keep my unfinished preamble'
