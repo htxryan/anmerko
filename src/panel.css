@@ -278,6 +278,11 @@ footer { padding: 16px 20px 17px; border-top: 1px solid var(--border); backgroun
 .component-context-preference { margin-top: 18px; }
 .preference-help { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 8px 0; }
 .preferences-status:empty, .component-context-status:empty { display: none; }
+.component-context { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; max-width: 100%; font-size: 11px; line-height: 1.5; }
+.component-context strong { font-size: 11px; }
+.component-context-source, .component-context-disclaimer { color: var(--muted); }
+.component-context-path { display: block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.remove-component-context { min-height: 36px; white-space: normal; text-align: left; }
 .preamble-settings { margin-top: 24px; }
 .preamble-settings label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 650; }
 .preamble-settings textarea { min-height: 160px; max-height: 320px; font-size: 13px; line-height: 1.6; resize: vertical; }

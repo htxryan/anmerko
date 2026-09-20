@@ -303,6 +303,11 @@ export function buildPrompt(notes: Note[], preamble = DEFAULT_PROMPT_PREAMBLE): 
           : `- **Selector path:** ${element.selectorPath.map(inlineCode).join(' → shadow root → ')}`,
         ...(element.text ? [`- **Text excerpt:** ${inlineCode(element.text)}`] : []),
         ...(element.label ? [`- **Accessible label:** ${inlineCode(element.label)}`] : []),
+        ...(element.componentContext ? [
+          `- **Component hint:** ${{ react: 'React', vue: 'Vue', angular: 'Angular' }[element.componentContext.framework]} · ${element.componentContext.framework === 'react' ? 'development' : 'debug'} metadata (page-provided, unverified)`,
+          `- **Component path:** ${element.componentContext.truncated ? '… → ' : ''}${element.componentContext.path.map(inlineCode).join(' → ')}`,
+          ...(element.componentContext.truncated ? ['- **Component path truncated:** Yes'] : []),
+        ] : []),
         `- **Viewport:** ${element.viewport.width} × ${element.viewport.height}`, '');
     }
   }
