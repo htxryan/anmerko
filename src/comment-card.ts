@@ -1,6 +1,7 @@
 import type { Note } from './core';
 import { icon, renderIcons } from './icons';
 import { createUuid } from './uuid';
+import { normalizeComponentContext, type ComponentContextV1 } from './component-context';
 
 const elementTypes: Record<string, string> = {
   textarea: 'Text Area', input: 'Input', select: 'Select', button: 'Button', a: 'Link',
@@ -8,7 +9,7 @@ const elementTypes: Record<string, string> = {
   h1: 'Heading', h2: 'Heading', h3: 'Heading', h4: 'Heading', h5: 'Heading', h6: 'Heading',
 };
 
-export function createCommentCard(note: Note, number: number, editing = false) {
+export function createCommentCard(note: Note, number: number, editing = false, removeContext?: () => void) {
   const card = document.createElement(editing ? 'form' : 'article');
   card.className = editing ? 'editor' : 'note';
   card.innerHTML = `<div class="note-top"><span class="number"></span><strong class="note-title"></strong><div class="note-actions" role="group" aria-label="Comment actions"><button class="text-button locate" type="button" aria-label="Locate"><span data-icon="select"></span></button></div></div>
@@ -47,6 +48,38 @@ export function createCommentCard(note: Note, number: number, editing = false) {
   path.id = `hierarchy-${createUuid()}`;
   toggle.setAttribute('aria-controls', path.id);
   if (note.element) field.setAttribute('aria-describedby', path.id);
+  const componentSlot = document.createElement('div');
+  card.querySelector('.note-metadata')!.append(componentSlot);
+  function setComponentContext(value?: ComponentContextV1) {
+    componentSlot.replaceChildren();
+    const context = normalizeComponentContext(value);
+    if (!context) return;
+    const row = document.createElement('div');
+    row.className = 'component-context';
+    const label = document.createElement('strong');
+    const framework = { react: 'React', vue: 'Vue', angular: 'Angular' }[context.framework];
+    label.textContent = `Component hint · ${framework}`;
+    const provenance = document.createElement('span');
+    provenance.className = 'component-context-source';
+    provenance.textContent = context.framework === 'react' ? 'Development metadata' : 'Debug metadata';
+    const names = document.createElement('code');
+    names.className = 'component-context-path';
+    names.textContent = (context.truncated ? '… → ' : '') + context.path.join(' → ');
+    const description = document.createElement('span');
+    description.className = 'component-context-disclaimer';
+    description.textContent = 'Page-provided names; review before sharing.';
+    row.append(label, provenance, names, description);
+    if (editing && removeContext) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'text-button remove-component-context';
+      remove.textContent = 'Remove component hint';
+      remove.addEventListener('click', removeContext);
+      row.append(remove);
+    }
+    componentSlot.append(row);
+  }
+  setComponentContext(note.element?.componentContext);
   // Older comments still have their original locator path available.
   let parts = note.element?.hierarchy?.length ? note.element.hierarchy : note.element?.selectorPath || [];
   let expanded = false;
@@ -75,6 +108,7 @@ export function createCommentCard(note: Note, number: number, editing = false) {
   observer.observe(hierarchy);
   return {
     card,
+    setComponentContext,
     setHierarchy(value: string[]) { parts = value; render(); },
     dispose: () => observer.disconnect(),
   };
