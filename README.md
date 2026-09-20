@@ -38,6 +38,7 @@ Private release assets require authenticated `gh` or `GH_TOKEN` with repository 
 
 Development guides are kept in this repository:
 
+- [Contributing](docs/contributing.md)
 - [Build and test](docs/development.md)
 - [CI scopes, release validation and promotion](docs/release-process.md)
 - [Site deployment and rollback](docs/site-deployment.md)
