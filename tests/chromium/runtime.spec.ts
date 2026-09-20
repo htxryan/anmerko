@@ -17,6 +17,60 @@ test.beforeEach(async ({ page }) => {
   await page.addScriptTag({ content: bundle });
 });
 
+test('component context preference explains when the runtime cannot collect it', async ({ page }) => {
+  await run(page, 'harness.open()');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(toggle).toBeDisabled();
+  await expect(panel(page).locator('.component-context-status')).toHaveText('Requires the extension.');
+});
+
+test('component context preference defaults off, persists, and follows committed storage changes', async ({ page }) => {
+  await run(page, 'harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await toggle.press('Space');
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  expect(await run(page, 'harness.read("anmerko:capture-component-context")')).toBe(true);
+  await run(page, 'harness.dispose(); harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await run(page, 'harness.write("anmerko:capture-component-context", false)');
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+});
+
+test('component context preference preserves its committed value on failed or pending writes', async ({ page }) => {
+  await run(page, 'harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await run(page, 'harness.failures(false, true)');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(panel(page).locator('.component-context-status')).toContainText('Could not save');
+  await run(page, 'harness.failures(false, false); harness.delay()');
+  await toggle.click();
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  expect(await run(page, 'harness.close()')).toBe(false);
+  await run(page, 'harness.release()');
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+});
+
+test('component context preference fails closed on unreadable storage and recovers through an explicit save', async ({ page }) => {
+  await run(page, 'harness.failures(true, false); harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(panel(page).locator('.component-context-status')).toContainText('Could not load');
+  await run(page, 'harness.failures(false, false)');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+});
+
 test('mobile panel stays inside nonzero display safe-area insets', async ({ page, context }) => {
   const session = await context.newCDPSession(page);
   await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
