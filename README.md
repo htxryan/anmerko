@@ -24,24 +24,8 @@ Collect website comments and screenshots, then share them with your AI agent.
 
 ## Development
 
-Use Node.js 24+. From the repository root:
-
-```sh
-npm ci
-npx playwright install chromium
-npm run check
-npm run site:build
-```
-
-`site:build` compiles the current shared demo UI and uses approved installer bytes.
-Private release assets require authenticated `gh` or `GH_TOKEN` with repository read access.
-
-Development guides are kept in this repository:
-
 - [Build and test](docs/development.md)
 - [CI scopes, release validation and promotion](docs/release-process.md)
-- [Site deployment and rollback](docs/site-deployment.md)
-- [Store publishing and listing assets](docs/store/distribution.md)
 - [Project agent skills for Codex CLI, Claude Code, and OpenCode](.agents/README.md)
 
 ## License
