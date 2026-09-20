@@ -5,6 +5,7 @@ import { buildSync } from 'esbuild';
 type Harness = {
   log: any[];
   listeners: Array<(message: unknown, sender: any) => void>;
+  manifest: Record<string, unknown>;
   response: any;
   client?: any;
   pending?: Promise<void>;
@@ -30,12 +31,14 @@ function pageBundle(enabled: boolean) {
 async function installChrome(page: Page) {
   await page.evaluate(() => {
     const harness: Harness = {
-      log: [], listeners: [], response: { ok: true, value: { phase: 'idle', epoch: 0 } },
+      log: [], listeners: [], manifest: { background: { service_worker: 'background.js' } },
+      response: { ok: true, value: { phase: 'idle', epoch: 0 } },
     };
     (globalThis as any).chrome = {
       runtime: {
         id: 'test-extension',
         getURL: (path: string) => `chrome-extension://test-extension/${path}`,
+        getManifest: () => structuredClone(harness.manifest),
         sendMessage: async (message: unknown) => {
           harness.log.push({ kind: 'message', message: structuredClone(message) });
           return structuredClone(harness.response);
@@ -154,20 +157,36 @@ test('binds fallback actions to one intent and authenticates change notification
   const notifications = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
     let count = 0;
+    const accepted: string[] = [];
     const unsubscribe = harness.client.subscribe(() => { count++; });
     const message = { type: 'ANMERKO_JOURNEY_CHANGED' };
-    for (const sender of [
-      { id: 'other-extension' },
-      { id: 'test-extension', tab: { id: 1 }, url: 'https://example.test/' },
-      { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' },
-      { id: 'test-extension' },
-      { id: 'test-extension', url: 'chrome-extension://test-extension/background.js' },
-    ]) for (const listener of harness.listeners) listener(message, sender);
+    const emit = (label: string, sender: unknown) => {
+      const before = count;
+      for (const listener of harness.listeners) listener(message, sender);
+      if (count > before) accepted.push(label);
+    };
+    emit('wrong-id', { id: 'other-extension' });
+    emit('tab', { id: 'test-extension', tab: { id: 1 }, url: 'https://example.test/' });
+    emit('sidebar', { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' });
+    emit('journey', { id: 'test-extension', url: 'chrome-extension://test-extension/journey.html' });
+    emit('worker-query', { id: 'test-extension', url: 'chrome-extension://test-extension/background.js?query=1' });
+    emit('worker-hash', { id: 'test-extension', url: 'chrome-extension://test-extension/background.js#hash' });
+    emit('worker-prefix', { id: 'test-extension', url: 'chrome-extension://test-extension/background.js/prefix' });
+    emit('external', { id: 'test-extension', url: 'https://example.test/background.js' });
+    emit('undefined', { id: 'test-extension' });
+    emit('worker', { id: 'test-extension', url: 'chrome-extension://test-extension/background.js' });
+    harness.manifest = { background: { scripts: ['background.js'] } };
+    emit('worker-under-scripts', { id: 'test-extension', url: 'chrome-extension://test-extension/background.js' });
+    emit('generated-query', { id: 'test-extension', url: 'chrome-extension://test-extension/_generated_background_page.html?query=1' });
+    emit('generated-hash', { id: 'test-extension', url: 'chrome-extension://test-extension/_generated_background_page.html#hash' });
+    emit('generated-prefix', { id: 'test-extension', url: 'chrome-extension://test-extension/_generated_background_page.html/nested' });
+    emit('generated-tab', { id: 'test-extension', url: 'chrome-extension://test-extension/_generated_background_page.html', tab: { id: 2 } });
+    emit('generated', { id: 'test-extension', url: 'chrome-extension://test-extension/_generated_background_page.html' });
     unsubscribe();
     for (const listener of harness.listeners) listener(message, { id: 'test-extension' });
-    return { count, listeners: harness.listeners.length };
+    return { accepted, count, listeners: harness.listeners.length };
   });
-  expect(notifications).toEqual({ count: 2, listeners: 0 });
+  expect(notifications).toEqual({ accepted: ['undefined', 'worker', 'generated'], count: 3, listeners: 0 });
 });
 
 test('rejects invalid launch context before requesting access and sanitizes failures', async ({ page }) => {

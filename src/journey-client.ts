@@ -1,5 +1,6 @@
 import { extensionApi } from './platform';
 import type { JourneySession } from './journey-core';
+import { isJourneyBackgroundSender } from './journey-messaging';
 import type { JourneyClient } from './journey-ui';
 
 type JourneyOwner = { ownerTabId?: number; ownerWindowId?: number };
@@ -86,8 +87,7 @@ export function createJourneyClient(
     },
     subscribe(changed: () => void): () => void {
       const listener = (message: unknown, sender: chrome.runtime.MessageSender) => {
-        if (sender.id !== api.runtime.id || sender.tab
-          || (sender.url !== undefined && sender.url !== api.runtime.getURL('background.js'))) return;
+        if (!isJourneyBackgroundSender(api.runtime, sender)) return;
         if (message && typeof message === 'object'
           && (message as { type?: unknown }).type === 'ANMERKO_JOURNEY_CHANGED') changed();
       };

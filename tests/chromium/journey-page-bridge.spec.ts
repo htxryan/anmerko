@@ -4,6 +4,7 @@ import { buildSync } from 'esbuild';
 type MessageSender = { id?: string; url?: string; tab?: { id: number } };
 type BridgeHarness = {
   dispatch(message: unknown, sender?: MessageSender): Promise<any>;
+  manifest: Record<string, unknown>;
   sent: any[];
   response: unknown;
   rejectSend: boolean;
@@ -45,6 +46,7 @@ test.beforeEach(async ({ page }) => {
     };
     const nativeTimeout = window.setTimeout.bind(window);
     const harness: BridgeHarness = {
+      manifest: { background: { service_worker: 'background.js' } },
       sent: [], response: { ok: true }, rejectSend: false, shortenHideTimeout: false,
       dispatch(message, sender = background) {
         const listener = listeners[0];
@@ -75,6 +77,7 @@ test.beforeEach(async ({ page }) => {
       runtime: {
         id: 'test-extension',
         getURL: (path: string) => `chrome-extension://test-extension/${path}`,
+        getManifest: () => structuredClone(harness.manifest),
         onMessage: {
           addListener: (listener: typeof listeners[number]) => { listeners.push(listener); },
           removeListener: (listener: typeof listeners[number]) => {
@@ -94,6 +97,34 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => {
     (globalThis as BridgeWindow).disposeJourneyPage = (globalThis as BridgeWindow).anmerkoJourneyPageBridge.bindJourneyPage();
   });
+});
+
+test('accepts only the exact manifest-derived background sender URL', async ({ page }) => {
+  const message = { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' };
+  expect((await dispatch(page, message, background)).ok).toBe(true);
+  expect((await dispatch(page, message, { id: 'test-extension' })).ok).toBe(true);
+  expect(await dispatch(page, message, {
+    id: 'test-extension', url: 'chrome-extension://test-extension/_generated_background_page.html',
+  })).toEqual({ ok: false, error: 'Journey command unavailable.' });
+
+  await page.evaluate(() => {
+    (globalThis as BridgeWindow).bridgeHarness.manifest = { background: { scripts: ['background.js'] } };
+  });
+  const generated = 'chrome-extension://test-extension/_generated_background_page.html';
+  expect((await dispatch(page, message, { id: 'test-extension', url: generated })).ok).toBe(true);
+  for (const sender of [
+    { id: 'other-extension', url: generated },
+    { id: 'test-extension', url: generated, tab: { id: 1 } },
+    { id: 'test-extension', url: 'chrome-extension://test-extension/background.js' },
+    { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' },
+    { id: 'test-extension', url: 'chrome-extension://test-extension/journey.html' },
+    { id: 'test-extension', url: `${generated}?from=page` },
+    { id: 'test-extension', url: `${generated}#fragment` },
+    { id: 'test-extension', url: `${generated}/nested` },
+    { id: 'test-extension', url: 'https://example.test/_generated_background_page.html' },
+  ]) {
+    expect(await dispatch(page, message, sender)).toEqual({ ok: false, error: 'Journey command unavailable.' });
+  }
 });
 
 test('identifies one document, advances resize generation, and rejects non-background commands', async ({ page }) => {

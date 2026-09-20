@@ -1,4 +1,5 @@
 import { stripUrlCredentials, type JourneyEventBatchV1 } from './journey-events';
+import { isJourneyBackgroundSender } from './journey-messaging';
 import { attachJourneyRecorder } from './journey-recorder';
 import { extensionApi } from './platform';
 import { createUuid } from './uuid';
@@ -191,11 +192,6 @@ export function bindJourneyPage(): () => void {
     }
   };
 
-  const authorized = (sender: chrome.runtime.MessageSender): boolean => {
-    if (sender.id !== api.runtime.id || sender.tab) return false;
-    return sender.url === undefined || sender.url === api.runtime.getURL('background.js');
-  };
-
   const start = (message: Message) => {
     if (!validId(message.sessionId) || !validEpoch(message.epoch)
       || message.documentToken !== DOCUMENT_TOKEN || !validStartedAt(message.startedAt)) return failure();
@@ -273,7 +269,7 @@ export function bindJourneyPage(): () => void {
     if (!rawMessage || typeof rawMessage !== 'object') return;
     const message = rawMessage as Message;
     if (typeof message.type !== 'string' || !message.type.startsWith('ANMERKO_JOURNEY_PAGE_')) return;
-    if (!authorized(sender)) {
+    if (!isJourneyBackgroundSender(api.runtime, sender)) {
       respond(failure());
       return;
     }
