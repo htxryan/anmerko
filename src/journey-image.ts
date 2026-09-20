@@ -19,6 +19,13 @@ export interface NormalizedJourneyPng {
   byteLength: number;
 }
 
+export interface JourneyMaskRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
 const MAX_SOURCE_SIDE = JOURNEY_LIMITS.maxImageLongestSide * 8;
@@ -34,13 +41,13 @@ function decodedLength(base64: string): number {
   return base64.length / 4 * 3 - padding;
 }
 
-function decodeBoundedPng(dataUrl: string): Uint8Array<ArrayBuffer> {
+function decodeBoundedPng(dataUrl: string, maxBytes = JOURNEY_LIMITS.maxSessionBytes): Uint8Array<ArrayBuffer> {
   if (!dataUrl.startsWith(PNG_DATA_URL_PREFIX)) throw captureError('Screenshot must be a PNG data URL.');
   const payload = dataUrl.slice(PNG_DATA_URL_PREFIX.length);
-  const maxEncodedLength = Math.ceil(JOURNEY_LIMITS.maxSessionBytes / 3) * 4;
+  const maxEncodedLength = Math.ceil(maxBytes / 3) * 4;
   if (payload.length > maxEncodedLength) throw captureError('Screenshot input exceeds the capture limit.');
   const byteLength = decodedLength(payload);
-  if (byteLength > JOURNEY_LIMITS.maxSessionBytes) throw captureError('Screenshot input exceeds the capture limit.');
+  if (byteLength > maxBytes) throw captureError('Screenshot input exceeds the capture limit.');
   if (!/^[A-Za-z\d+/]*={0,2}$/.test(payload)) throw captureError('Screenshot data is not valid base64.');
 
   let binary: string;
@@ -55,7 +62,11 @@ function decodeBoundedPng(dataUrl: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-function readPngDimensions(bytes: Uint8Array): { width: number; height: number } {
+function readPngDimensions(
+  bytes: Uint8Array,
+  maxSide = MAX_SOURCE_SIDE,
+  maxPixels = MAX_SOURCE_PIXELS,
+): { width: number; height: number } {
   if (bytes.length < 24 || PNG_SIGNATURE.some((byte, index) => bytes[index] !== byte)) {
     throw captureError('Screenshot data is not a PNG.');
   }
@@ -65,8 +76,7 @@ function readPngDimensions(bytes: Uint8Array): { width: number; height: number }
   if (!isIhdr) throw captureError('Screenshot PNG is missing its image header.');
   const width = view.getUint32(16);
   const height = view.getUint32(20);
-  if (!width || !height || width > MAX_SOURCE_SIDE || height > MAX_SOURCE_SIDE
-    || width * height > MAX_SOURCE_PIXELS) {
+  if (!width || !height || width > maxSide || height > maxSide || width * height > maxPixels) {
     throw captureError('Screenshot dimensions exceed the decoder limit.');
   }
   return { width, height };
@@ -88,6 +98,26 @@ async function pngDataUrl(blob: Blob): Promise<string> {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
   }
   return `${PNG_DATA_URL_PREFIX}${btoa(binary)}`;
+}
+
+function maskBounds(rect: JourneyMaskRect, image: { width: number; height: number }) {
+  if (!rect || typeof rect !== 'object') throw captureError('Screenshot mask geometry is invalid.');
+  const { x, y, width, height } = rect;
+  const right = x + width;
+  const bottom = y + height;
+  if (![x, y, width, height, right, bottom].every(Number.isFinite)
+    || x < 0 || y < 0 || width <= 0 || height <= 0
+    || right > image.width || bottom > image.height) {
+    throw captureError('Screenshot mask geometry is invalid.');
+  }
+  const left = Math.floor(x);
+  const top = Math.floor(y);
+  return {
+    left,
+    top,
+    width: Math.ceil(right) - left,
+    height: Math.ceil(bottom) - top,
+  };
 }
 
 export async function normalizeJourneyPng(dataUrl: string): Promise<NormalizedJourneyPng> {
@@ -124,5 +154,53 @@ export async function normalizeJourneyPng(dataUrl: string): Promise<NormalizedJo
     throw captureError('Screenshot could not be decoded or normalized.');
   } finally {
     bitmap?.close();
+  }
+}
+
+export async function maskJourneyPng(dataUrl: string, rect: JourneyMaskRect): Promise<NormalizedJourneyPng> {
+  if (typeof dataUrl !== 'string') throw captureError('Screenshot must be a PNG data URL.');
+  const bytes = decodeBoundedPng(dataUrl, JOURNEY_LIMITS.maxImageBytes);
+  const source = readPngDimensions(
+    bytes,
+    JOURNEY_LIMITS.maxImageLongestSide,
+    JOURNEY_LIMITS.maxImageLongestSide ** 2,
+  );
+  const mask = maskBounds(rect, source);
+  let bitmap: ImageBitmap | undefined;
+  let canvas: OffscreenCanvas | undefined;
+
+  try {
+    bitmap = await createImageBitmap(new Blob([bytes.buffer], { type: 'image/png' }));
+    if (bitmap.width !== source.width || bitmap.height !== source.height) {
+      throw captureError('Screenshot dimensions do not match its PNG header.');
+    }
+    canvas = new OffscreenCanvas(source.width, source.height);
+    const context = canvas.getContext('2d');
+    if (!context) throw captureError('Screenshot canvas is unavailable.');
+    context.drawImage(bitmap, 0, 0);
+    context.fillStyle = '#000';
+    context.fillRect(mask.left, mask.top, mask.width, mask.height);
+    const output = await canvas.convertToBlob({ type: 'image/png' });
+    if (output.type !== 'image/png' || output.size < PNG_SIGNATURE.length) {
+      throw captureError('Screenshot encoder did not return a PNG.');
+    }
+    if (output.size > JOURNEY_LIMITS.maxImageBytes) {
+      throw new JourneyImageError('too-large', 'Masked screenshot exceeds the 768 KiB image limit.');
+    }
+    return {
+      dataUrl: await pngDataUrl(output),
+      width: source.width,
+      height: source.height,
+      byteLength: output.size,
+    };
+  } catch (error) {
+    if (error instanceof JourneyImageError) throw error;
+    throw captureError('Screenshot could not be decoded or masked.');
+  } finally {
+    bitmap?.close();
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 }
