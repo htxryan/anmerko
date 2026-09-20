@@ -58,6 +58,12 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return result;
 }
 
+function activeElementFor(node: Node): HTMLElement | null {
+  const tree = node.getRootNode();
+  if (tree instanceof ShadowRoot && tree.activeElement instanceof HTMLElement) return tree.activeElement;
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
 export function reviewJourneyImage(
   root: HTMLElement,
   input: JourneyImageReviewInput,
@@ -65,7 +71,7 @@ export function reviewJourneyImage(
 ): Promise<JourneyImageReviewResult> {
   if (signal.aborted || !validDimensions(input)) return Promise.resolve({ kind: 'cancelled' });
 
-  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const returnFocus = activeElementFor(root);
   let sourceDataUrl = input.dataUrl;
   const view = element('dialog', 'journey-image-review');
   view.setAttribute('role', 'dialog');
@@ -325,7 +331,7 @@ export function reviewJourneyImage(
       )].filter(control => control.getClientRects().length > 0);
       const first = controls[0];
       const last = controls.at(-1);
-      const active = document.activeElement;
+      const active = activeElementFor(view);
       if (!first || !last) return;
       if (event.shiftKey && (active === heading || active === first || !view.contains(active))) {
         event.preventDefault();

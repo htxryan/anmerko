@@ -9,10 +9,12 @@ type ReviewResult =
 type ImageReviewWindow = typeof globalThis & {
   imageReviewHarness: {
     begin(width?: number, height?: number, dataUrl?: string): void;
+    beginInShadow(): void;
     promise: Promise<ReviewResult>;
     result: ReviewResult | null;
     abort: AbortController;
     root: HTMLElement;
+    shadowHost?: HTMLElement;
     holdDecode(): void;
     releaseDecode?: () => Promise<void>;
   };
@@ -33,6 +35,7 @@ const bundle = () => buildSync({
         root: document.createElement('div'),
         begin(width = 100, height = 50, supplied) {
           this.root.remove();
+          this.shadowHost?.remove();
           this.root = document.createElement('div');
           this.root.id = 'review-root';
           this.root.style.width = '260px';
@@ -49,6 +52,30 @@ const bundle = () => buildSync({
           this.abort = new AbortController();
           this.result = null;
           this.promise = reviewJourneyImage(this.root, { dataUrl, width, height }, this.abort.signal);
+          this.promise.then(result => { this.result = result; });
+        },
+        beginInShadow() {
+          this.root.remove();
+          this.shadowHost?.remove();
+          this.shadowHost = document.createElement('div');
+          const shadow = this.shadowHost.attachShadow({ mode: 'open' });
+          const trigger = document.createElement('button');
+          trigger.id = 'shadow-launch-mask';
+          trigger.textContent = 'Open shadow mask editor';
+          this.root = document.createElement('div');
+          const after = document.createElement('button');
+          after.textContent = 'Shadow outside control';
+          shadow.append(trigger, this.root, after);
+          document.body.append(this.shadowHost);
+          const canvas = document.createElement('canvas');
+          canvas.width = 100; canvas.height = 50;
+          const context = canvas.getContext('2d');
+          context.fillStyle = 'rgb(200, 100, 50)';
+          context.fillRect(0, 0, 100, 50);
+          trigger.focus();
+          this.abort = new AbortController();
+          this.result = null;
+          this.promise = reviewJourneyImage(this.root, { dataUrl: canvas.toDataURL('image/png'), width: 100, height: 50 }, this.abort.signal);
           this.promise.then(result => { this.result = result; });
         },
         holdDecode() {
@@ -297,6 +324,26 @@ test('contains modal keyboard focus and restores the launching control on every 
     await page.evaluate(() => (globalThis as ImageReviewWindow).imageReviewHarness.promise);
     await expect(page.locator('#launch-mask')).toBeFocused();
   }
+});
+
+test('contains and restores focus when mounted inside a shadow root', async ({ page }) => {
+  await loadEditor(page);
+  await page.evaluate(() => (globalThis as ImageReviewWindow).imageReviewHarness.beginInShadow());
+  await expect(page.getByRole('heading', { name: 'Mask sensitive details' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('spinbutton', { name: 'Y', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('spinbutton', { name: 'Width', exact: true })).toBeFocused();
+  await page.getByRole('spinbutton', { name: 'X', exact: true }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('spinbutton', { name: 'X', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => (globalThis as ImageReviewWindow).imageReviewHarness.promise);
+  await expect(page.locator('#shadow-launch-mask')).toBeFocused();
 });
 
 test('rejects external preview URLs and mismatched image metadata before mounting', async ({ page }) => {
