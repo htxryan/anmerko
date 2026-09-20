@@ -6,6 +6,7 @@ import type { Presentation, Runtime } from './runtime';
 import { extensionApi } from './platform';
 import type { Store } from './runtime';
 import { journeysEnabled } from './journey-feature';
+import { createJourneyClient } from './journey-client';
 
 export function extensionStore(): Store {
   const api = extensionApi();
@@ -137,19 +138,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   return {
     store: extensionStore(), presentation, onDispose,
     ...(journeysEnabled && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
-    ...(journeysEnabled && native ? { journeys: {
-      read: () => journeyCommand('ANMERKO_JOURNEY_STATE'),
-      start: (includeEnteredValues: boolean) => journeyCommand('ANMERKO_JOURNEY_START', { ownerTabId: targetTab, ownerWindowId: windowId, includeEnteredValues }),
-      stop: () => journeyCommand('ANMERKO_JOURNEY_STOP'),
-      discard: () => journeyCommand('ANMERKO_JOURNEY_DISCARD'),
-      subscribe(changed: () => void) {
-        const listener = (message: any, sender: chrome.runtime.MessageSender) => {
-          if (sender.id === api.runtime.id && !sender.tab && message?.type === 'ANMERKO_JOURNEY_CHANGED') changed();
-        };
-        api.runtime.onMessage.addListener(listener);
-        return () => api.runtime.onMessage.removeListener(listener);
-      },
-    } } : {}),
+    ...(journeysEnabled && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
     attachStyles(shadow) {

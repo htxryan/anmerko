@@ -41,7 +41,8 @@ export function createJourneyClient(
       throw new Error(CLIENT_ERROR);
     }
     if (!response || response.ok !== true) {
-      const guidance = response && typeof response.code === 'string' ? BACKEND_GUIDANCE[response.code] : undefined;
+      const guidance = response && typeof response.code === 'string' && Object.hasOwn(BACKEND_GUIDANCE, response.code)
+        ? BACKEND_GUIDANCE[response.code] : undefined;
       throw new Error(guidance ?? CLIENT_ERROR);
     }
     return response.value;

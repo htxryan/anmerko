@@ -12,7 +12,7 @@ await cp('public', outdir, { recursive: true });
 const manifest = browserManifest(JSON.parse(await readFile('public/manifest.json', 'utf8')),
   buildVersion(JSON.parse(await readFile('package.json', 'utf8')).version), target);
 await writeFile(`${outdir}/manifest.json`, JSON.stringify(manifest, null, 2) + '\n');
-await build({ entryPoints: { content: 'src/extension-content.ts', popup: 'src/popup.ts' }, bundle: true, outdir,
+await build({ entryPoints: { content: 'src/extension-content.ts', popup: 'src/popup.ts', journey: 'src/journey-page.ts' }, bundle: true, outdir,
   format: 'iife', target: target.syntax, loader: { '.css': 'text' }, define });
 await build({ entryPoints: ['src/background.ts'], bundle: true, outdir, format: target.format, target: target.syntax, define });
 console.log(`Built anmerko for ${target.label} → ${outdir}/`);

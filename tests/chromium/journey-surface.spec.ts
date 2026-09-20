@@ -209,7 +209,7 @@ test('rejects invalid launch context before requesting access and sanitizes fail
 
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.response = { ok: false, code: 'private-code', error: 'private backend details' };
+    harness.response = { ok: false, code: '__proto__', error: 'private backend details' };
     harness.pending = harness.client.start(false);
     harness.resolveGrant?.(true);
   });
