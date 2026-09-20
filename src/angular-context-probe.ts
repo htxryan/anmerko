@@ -138,6 +138,7 @@ export function angularComponentContextProbe(target: ComponentContextProbeTarget
     let totalCodePoints = path.reduce((total, name) => total + Array.from(name).length, 0);
     let truncated = false;
     while (path.length > 8 || totalCodePoints > 384) {
+      checkClock();
       const removed = path.shift();
       if (!removed) fail();
       totalCodePoints -= Array.from(removed).length;
@@ -146,6 +147,7 @@ export function angularComponentContextProbe(target: ComponentContextProbeTarget
 
     const encoder = new TextEncoder();
     function serializeResult(): string {
+      checkClock();
       return JSON.stringify({
         version: 1,
         framework: 'angular',
@@ -156,10 +158,12 @@ export function angularComponentContextProbe(target: ComponentContextProbeTarget
     }
     let result = serializeResult();
     while (encoder.encode(result).byteLength > 2_048) {
+      checkClock();
       if (!path.shift()) fail();
       truncated = true;
       result = serializeResult();
     }
+    checkClock();
     return result;
   } catch {
     throw new Error(failureToken);
