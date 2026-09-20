@@ -174,7 +174,9 @@ test('the built broker stays off by default, then covers the strict-CSP HTTP fra
       await expect(componentRow(page)).toContainText(`Component hint · ${scenario.framework[0].toUpperCase()}${scenario.framework.slice(1)}`);
       await expect(componentRow(page).locator('.component-context-path')).toHaveText(scenario.expectedPath.join(' → '));
     } else {
-      await page.waitForTimeout(100);
+      // Keep the draft open beyond the broker's 750 ms deadline so a wrong
+      // late result cannot pass an early absence assertion.
+      await page.waitForTimeout(850);
       await expect(componentRow(page)).toHaveCount(0);
     }
     if (scenario.privacy) expect(Object.values(await privacyReads(page)).every(value => value === 0)).toBe(true);
