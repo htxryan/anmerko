@@ -247,7 +247,7 @@ footer { padding: 16px 20px 17px; border-top: 1px solid var(--border); backgroun
 .draft-on-page { margin-bottom: 14px; padding: 16px; border: 1px solid var(--editor-border); border-radius: 12px; background: var(--surface); color: var(--muted); }
 .draft-on-page button { margin-top: 12px; color: var(--accent); }
 /* Keep the new-comment editor in the document that owns keyboard focus. */
-.app.composing .panel { top: auto; bottom: calc(16px + var(--viewport-bottom, 0px) + env(safe-area-inset-bottom, 0px)); height: auto; max-height: calc(var(--viewport-height, 100dvh) - 32px); width: 340px; }
+.app.composing:not(.native) .panel { top: auto; bottom: calc(16px + var(--viewport-bottom, 0px) + env(safe-area-inset-bottom, 0px)); height: auto; max-height: calc(var(--viewport-height, 100dvh) - 32px); width: min(340px, calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); }
 .composing header, .composing .intro, .composing .scope-row, .composing footer, .composing .notes { display: none; }
 .composing .content { padding: 0; }
 .composing .editor { margin: 0; border: 0; }
