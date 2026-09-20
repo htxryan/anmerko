@@ -10,14 +10,17 @@ import { JOURNEY_LIMITS } from './journey-limits';
 const CONTROL_KEY = 'anmerko:journey-session:v1:control';
 const PAYLOAD_KEY = 'anmerko:journey-session:v1:payload';
 const CONTROL_MAX_BYTES = 512;
+const SESSION_METADATA_RESERVE_BYTES = 1_024;
+const SESSION_STATE_MAX_BYTES = JOURNEY_LIMITS.maxSessionBytes - SESSION_METADATA_RESERVE_BYTES;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const encoder = new TextEncoder();
 
-export type JourneySessionStorageErrorCode = 'invalid-session' | 'storage-unavailable' | 'cleanup-failed';
+export type JourneySessionStorageErrorCode = 'invalid-session' | 'session-too-large' | 'storage-unavailable' | 'cleanup-failed';
 
 const ERROR_MESSAGES: Record<JourneySessionStorageErrorCode, string> = {
   'invalid-session': 'The temporary journey session is invalid.',
+  'session-too-large': 'The temporary journey exceeds its storage limit.',
   'storage-unavailable': 'Temporary journey storage is unavailable.',
   'cleanup-failed': 'Temporary journey storage could not be safely cleared.',
 };
@@ -140,7 +143,7 @@ function validateDraft(value: unknown): JourneyDraftV1 | undefined {
 export function validateJourneySession(value: unknown): JourneySession | undefined {
   if (!isObject(value)) return;
   const size = serializedBytes(value);
-  if (size === undefined || size > JOURNEY_LIMITS.maxSessionBytes) return;
+  if (size === undefined || size > SESSION_STATE_MAX_BYTES) return;
 
   if (value.phase === 'idle') {
     if (!hasExactKeys(value, ['phase', 'epoch']) || !isSafeCounter(value.epoch)) return;
@@ -208,7 +211,7 @@ function validateControl(value: unknown): Control | undefined {
     ['schemaVersion', 'status', 'generation', 'phase', 'epoch'],
     ['lifecycleAt'],
   ) || !isSafeCounter(value.epoch) || !['idle', 'starting', 'recording', 'reviewing', 'saving', 'saved'].includes(String(value.phase))) return;
-  const needsLifecycle = value.phase === 'recording' || value.phase === 'reviewing';
+  const needsLifecycle = value.phase === 'recording' || value.phase === 'reviewing' || value.phase === 'saving';
   if (needsLifecycle !== Object.hasOwn(value, 'lifecycleAt')) return;
   if (needsLifecycle && timestampMs(value.lifecycleAt) === undefined) return;
   return value as unknown as CommittedControl;
@@ -237,6 +240,7 @@ function reviewFromSaving(state: Extract<JourneySession, { phase: 'saving' }>): 
 function controlFor(state: Exclude<JourneySession, { phase: 'idle' }>, generation: number): CommittedControl {
   const lifecycleAt = state.phase === 'recording' ? state.deadlineAt
     : state.phase === 'reviewing' ? state.expiresAt
+      : state.phase === 'saving' ? boundedIsoAfter(Date.parse(state.draft.updatedAt), JOURNEY_LIMITS.maxReviewIdleMs)
       : undefined;
   return {
     schemaVersion: 1,
@@ -248,14 +252,20 @@ function controlFor(state: Exclude<JourneySession, { phase: 'idle' }>, generatio
   };
 }
 
+function aggregateStorageBytes(state: Exclude<JourneySession, { phase: 'idle' }>, generation: number): number | undefined {
+  return serializedBytes({
+    [CONTROL_KEY]: controlFor(state, generation),
+    [PAYLOAD_KEY]: { schemaVersion: 1, generation, state } satisfies SessionPayload,
+  });
+}
+
 export function createJourneySessionStore(storage: JourneySessionStorageAdapter): {
   read(now: number): Promise<JourneySession>;
   write(state: JourneySession): Promise<void>;
 } {
   let queue: Promise<void> = Promise.resolve();
   let generation = 0;
-  let writeSequence = 0;
-  let blockedThrough = 0;
+  let failed = false;
 
   const enqueue = <Value>(operation: () => Promise<Value>): Promise<Value> => {
     const result = queue.then(operation);
@@ -270,8 +280,8 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     return cleared;
   };
 
-  const failStorage = async (through: number): Promise<never> => {
-    blockedThrough = Math.max(blockedThrough, through, writeSequence);
+  const failStorage = async (): Promise<never> => {
+    failed = true;
     const cleared = await clearRaw();
     throw new JourneySessionStorageError(cleared ? 'storage-unavailable' : 'cleanup-failed');
   };
@@ -279,15 +289,15 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
   const nextGeneration = async (): Promise<number> => {
     let stored: Record<string, unknown>;
     try { stored = await storage.get([CONTROL_KEY]); }
-    catch { return failStorage(writeSequence) }
-    if (!isObject(stored)) return failStorage(writeSequence);
+    catch { return failStorage() }
+    if (!isObject(stored)) return failStorage();
     const current = validateControl(stored[CONTROL_KEY]);
     const previous = Math.max(generation, current?.generation ?? 0);
     generation = previous >= Number.MAX_SAFE_INTEGER ? 1 : previous + 1;
     return generation;
   };
 
-  const persist = async (state: Exclude<JourneySession, { phase: 'idle' }>, through: number): Promise<void> => {
+  const persist = async (state: Exclude<JourneySession, { phase: 'idle' }>): Promise<void> => {
     const next = await nextGeneration();
     const writing: WritingControl = { schemaVersion: 1, status: 'writing', generation: next };
     const payload: SessionPayload = { schemaVersion: 1, generation: next, state };
@@ -296,7 +306,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
       await storage.set({ [PAYLOAD_KEY]: payload });
       await storage.set({ [CONTROL_KEY]: controlFor(state, next) });
     } catch {
-      return failStorage(through);
+      return failStorage();
     }
   };
 
@@ -309,10 +319,11 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     if (!Number.isFinite(now) || now < 0 || now > MAX_DATE_MS) {
       throw new JourneySessionStorageError('invalid-session');
     }
+    if (failed) return purgedIdle(0);
     let rawControl: Record<string, unknown>;
     try { rawControl = await storage.get([CONTROL_KEY]); }
-    catch { return failStorage(writeSequence) }
-    if (!isObject(rawControl)) return failStorage(writeSequence);
+    catch { return failStorage() }
+    if (!isObject(rawControl)) return failStorage();
 
     const controlValue = rawControl[CONTROL_KEY];
     if (controlValue === undefined) return purgedIdle(0);
@@ -323,6 +334,9 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     if (control.phase === 'reviewing' && now >= Date.parse(control.lifecycleAt!)) {
       return purgedIdle(control.epoch + 1);
     }
+    if (control.phase === 'saving' && now >= Date.parse(control.lifecycleAt!)) {
+      return purgedIdle(control.epoch + 1);
+    }
     if (control.phase === 'recording'
       && now >= Date.parse(control.lifecycleAt!) + JOURNEY_LIMITS.maxReviewIdleMs) {
       return purgedIdle(control.epoch + 2);
@@ -330,8 +344,8 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
 
     let rawPayload: Record<string, unknown>;
     try { rawPayload = await storage.get([PAYLOAD_KEY]); }
-    catch { return failStorage(writeSequence) }
-    if (!isObject(rawPayload)) return failStorage(writeSequence);
+    catch { return failStorage() }
+    if (!isObject(rawPayload)) return failStorage();
     const state = validatePayload(rawPayload[PAYLOAD_KEY], control.generation);
     if (!state || state.phase !== control.phase || state.epoch !== control.epoch) {
       return purgedIdle(control.epoch + 1);
@@ -340,6 +354,10 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
       return purgedIdle(control.epoch + 1);
     }
     if (state.phase === 'reviewing' && state.expiresAt !== control.lifecycleAt) {
+      return purgedIdle(control.epoch + 1);
+    }
+    if (state.phase === 'saving'
+      && boundedIsoAfter(Date.parse(state.draft.updatedAt), JOURNEY_LIMITS.maxReviewIdleMs) !== control.lifecycleAt) {
       return purgedIdle(control.epoch + 1);
     }
 
@@ -351,7 +369,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
       });
       const validStopped = validateJourneySession(stopped);
       if (!validStopped || validStopped.phase !== 'reviewing') return purgedIdle(state.epoch + 1);
-      await persist(validStopped, writeSequence);
+      await persist(validStopped);
       return validStopped;
     }
 
@@ -360,7 +378,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
       if (now >= Date.parse(review.expiresAt)) return purgedIdle(state.epoch + 1);
       const validReview = validateJourneySession(review);
       if (!validReview || validReview.phase !== 'reviewing') return purgedIdle(state.epoch + 1);
-      await persist(validReview, writeSequence);
+      await persist(validReview);
       return validReview;
     }
 
@@ -368,21 +386,31 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
   });
 
   const write = (state: JourneySession): Promise<void> => {
+    const inputBytes = serializedBytes(state);
+    if (inputBytes !== undefined && inputBytes > SESSION_STATE_MAX_BYTES) {
+      return Promise.reject(new JourneySessionStorageError('session-too-large'));
+    }
     const snapshot = validateJourneySession(state);
     if (!snapshot) return Promise.reject(new JourneySessionStorageError('invalid-session'));
-    const sequence = ++writeSequence;
+    if (snapshot.phase !== 'idle') {
+      const aggregateBytes = aggregateStorageBytes(snapshot, Number.MAX_SAFE_INTEGER);
+      if (aggregateBytes === undefined || aggregateBytes > JOURNEY_LIMITS.maxSessionBytes) {
+        return Promise.reject(new JourneySessionStorageError('session-too-large'));
+      }
+    }
     return enqueue(async () => {
-      if (sequence <= blockedThrough && snapshot.phase !== 'idle') {
+      if (failed && snapshot.phase !== 'idle') {
         throw new JourneySessionStorageError('storage-unavailable');
       }
       if (snapshot.phase === 'idle') {
         if (!await clearRaw()) {
-          blockedThrough = Math.max(blockedThrough, writeSequence);
+          failed = true;
           throw new JourneySessionStorageError('cleanup-failed');
         }
+        failed = false;
         return;
       }
-      await persist(snapshot, sequence);
+      await persist(snapshot);
     });
   };
 

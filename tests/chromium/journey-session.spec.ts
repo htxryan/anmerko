@@ -56,11 +56,14 @@ class MemoryStorage {
   data: Stored = {};
   calls: Array<{ method: 'get' | 'set' | 'remove'; keys: string[] }> = [];
   setCount = 0;
+  removeCount = 0;
   failGet = false;
   failSetAt?: number;
   failRemove = false;
   pauseSetAt?: number;
+  pauseRemoveAt?: number;
   private resume?: () => void;
+  private resumeRemove?: () => void;
 
   get = async (keys: string[]): Promise<Stored> => {
     this.calls.push({ method: 'get', keys: [...keys] });
@@ -77,12 +80,15 @@ class MemoryStorage {
   };
 
   remove = async (keys: string[]): Promise<void> => {
+    const count = ++this.removeCount;
     this.calls.push({ method: 'remove', keys: [...keys] });
+    if (count === this.pauseRemoveAt) await new Promise<void>(resolve => { this.resumeRemove = resolve });
     if (this.failRemove) throw new Error('cleanup failed with private=value');
     for (const key of keys) delete this.data[key];
   };
 
   release(): void { this.resume?.() }
+  releaseRemove(): void { this.resumeRemove?.() }
 }
 
 test('strict validation deep clones every supported session phase', () => {
@@ -229,6 +235,22 @@ test('recovery never promotes starting or resumes saving', async () => {
   expect(restored.expiresAt).toBe('2026-09-20T12:34:00.000Z');
 });
 
+test('expired saving is purged from derived control expiry without reading payload bytes', async () => {
+  const storage = new MemoryStorage();
+  const store = createJourneySessionStore(storage);
+  const state = saving();
+  await store.write(state);
+  storage.calls.length = 0;
+
+  await expect(store.read(Date.parse('2026-09-20T12:34:00.000Z'))).resolves.toEqual({
+    phase: 'idle', epoch: state.epoch + 1,
+  });
+
+  expect(storage.calls.filter(call => call.method === 'get')).toHaveLength(1);
+  expect(storage.calls[0].keys).toHaveLength(1);
+  expect(storage.data).toEqual({});
+});
+
 test('interrupted invalidation and payload boundaries purge rather than recover stale recording', async () => {
   const seeded = new MemoryStorage();
   const seedStore = createJourneySessionStore(seeded);
@@ -349,6 +371,50 @@ test('concurrent writes stay ordered and a stale queued recording cannot resurre
   expect(failedStorage.data).toEqual({});
 });
 
+test('failure remains latched for writes enqueued during cleanup until an explicit idle clear succeeds', async () => {
+  const storage = new MemoryStorage();
+  storage.failSetAt = 2;
+  storage.pauseRemoveAt = 1;
+  const store = createJourneySessionStore(storage);
+  const failing = store.write(recording());
+  await expect.poll(() => storage.removeCount).toBe(1);
+  const queuedDuringCleanup = store.write(recording());
+  storage.releaseRemove();
+
+  await expect(failing).rejects.toMatchObject({ code: 'storage-unavailable' });
+  await expect(queuedDuringCleanup).rejects.toMatchObject({ code: 'storage-unavailable' });
+  await expect(store.write(reviewing())).rejects.toMatchObject({ code: 'storage-unavailable' });
+  expect(storage.data).toEqual({});
+
+  await store.write({ phase: 'idle', epoch: 3 });
+  await expect(store.write(reviewing())).resolves.toBeUndefined();
+});
+
+test('aggregate budget includes payload envelope, control metadata, and storage keys', async () => {
+  const state = recording();
+  const measured = new MemoryStorage();
+  await createJourneySessionStore(measured).write(state);
+  for (const value of Object.values(measured.data)) {
+    if (typeof value === 'object' && value !== null && 'generation' in value) {
+      (value as { generation: number }).generation = Number.MAX_SAFE_INTEGER;
+    }
+  }
+  const aggregateBytes = new TextEncoder().encode(JSON.stringify(measured.data)).byteLength;
+  const limits = JOURNEY_LIMITS as unknown as { maxSessionBytes: number };
+  const originalLimit = limits.maxSessionBytes;
+  try {
+    limits.maxSessionBytes = aggregateBytes - 1;
+    const rejected = new MemoryStorage();
+    await expect(createJourneySessionStore(rejected).write(state)).rejects.toMatchObject({ code: 'session-too-large' });
+    expect(rejected.data).toEqual({});
+
+    limits.maxSessionBytes = aggregateBytes;
+    await expect(createJourneySessionStore(new MemoryStorage()).write(state)).resolves.toBeUndefined();
+  } finally {
+    limits.maxSessionBytes = originalLimit;
+  }
+});
+
 test('malformed and oversized payloads are purged without exposing their contents', async () => {
   const storage = new MemoryStorage();
   const store = createJourneySessionStore(storage);
@@ -356,6 +422,6 @@ test('malformed and oversized payloads are purged without exposing their content
   await expect(store.write({
     ...recording(),
     draft: { ...recording().draft, expected: 'x'.repeat(JOURNEY_LIMITS.maxSessionBytes + 1) },
-  })).rejects.toMatchObject({ code: 'invalid-session' });
+  })).rejects.toMatchObject({ code: 'session-too-large' });
   expect(storage.data).toEqual({});
 });
