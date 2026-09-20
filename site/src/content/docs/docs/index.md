@@ -7,7 +7,7 @@ anmerko is a browser extension that turns website comments and screenshots into 
 
 ## How it works
 
-1. [Review installation options](/docs/install/) for your browser, or [try the demo](/). Chrome, Edge, and Firefox are publicly listed, and manual downloads remain available; each download states the approved build's current identity.
+1. [Review installation options](/docs/install/) for your browser, or [try the demo](/).
 2. Open the website you want to review and activate anmerko from your browser's toolbar or Extensions menu.
 3. Choose **Select Element**, click an element, write your feedback, and choose **Save**. You can also add a page-wide comment with **New Global Comment** or capture a region with **Take Screenshot**.
 4. Choose **This page** or **All pages**, then use **Copy Prompt** or **Download Markdown + Images**.
