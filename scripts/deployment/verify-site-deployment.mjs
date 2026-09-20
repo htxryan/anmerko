@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
-export function noncanonicalSiteUrls(body, approvedFilenames, canonicalOrigin = 'https://anmerko.com') {
+export function noncanonicalSiteUrls(body, approvedFilenames, publishedPaths, canonicalOrigin = 'https://anmerko.com') {
   const canonical = new URL(canonicalOrigin).origin;
   return [...body.matchAll(/https?:\/\/[^\s"'<>)]*/g)]
     .map(match => match[0])
@@ -14,10 +14,11 @@ export function noncanonicalSiteUrls(body, approvedFilenames, canonicalOrigin = 
       try {
         const url = new URL(value);
         const filename = url.pathname.match(/^\/downloads\/([^/]+)$/)?.[1];
-        const siteRoute = /^\/(?:docs(?:\/|$)|support(?:\/|$)|release-manifest\.json$)/.test(url.pathname)
-          || (filename && approvedFilenames.has(filename));
-        return siteRoute && (url.origin !== canonical
-          || (filename && approvedFilenames.has(filename) && (url.search !== '' || url.hash !== '')));
+        const approvedDownload = filename && approvedFilenames.has(filename);
+        const ownedPublishedRoute = publishedPaths.has(url.pathname)
+          && /^(?:\/docs(?:\/|$)|\/support(?:\/|$)|\/release-manifest\.json$)/.test(url.pathname);
+        return (ownedPublishedRoute && url.origin !== canonical)
+          || (approvedDownload && (url.origin !== canonical || url.search !== '' || url.hash !== ''));
       } catch {
         return false;
       }
@@ -60,12 +61,13 @@ export async function verifySite({
   const approvedFilenames = new Set(Object.values(approved.browsers || {})
     .map(browser => browser?.artifact?.filename)
     .filter(filename => /^[\w.-]+\.(?:zip|xpi)$/.test(filename || '')));
+  const publishedPaths = new Set(checks.filter(check => check.status === 200).map(check => check.path));
   for (const directory of ['site/dist', 'artifacts/store-site']) {
     const dir = join(root, directory);
     const files = await readdir(dir, { recursive: true, withFileTypes: true });
     for (const file of files.filter(entry => entry.isFile() && /\.(?:html|css|js|json|xml|txt)$/.test(entry.name))) {
       const body = await readFile(join(file.parentPath, file.name), 'utf8');
-      const obsolete = noncanonicalSiteUrls(body, approvedFilenames);
+      const obsolete = noncanonicalSiteUrls(body, approvedFilenames, publishedPaths);
       if (obsolete.length) throw new Error(`Noncanonical approved-download URL in ${file.name}: ${obsolete[0]}`);
     }
   }
