@@ -16,13 +16,13 @@ Collect website comments and screenshots, then share them with your AI agent.
 
 ## Get started
 
-anmerko targets Chrome, Edge, and Firefox on desktop, and Edge and Firefox for Android on mobile. It stores feedback in your browser and needs no account or AI API key; you choose when to export or share it. Chrome 0.5.5, Edge 0.5.5, and Firefox 0.5.5 are publicly listed. Approved manual downloads remain anmerko 0.5.5 for Chrome/Edge and signed 0.5.5.1 for Firefox.
+**anmerko** is a browser extension for desktop (Chrome, Edge, and Firefox) or mobile (Edge and Firefox for Android). It stores feedback in your browser and needs no account or AI API key. You choose when to export or share it.
 
 - [Installation guides](https://anmerko.com/docs/install/)
 - [Add comments](https://anmerko.com/docs/usage/) and [send feedback to your agent](https://anmerko.com/docs/send-to-your-agent/)
 - [Settings](https://anmerko.com/docs/settings/), [troubleshooting](https://anmerko.com/docs/troubleshooting/), and [release notes](https://anmerko.com/docs/releases/)
 
-Try it on [Salad Recipe Finder](https://saladrecipefinder.com/): select the “Find a salad.” heading and add a comment.
+Install the browser extension to try it on any website.
 
 ![anmerko element feedback on Salad Recipe Finder](site/public/screenshots/01-element-feedback.png)
 
@@ -47,10 +47,6 @@ Development guides are kept in this repository:
 - [Site deployment and rollback](docs/site-deployment.md)
 - [Store publishing and listing assets](docs/store/distribution.md)
 - [Project agent skills for Codex CLI, Claude Code, and OpenCode](.agents/README.md)
-
-Existing store identities and signed historical artifacts retain their original identifiers so updates and release verification remain valid. See [identity and channel guidance](docs/store/distribution.md).
-
-User documentation source is in `site/src/content/docs/docs/`.
 
 ## License
 
