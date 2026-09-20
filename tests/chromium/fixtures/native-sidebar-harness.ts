@@ -79,7 +79,7 @@ Object.assign(globalThis, { nativeHarness: {
   },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
-  reopen(windowId = 1, path = 'sidebar.html') { panelOpened.emit({ windowId, path }); },
+  reopen(windowId = 1, path = '/sidebar.html') { panelOpened.emit({ windowId, path }); },
   reopenFallback() { window.dispatchEvent(new PageTransitionEvent('pageshow')); },
   setActiveTab(tabId: number) { activeTabId = tabId; },
   async pageCommand() { await runtime.presentation!.startCapture().catch(() => {}); },

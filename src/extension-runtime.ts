@@ -159,9 +159,13 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         sidebarRequestVersion = undefined;
         void connect();
       };
-      const panelPath = api.runtime.getManifest().side_panel?.default_path;
+      const configuredPanelPath = api.runtime.getManifest().side_panel?.default_path;
+      let panelPath: string | undefined;
+      try {
+        if (configuredPanelPath) panelPath = new URL(api.runtime.getURL(configuredPanelPath)).pathname;
+      } catch { /* Ignore an invalid optional manifest path. */ }
       const opened = (info: chrome.sidePanel.PanelOpenedInfo) => {
-        if (info.windowId === windowId && info.path === panelPath) reopen();
+        if (panelPath && info.windowId === windowId && info.path === panelPath) reopen();
       };
       const activated = (info: { tabId: number; windowId: number }) => { if (info.windowId === windowId) void connect(); };
       const updated = (tabId: number, change: { status?: string }) => { if (tabId === targetTab && change.status === 'complete') void connect(); };

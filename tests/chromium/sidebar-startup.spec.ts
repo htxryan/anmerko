@@ -210,7 +210,7 @@ test('native Float cancels a pending replacement after posting with the current 
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   expect(await run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'overlay']);
-  await run(page, `nativeHarness.delayNextQuery(); nativeHarness.reopen(2); nativeHarness.reopen(1, 'other.html')`);
+  await run(page, `nativeHarness.delayNextQuery(); nativeHarness.reopen(2); nativeHarness.reopen(1, '/other.html')`);
   expect(await run(page, 'nativeHarness.queryPending()')).toBe(false);
   await run(page, 'nativeHarness.reopen()');
   await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
