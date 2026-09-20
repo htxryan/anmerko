@@ -96,6 +96,45 @@ test('fails closed for a cycle, unmounted instance, and unusable direct name', a
   await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
 });
 
+test('accepts the canonical tag-name grammar', async ({ page }) => {
+  await page.setContent('');
+  const probeTarget = {
+    selectorPath: ['#selected'], expectedTag: 'x_widget.part:leaf', markerName: MARKER,
+  };
+  await page.evaluate(({ markerName }) => {
+    const selected = document.createElement('x_widget.part:leaf') as any;
+    selected.id = 'selected';
+    selected.setAttribute(markerName, '');
+    document.body.append(selected);
+    Object.defineProperty(selected, '__vueParentComponent', { value: {
+      type: { name: 'Component' }, parent: null, isUnmounted: false,
+    } });
+  }, probeTarget);
+  expect(JSON.parse((await page.evaluate(vueComponentContextProbe, probeTarget))!).path).toEqual(['Component']);
+});
+
+test('enforces the clock during final serialization', async ({ page }) => {
+  await page.setContent('<button id="selected">Selected</button>');
+  const probeTarget = await mark('selected', page);
+  await page.evaluate(() => {
+    const selected = document.querySelector('#selected')! as any;
+    Object.defineProperty(selected, '__vueParentComponent', { value: {
+      type: { name: 'Component' }, parent: null, isUnmounted: false,
+    } });
+  });
+  await page.evaluate(() => {
+    let now = 0;
+    Object.defineProperty(performance, 'now', { configurable: true, value: () => now });
+    const stringify = JSON.stringify;
+    Object.defineProperty(JSON, 'stringify', { configurable: true, value(...args: Parameters<typeof JSON.stringify>) {
+      const serialized = Reflect.apply(stringify, JSON, args) as string | undefined;
+      now = 11;
+      return serialized;
+    } });
+  });
+  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+});
+
 test('bounds raw names, ancestry, and final UTF-8 serialization', async ({ page }) => {
   await page.setContent('<button id="selected">Selected</button>');
   const probeTarget = await mark('selected', page);

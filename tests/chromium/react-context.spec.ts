@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { selectComponentContext } from '../../src/component-context-dispatch';
 import { reactComponentContextProbe } from '../../src/react-context-probe';
+import { vueComponentContextProbe } from '../../src/vue-context-probe';
 
 const MARKER = 'data-anmerko-context-0123456789abcdef0123456789abcdef';
 const FAILURE_TOKEN = 'ANMERKO_COMPONENT_CONTEXT_PROBE_FAILED';
@@ -125,6 +127,74 @@ test('rejects detached targets and malformed target contracts cleanly', async ({
   const probeTarget = await targetFor(page, fixtureTarget);
   await page.locator('#react-nested-button').evaluate(element => element.remove());
   expect(await page.evaluate(reactComponentContextProbe, probeTarget)).toBeNull();
+});
+
+test('treats a malformed React type as indeterminate beside valid Vue metadata', async ({ page }) => {
+  await page.setContent('<button id="selected">Selected</button>');
+  const probeTarget = { selectorPath: ['#selected'], expectedTag: 'button', markerName: MARKER };
+  await page.evaluate(({ markerName }) => {
+    const selected = document.querySelector('#selected')! as any;
+    selected.setAttribute(markerName, '');
+    Object.defineProperty(selected, '__reactFiber$fixture', { value: {
+      tag: 5, stateNode: selected, return: { tag: 0, type: 42, return: { tag: 3, return: null } },
+      _debugStack: null, _debugOwner: null, _debugInfo: null,
+    } });
+    Object.defineProperty(selected, '__vueParentComponent', { value: {
+      type: { name: 'VueCard' }, parent: null, isUnmounted: false,
+    } });
+  }, probeTarget);
+
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  const vueValue = JSON.parse((await page.evaluate(vueComponentContextProbe, probeTarget))!);
+  expect(selectComponentContext([
+    { kind: 'indeterminate' }, { kind: 'valid', value: vueValue }, { kind: 'none' },
+  ])).toBeNull();
+});
+
+test('accepts the canonical tag-name grammar', async ({ page }) => {
+  await page.setContent('');
+  const probeTarget = {
+    selectorPath: ['#selected'], expectedTag: 'x_widget.part:leaf', markerName: MARKER,
+  };
+  await page.evaluate(({ markerName }) => {
+    const selected = document.createElement('x_widget.part:leaf') as any;
+    selected.id = 'selected';
+    selected.setAttribute(markerName, '');
+    document.body.append(selected);
+    function Component() {}
+    Object.defineProperty(selected, '__reactFiber$fixture', { value: {
+      tag: 5, stateNode: selected,
+      return: { tag: 0, type: Component, return: { tag: 3, return: null } },
+      _debugStack: null, _debugOwner: null, _debugInfo: null,
+    } });
+  }, probeTarget);
+  expect(JSON.parse((await page.evaluate(reactComponentContextProbe, probeTarget))!).path).toEqual(['Component']);
+});
+
+test('enforces the clock during final serialization', async ({ page }) => {
+  await page.setContent('<button id="selected">Selected</button>');
+  const probeTarget = { selectorPath: ['#selected'], expectedTag: 'button', markerName: MARKER };
+  await page.evaluate(({ markerName }) => {
+    const selected = document.querySelector('#selected')! as any;
+    selected.setAttribute(markerName, '');
+    function Component() {}
+    Object.defineProperty(selected, '__reactFiber$fixture', { value: {
+      tag: 5, stateNode: selected,
+      return: { tag: 0, type: Component, return: { tag: 3, return: null } },
+      _debugStack: null, _debugOwner: null, _debugInfo: null,
+    } });
+  }, probeTarget);
+  await page.evaluate(() => {
+    let now = 0;
+    Object.defineProperty(performance, 'now', { configurable: true, value: () => now });
+    const stringify = JSON.stringify;
+    Object.defineProperty(JSON, 'stringify', { configurable: true, value(...args: Parameters<typeof JSON.stringify>) {
+      const serialized = Reflect.apply(stringify, JSON, args) as string | undefined;
+      now = 11;
+      return serialized;
+    } });
+  });
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
 });
 
 test('keeps the nearest eight names and rejects more than 64 Fiber links', async ({ page }) => {

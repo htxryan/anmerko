@@ -27,8 +27,7 @@ export function vueComponentContextProbe(target: ComponentContextProbeTarget): s
       if (!target || typeof target !== 'object' || !Array.isArray(target.selectorPath)
         || target.selectorPath.length < 1 || target.selectorPath.length > 8
         || typeof target.expectedTag !== 'string' || target.expectedTag.length < 1
-        || target.expectedTag.length > 256 || target.expectedTag !== target.expectedTag.toLowerCase()
-        || !/^[a-z][a-z0-9-]*$/u.test(target.expectedTag)
+        || !/^[a-z][a-z0-9._:-]{0,127}$/u.test(target.expectedTag)
         || typeof target.markerName !== 'string'
         || !/^data-anmerko-context-[0-9a-f]{32}$/u.test(target.markerName)) fail();
       let combinedLength = 0;
@@ -117,22 +116,43 @@ export function vueComponentContextProbe(target: ComponentContextProbeTarget): s
     if (instance !== null || innerToOuterNames.length === 0) fail();
     if (resolveExactTarget() !== selected) return null;
 
+    checkClock();
     const path = innerToOuterNames.reverse();
     let totalCodePoints = path.reduce((total, name) => total + Array.from(name).length, 0);
     let truncated = false;
+    checkClock();
     while (path.length > 8 || totalCodePoints > 384) {
+      checkClock();
       const removed = path.shift();
       if (!removed) fail();
       totalCodePoints -= Array.from(removed).length;
       truncated = true;
+      checkClock();
     }
-    let serialized = JSON.stringify({ version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path, truncated });
-    while (new TextEncoder().encode(serialized).byteLength > 2_048) {
+    function serialize(): string {
+      checkClock();
+      const value = JSON.stringify({
+        version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path, truncated,
+      });
+      checkClock();
+      return value;
+    }
+    function wireBytes(value: string): number {
+      checkClock();
+      const length = new TextEncoder().encode(value).byteLength;
+      checkClock();
+      return length;
+    }
+    let serialized = serialize();
+    while (wireBytes(serialized) > 2_048) {
+      checkClock();
       const removed = path.shift();
       if (!removed || path.length === 0) fail();
       truncated = true;
-      serialized = JSON.stringify({ version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path, truncated });
+      checkClock();
+      serialized = serialize();
     }
+    checkClock();
     return serialized;
   } catch {
     throw new Error(failureToken);
