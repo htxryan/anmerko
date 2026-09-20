@@ -107,17 +107,19 @@ function maskBounds(rect: JourneyMaskRect, image: { width: number; height: numbe
   const bottom = y + height;
   if (![x, y, width, height, right, bottom].every(Number.isFinite)
     || x < 0 || y < 0 || width <= 0 || height <= 0
-    || right > image.width || bottom > image.height) {
+    || right <= x || bottom <= y || right > image.width || bottom > image.height) {
     throw captureError('Screenshot mask geometry is invalid.');
   }
   const left = Math.floor(x);
   const top = Math.floor(y);
-  return {
+  const rounded = {
     left,
     top,
     width: Math.ceil(right) - left,
     height: Math.ceil(bottom) - top,
   };
+  if (rounded.width <= 0 || rounded.height <= 0) throw captureError('Screenshot mask geometry is invalid.');
+  return rounded;
 }
 
 export async function normalizeJourneyPng(dataUrl: string): Promise<NormalizedJourneyPng> {

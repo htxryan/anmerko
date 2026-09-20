@@ -107,6 +107,8 @@ test('rejects invalid mask geometry before decoding pixels', async ({ page }) =>
           reject({ x: 0, y: 0, width: 0, height: 1 }),
           reject({ x: 0, y: 0, width: 1, height: Number.NaN }),
           reject({ x: 0, y: 0, width: Number.POSITIVE_INFINITY, height: 1 }),
+          reject({ x: 1, y: 0, width: Number.MIN_VALUE, height: 1 }),
+          reject({ x: 0, y: 1, width: 1, height: Number.MIN_VALUE }),
           reject({ x: 3.5, y: 0, width: 0.6, height: 1 }),
           reject({ x: 0, y: 2.5, width: 1, height: 0.6 }),
         ]),
