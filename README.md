@@ -18,8 +18,7 @@ Collect website comments and screenshots, then share them with your AI agent.
 
 **anmerko** is a browser extension for desktop (Chrome, Edge, and Firefox) or mobile (Edge and Firefox for Android, and Orion for iPhone). It stores feedback in your browser and needs no account or AI API key. You choose when to export or share it.
 
-- [Installation guides](https://anmerko.com/docs/install/)
-- [Install in Orion on iPhone](https://anmerko.com/docs/install/orion-iphone/)
+- [Install for desktop or mobile browsers](https://anmerko.com/docs/install/)
 - [Add comments](https://anmerko.com/docs/usage/) and [send feedback to your agent](https://anmerko.com/docs/send-to-your-agent/)
 - [Settings](https://anmerko.com/docs/settings/), [troubleshooting](https://anmerko.com/docs/troubleshooting/), and [release notes](https://anmerko.com/docs/releases/)
 
