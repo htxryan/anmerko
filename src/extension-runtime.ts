@@ -12,7 +12,7 @@ const ignoredSidebarTeardown = Symbol('ignored Firefox sidebar teardown');
 
 function isFirefoxSidebarTeardown(error: unknown): boolean {
   return error instanceof Error
-    && error.message === "Actor 'Conduits' destroyed before query 'RuntimeMessage' resolved";
+    && error.message === "Actor 'Conduits' destroyed before query 'RuntimeMessage' was resolved";
 }
 
 export function extensionStore(): Store {

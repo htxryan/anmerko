@@ -100,7 +100,7 @@ test('native Float attaches teardown handling before close and preserves unrelat
   await run(page, 'nativeHarness.deferLayout()');
   await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
   expect(await run(page, 'nativeHarness.layoutSequence')).toEqual(['request-catch', 'close']);
-  await run(page, `nativeHarness.rejectLayout("Actor 'Conduits' destroyed before query 'RuntimeMessage' resolved")`);
+  await run(page, `nativeHarness.rejectLayout("Actor 'Conduits' destroyed before query 'RuntimeMessage' was resolved")`);
   await expect(panel.getByRole('status')).not.toContainText('Could not change layout');
 
   await run(page, 'nativeHarness.deferLayout()');
