@@ -9,6 +9,7 @@ type Harness = {
   client?: any;
   pending?: Promise<void>;
   resolveGrant?: (granted: boolean) => void;
+  rejectGrant?: (error: Error) => void;
 };
 type HarnessWindow = typeof globalThis & {
   clientModule: { createJourneyClient(owner?: () => { ownerTabId?: number; ownerWindowId?: number }, intent?: string): any };
@@ -50,7 +51,10 @@ async function installChrome(page: Page) {
       permissions: {
         request(details: unknown) {
           harness.log.push({ kind: 'permission', details: structuredClone(details) });
-          return new Promise<boolean>(resolve => { harness.resolveGrant = resolve; });
+          return new Promise<boolean>((resolve, reject) => {
+            harness.resolveGrant = resolve;
+            harness.rejectGrant = reject;
+          });
         },
       },
     };
@@ -110,6 +114,16 @@ test('requests optional access synchronously before native start and cancels a p
     { kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_DISCARD' } },
   ]);
+
+  expect(await page.evaluate(async () => {
+    const harness = (globalThis as HarnessWindow).surfaceHarness;
+    harness.log.length = 0;
+    harness.pending = harness.client.start(false);
+    void harness.client.stop();
+    harness.rejectGrant?.(new Error('private browser rejection'));
+    try { await harness.pending; return 'cancelled'; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  })).toBe('cancelled');
 });
 
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
@@ -184,7 +198,18 @@ test('rejects invalid launch context before requesting access and sanitizes fail
 
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.response = { ok: false, error: 'private backend details' };
+    harness.response = { ok: false, code: 'busy', error: 'private backend details' };
+    harness.pending = harness.client.start(false);
+    harness.resolveGrant?.(true);
+  });
+  expect(await page.evaluate(async () => {
+    try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  })).toBe('Finish or discard the existing journey before starting another.');
+
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).surfaceHarness;
+    harness.response = { ok: false, code: 'private-code', error: 'private backend details' };
     harness.pending = harness.client.start(false);
     harness.resolveGrant?.(true);
   });
@@ -192,17 +217,6 @@ test('rejects invalid launch context before requesting access and sanitizes fail
     try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
     catch (error) { return error instanceof Error ? error.message : String(error); }
   })).toBe('Could not update the journey. Try again.');
-
-  await page.evaluate(() => {
-    const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.response = { ok: false, error: 'Journey command unavailable.' };
-    harness.pending = harness.client.start(false);
-    harness.resolveGrant?.(true);
-  });
-  expect(await page.evaluate(async () => {
-    try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
-    catch (error) { return error instanceof Error ? error.message : String(error); }
-  })).toBe('Journey command unavailable.');
 });
 
 test('trusted page strictly parses launch intent and shares the journey UI only when enabled', async ({ page }) => {
