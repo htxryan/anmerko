@@ -51,5 +51,6 @@ export interface Runtime {
   settingsLabel: string;
   presentation?: Presentation;
   journeys?: JourneyClient;
+  openJourney?: () => Promise<void>;
   onDispose?: () => void;
 }

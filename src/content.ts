@@ -61,7 +61,7 @@ export function mount(runtime: Runtime): Controller {
   document.documentElement.append(host);
   const $ = <T extends HTMLElement = HTMLElement>(selector: string) => shadow.querySelector<T>(selector)!;
   const abort = new AbortController();
-  if (runtime.journeys) {
+  if (runtime.journeys || runtime.openJourney) {
     const client = runtime.journeys;
     const record = document.createElement('button');
     record.className = 'menu-action journey-record';
@@ -72,14 +72,20 @@ export function mount(runtime: Runtime): Controller {
     record.addEventListener('click', event => {
       if (!event.isTrusted || draft || captureBusy) return;
       setCommentMenu(false);
+      if (!client) {
+        void runtime.openJourney?.().catch(() => panelStatus('Could not open the journey. Reopen anmerko from the toolbar and try again.', { error: true }));
+        return;
+      }
       disposeJourney?.();
       const container = document.createElement('div'); container.className = 'journey-container';
       const back = document.createElement('button'); back.className = 'journey-return secondary';
       back.textContent = 'Back to comments'; back.type = 'button';
       container.append(back); app.append(container);
+      $('.panel').inert = true;
       const unmount = mountJourneyUI(container, client);
-      disposeJourney = () => { unmount(); container.remove(); disposeJourney = undefined; };
+      disposeJourney = () => { unmount(); container.remove(); $('.panel').inert = false; disposeJourney = undefined; };
       back.addEventListener('click', () => { disposeJourney?.(); $('.comment-options').focus(); });
+      back.focus();
     }, { signal: abort.signal });
     abort.signal.addEventListener('abort', () => disposeJourney?.(), { once: true });
   }

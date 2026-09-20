@@ -136,6 +136,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   };
   return {
     store: extensionStore(), presentation, onDispose,
+    ...(journeysEnabled && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
     ...(journeysEnabled && native ? { journeys: {
       read: () => journeyCommand('ANMERKO_JOURNEY_STATE'),
       start: (includeEnteredValues: boolean) => journeyCommand('ANMERKO_JOURNEY_START', { ownerTabId: targetTab, ownerWindowId: windowId, includeEnteredValues }),
