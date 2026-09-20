@@ -32,6 +32,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;
+  let sidebarRequestVersion: number | undefined;
   let sidebarPort: chrome.runtime.Port | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
@@ -54,9 +55,9 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     },
     async changeLayout(mode, state, mobile) {
       if (native && ['overlay', 'minimized', 'closed'].includes(mode)) {
-        if (!sidebarPort) throw new Error('Could not change layout.');
+        if (!sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
         sidebarPort.postMessage({
-          type: 'ANMERKO_SIDEBAR_LAYOUT', version: connectionVersion,
+          type: 'ANMERKO_SIDEBAR_LAYOUT', version: sidebarRequestVersion,
           mode, state: state.url ? state : undefined,
         });
         // Firefox requires close() in the original click, before any await/message hop.
@@ -112,6 +113,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           // Firefox can unload its idle event page while the sidebar stays open.
           // Recreate the port on the next activation, not in an idle keepalive loop.
           sidebarPort = undefined;
+          sidebarRequestVersion = undefined;
           ++connectionVersion;
         });
         return current;
@@ -125,7 +127,9 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           if (!tab?.id) throw new Error('No active tab');
           targetTab = tab.id;
           // Startup and its response share the lifetime of this sidebar port.
-          connectionPort().postMessage({ tabId: targetTab, windowId, version });
+          const port = connectionPort();
+          port.postMessage({ tabId: targetTab, windowId, version });
+          sidebarRequestVersion = version;
         } catch (error) {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }

@@ -152,6 +152,24 @@ test('native Float posts a one-way port command before close and reports a live-
   await expect(panel.getByRole('status')).toContainText('Could not change layout');
 });
 
+test('native Float uses the last posted owner while a replacement tab query is pending', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply(); nativeHarness.delayNextQuery(); nativeHarness.reconnect()');
+  await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
+
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay',
+  }));
+  await run(page, 'nativeHarness.releaseQuery()');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  expect(await run(page, 'nativeHarness.startupRequests.at(-1).version')).toBe(2);
+});
+
 test('idle port shutdown preserves the current page, draft and unsaved settings without a keepalive', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');

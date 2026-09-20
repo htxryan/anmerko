@@ -13,6 +13,8 @@ const ports: { onMessage: ReturnType<typeof event>; onDisconnect: ReturnType<typ
 const requests: any[] = [];
 const pageMessages: unknown[] = [], layoutMessages: unknown[] = [];
 const layoutSequence: string[] = [];
+let delayQuery = false;
+let releaseQuery: (() => void) | undefined;
 Object.assign(globalThis, { chrome: {
   sidebarAction: {
     open: async () => {},
@@ -33,7 +35,14 @@ Object.assign(globalThis, { chrome: {
     },
   },
   tabs: {
-    query: async () => [{ id: 1 }], onActivated: event(), onUpdated: updated,
+    query: async () => {
+      if (delayQuery) {
+        delayQuery = false;
+        await new Promise<void>(resolve => { releaseQuery = resolve; });
+      }
+      return [{ id: 1 }];
+    },
+    onActivated: event(), onUpdated: updated,
     async sendMessage(_tabId: number, message: unknown) { pageMessages.push(message); },
   },
   windows: { getCurrent: async () => ({ id: 1 }) },
@@ -51,6 +60,9 @@ Object.assign(globalThis, { nativeHarness: {
   disconnect() { const port = ports.at(-1)!; port.closed = true; port.onDisconnect.emit(); },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
+  delayNextQuery() { delayQuery = true; },
+  queryPending() { return !!releaseQuery; },
+  releaseQuery() { const release = releaseQuery; releaseQuery = undefined; release?.(); },
   resetLayoutSequence() { layoutSequence.length = 0; },
   failLayout() {
     const start = requests.slice().reverse().find((request: any) => !request.type);
