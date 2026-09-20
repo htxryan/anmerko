@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { desktopScenarios } from './desktop-scenarios.mjs';
+import { startFixtureServer } from '../fixtures/component-context/server.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -18,6 +19,7 @@ export async function createDesktopSession({ scenario = 'manual' } = {}) {
   const extension = join(temp, 'extension');
   const output = resolve('artifacts', `desktop-${browser}-${process.platform}-${Date.now()}`);
   let server;
+  let componentServer;
   const session = { context: undefined, evidence: {
     scenario, result: 'incomplete', teardown: 'incomplete',
     coverage: desktopScenarios,
@@ -28,18 +30,21 @@ export async function createDesktopSession({ scenario = 'manual' } = {}) {
     try {
       if (session.page && !session.page.isClosed()) await session.page.screenshot({ path: join(output, 'final.png') });
     } catch (error) { evidence.screenshotError = String(error); }
-    try {
-      await session.context?.close();
-      if (server?.listening) await new Promise(done => server.close(done));
-      await rm(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-      evidence.teardown = 'passed';
-    } catch (error) {
+    const errors = [];
+    for (const dispose of [
+      () => session.context?.close(),
+      () => componentServer?.close(),
+      () => server?.listening ? new Promise((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose())) : undefined,
+      () => rm(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+    ]) try { await dispose(); } catch (error) { errors.push(error); }
+    if (errors.length) {
       evidence.teardown = 'failed';
-      evidence.teardownError = String(error);
-      throw error;
-    } finally {
-      await writeFile(join(output, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
+      evidence.teardownError = errors.map(String).join('\n');
+    } else {
+      evidence.teardown = 'passed';
     }
+    await writeFile(join(output, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
+    if (errors.length) throw new AggregateError(errors, 'Desktop session teardown failed');
   };
   try {
     await mkdir(output, { recursive: true });
@@ -59,11 +64,20 @@ export async function createDesktopSession({ scenario = 'manual' } = {}) {
     server = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(html); });
     await new Promise(done => server.listen(0, '127.0.0.1', done));
     session.origin = `http://127.0.0.1:${server.address().port}`;
+    componentServer = await startFixtureServer();
+    session.componentOrigin = componentServer.origin;
+    const fixtureHealth = await (await fetch(`${componentServer.origin}/healthz`)).json();
     Object.assign(evidence, {
       date: new Date().toISOString(), browser, executable, os: process.platform, osRelease: release(), architecture: arch(),
       sourceSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
       dirty: !!execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim(),
       route: 'unpacked production manifest; CDP extension action', version: manifest.version, manifest, payload,
+      componentFixtures: {
+        origin: componentServer.origin,
+        service: fixtureHealth.service,
+        contractVersion: fixtureHealth.version,
+        routes: componentServer.routes.map(({ id, framework, version, mode, path }) => ({ id, framework, version, mode, path })),
+      },
       storeInstall: 'unrun', storeUpdate: 'unrun', manualToolbar: 'unrun',
     });
     session.start = async () => {
