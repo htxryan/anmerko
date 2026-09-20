@@ -258,9 +258,12 @@ test('phones and tablets start on mobile choices, while touch laptops remain on 
       await page.goto('http://127.0.0.1:4175/');
       await expect(page.getByRole('tablist')).toHaveAccessibleName(`Choose your ${scenario.mobile ? 'mobile' : 'desktop'} browser`);
       await expect(page.getByRole('tab')).toHaveCount(3);
-      await expect(page.getByRole('button', { name: `Install for ${scenario.mobile ? 'desktop' : 'mobile'} browsers`, exact: true })).toBeInViewport({ ratio: 1 });
+      const platformSwitch = page.getByRole('button', { name: `Install for ${scenario.mobile ? 'desktop' : 'mobile'} browsers`, exact: true });
+      await expect(platformSwitch).toBeInViewport({ ratio: 1 });
       await expect(page.getByRole('link', { name: 'Download manually', exact: true })).toBeInViewport({ ratio: 1 });
       if (scenario.mobile) {
+        const switchBox = (await platformSwitch.boundingBox())!;
+        expect(page.viewportSize()!.height - switchBox.y - switchBox.height).toBeGreaterThanOrEqual(16);
         await expect(page.getByRole('tab', { name: scenario.selected, exact: true })).toHaveAttribute('aria-selected', 'true');
         await expect(page.locator(`#tab-desktop-${scenario.desktopSelected.toLowerCase()}`)).toHaveAttribute('aria-selected', 'true');
         await expect(page.getByRole('tab', { name: 'Chrome', exact: true })).toBeHidden();
@@ -277,7 +280,7 @@ test('phones and tablets start on mobile choices, while touch laptops remain on 
       const layoutPath = `artifacts/anmerko-install-${scenario.name}-layout.json`;
       await writeFile(layoutPath, JSON.stringify(await page.evaluate(() => ({
           viewport: { width: innerWidth, height: innerHeight, scale: visualViewport?.scale },
-          elements: [...document.querySelectorAll('.intro, .install, .install-links, .releases, .platform-choice, .platform-switch')].map(element => ({
+          elements: [...document.querySelectorAll('.header, .layout, .intro, .intro h1, .intro > p, .demo-controls, .install, .install h2, .browser-tabs, .browser-panel, .install-links, .releases, .platform-choice, .platform-switch')].map(element => ({
             className: element.className,
             bounds: element.getBoundingClientRect().toJSON(),
             font: getComputedStyle(element).font,

@@ -134,9 +134,11 @@ footer .support-icon { flex-shrink: 0; filter: grayscale(1); }
 @media (max-width: 900px) { .layout { row-gap: 20px; } }
 .demo-status:empty { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-@media (max-width: 480px) and (max-height: 720px) {
+@media (max-width: 480px) and (max-height: 760px) {
   .header { min-height: 60px; row-gap: 0; padding-block: 2px; }
-  .layout { padding-top: 12px; row-gap: 12px; }
+  .layout { padding-top: 12px; row-gap: 8px; }
+  h1 { font-size: 28px; line-height: 1.1; letter-spacing: -1px; }
+  .install h2 { font-size: 19px; }
   .intro p { margin-top: 12px; }
   .demo-controls { margin-top: 8px; }
   .install { padding-block: 8px; }
