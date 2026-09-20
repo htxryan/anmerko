@@ -217,6 +217,7 @@ test('identifies one document, advances resize generation, and rejects non-backg
   expect(first.value.documentToken).toMatch(/^[0-9a-f-]{36}$/i);
   const repeated = await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' });
   expect(repeated.value.documentToken).toBe(first.value.documentToken);
+  expect(repeated.value.recording).toBeUndefined();
 
   await page.setViewportSize({ width: 1100, height: 700 });
   const resized = await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' });
@@ -281,6 +282,8 @@ test('starts only after a valid command, forwards one trusted click, updates sta
   expect(invalidCount).toEqual({ ok: false, error: 'Journey command unavailable.' });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
     documentToken: identity.documentToken, expectedUrl: identity.url, count: 3, startedAt })).toMatchObject({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value.recording)
+    .toEqual({ sessionId: 'session-1', epoch: 1 });
   expect(await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portNames))
     .toEqual(['anmerko-journey-events-v1']);
   const strip = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip());
@@ -316,6 +319,7 @@ test('starts only after a valid command, forwards one trusted click, updates sta
     documentToken: 'stale-document' })).toEqual({ ok: false, error: 'Journey command unavailable.' });
   expect((await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))?.text).toMatch(/4 steps/);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'session-1', epoch: 2 })).toMatchObject({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value.recording).toBeUndefined();
   await expect(page.locator('anmerko-journey-strip')).toHaveCount(0);
   expect(await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.disconnectedPorts)).toEqual([0]);
   await page.getByRole('button', { name: 'Normal action' }).click();

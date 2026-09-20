@@ -11,6 +11,7 @@ type PageIdentity = {
   scroll: { x: number; y: number };
   generation: number;
   visible: boolean;
+  recording?: { sessionId: string; epoch: number };
 };
 
 type Recording = {
@@ -164,6 +165,7 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
       scroll: { x: scrollX, y: scrollY },
       generation,
       visible: !document.hidden,
+      ...(recording ? { recording: { sessionId: recording.sessionId, epoch: recording.epoch } } : {}),
     };
   };
 
