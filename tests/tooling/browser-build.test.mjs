@@ -16,6 +16,9 @@ test('existing CLI aliases keep their output paths and unknown targets fail', ()
   assert.deepEqual(browserTarget(['--target', 'chrome']), browserTarget([]));
   assert.deepEqual(browserTarget(['--target', 'chromium']), browserTarget([]));
   assert.deepEqual(browserTarget(['--firefox']), browserTarget(['--target', 'firefox']));
+  assert.deepEqual(browserTarget(['--target', 'orion']), {
+    name: 'orion', label: 'Orion for iOS', outdir: 'dist-orion', syntax: 'safari16.4', format: 'iife', archiveSuffix: '-orion',
+  });
   for (const args of [['--target', 'opera'], ['--target'], ['--unknown'], ['--firefox', '--target', 'chromium']]) {
     assert.throws(() => browserTarget(args));
   }
@@ -41,6 +44,16 @@ test('browser manifests keep the shared permissions, version, and Firefox identi
   assert.equal(firefox.minimum_chrome_version, undefined);
   assert.equal(firefox.side_panel, undefined);
   assert.equal(firefox.host_permissions, undefined);
+  const orion = manifest('orion');
+  assert.equal(orion.version, version);
+  assert.deepEqual(orion.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+  assert.deepEqual(orion.background, { scripts: ['background.js'] });
+  assert.equal(orion.action.default_popup, 'popup.html');
+  assert.equal(orion.minimum_chrome_version, undefined);
+  assert.equal(orion.side_panel, undefined);
+  assert.equal(orion.sidebar_action, undefined);
+  assert.equal(orion.browser_specific_settings, undefined);
+  assert.equal(orion.host_permissions, undefined);
   assert.deepEqual(source, original, 'transforms must not contaminate another target');
 });
 
@@ -56,6 +69,7 @@ test('supported browser targets build clean resources and reject development hel
   for (const { args, outdir, suffix } of [
     { args: [], outdir: 'dist', suffix: '' },
     { args: ['--firefox'], outdir: 'dist-firefox', suffix: '-firefox-unsigned' },
+    { args: ['--target', 'orion'], outdir: 'dist-orion', suffix: '-orion' },
   ]) {
     const pack = () => exec(process.execPath, [resolve('scripts/extension/package.mjs'), ...args], { cwd: root });
     await build(args);
@@ -69,6 +83,9 @@ test('supported browser targets build clean resources and reject development hel
     const archive = join(root, `artifacts/anmerko-${version}${suffix}.zip`);
     const zip = await readFile(archive);
     assert.equal(zip.readUInt32LE(0), 0x04034b50);
+    const { stdout: entries } = await exec('unzip', ['-Z1', archive]);
+    assert.match(entries, /^manifest\.json$/m, 'the extension manifest is at the ZIP root');
+    assert.doesNotMatch(entries, new RegExp(`^anmerko-${version.replaceAll('.', '\\.')}${suffix.replaceAll('.', '\\.')}/`), 'the ZIP has no redundant wrapper directory');
     for (const helper of ['anmerko-dev-install.js', 'retired-dev-install.js']) {
       await writeFile(join(root, outdir, helper), 'test helper');
       await assert.rejects(pack(), error => /Development update helper/.test(error.stderr));

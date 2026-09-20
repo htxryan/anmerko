@@ -1,5 +1,6 @@
 import { extensionApi } from './platform';
 import { icon } from './icons';
+import { activateTab } from './activate';
 const api = extensionApi();
 const button = document.querySelector<HTMLButtonElement>('#open')!;
 button.prepend(icon('select'));
@@ -12,8 +13,7 @@ button.addEventListener('click', async () => {
     if (!tab?.id || !tab.url || !/^https?:/.test(tab.url)) {
       throw new Error('Open a regular http or https website to start annotating.');
     }
-    const result = await api.runtime.sendMessage({ type: 'OPEN_ANMERKO', tabId: tab.id });
-    if (!result?.ok) throw new Error('Injection was blocked.');
+    await activateTab(tab.id);
     window.close();
   } catch (error) {
     status.textContent = error instanceof Error && error.message.startsWith('Open a regular')
