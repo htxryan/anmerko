@@ -1,0 +1,87 @@
+import { extensionApi } from './platform';
+import type { JourneySession } from './journey-core';
+import type { JourneyClient } from './journey-ui';
+
+type JourneyOwner = { ownerTabId?: number; ownerWindowId?: number };
+type JourneyResponse = { ok: true; value?: unknown } | { ok: false; error?: unknown };
+
+const BACKEND_ERROR = 'Journey command unavailable.';
+const CLIENT_ERROR = 'Could not update the journey. Try again.';
+const LAUNCH_ERROR = 'Open anmerko from a website before starting a journey.';
+const PERMISSION_ERROR = 'Allow access to all websites to record a journey, then try again.';
+const INTENT_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+
+function validOwner(value: JourneyOwner | undefined): value is { ownerTabId: number; ownerWindowId: number } {
+  return Number.isSafeInteger(value?.ownerTabId) && (value?.ownerTabId as number) >= 0
+    && Number.isSafeInteger(value?.ownerWindowId) && (value?.ownerWindowId as number) >= 0;
+}
+
+function validIntent(value: string | undefined): value is string {
+  return typeof value === 'string' && INTENT_PATTERN.test(value);
+}
+
+export function createJourneyClient(
+  owner?: () => JourneyOwner,
+  intent?: string,
+): JourneyClient {
+  const api = extensionApi();
+  let actionGeneration = 0;
+
+  async function command(type: string, extra: Record<string, unknown> = {}): Promise<unknown> {
+    let response: JourneyResponse;
+    try {
+      response = await api.runtime.sendMessage({ type, ...extra }) as JourneyResponse;
+    } catch {
+      throw new Error(CLIENT_ERROR);
+    }
+    if (!response || response.ok !== true) {
+      throw new Error(response?.error === BACKEND_ERROR ? BACKEND_ERROR : CLIENT_ERROR);
+    }
+    return response.value;
+  }
+
+  return {
+    supportsEnteredValues: false,
+    read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
+    start(_includeEnteredValues: boolean): Promise<void> {
+      let currentOwner: JourneyOwner | undefined;
+      try { currentOwner = owner?.(); }
+      catch { throw new Error(LAUNCH_ERROR); }
+      const native = validOwner(currentOwner) ? currentOwner : undefined;
+      const fallbackIntent = owner ? undefined : validIntent(intent) ? intent : undefined;
+      if (!native && !fallbackIntent) throw new Error(LAUNCH_ERROR);
+      const generation = ++actionGeneration;
+      let permission: Promise<boolean>;
+      try {
+        permission = api.permissions.request({ origins: ['<all_urls>'], permissions: ['webNavigation'] });
+      } catch {
+        throw new Error(PERMISSION_ERROR);
+      }
+      return permission.then(async granted => {
+        if (generation !== actionGeneration) return;
+        if (!granted) throw new Error(PERMISSION_ERROR);
+        if (generation !== actionGeneration) return;
+        if (native) await command('ANMERKO_JOURNEY_START', native);
+        else await command('ANMERKO_JOURNEY_START', { intent: fallbackIntent });
+      }, () => { throw new Error(PERMISSION_ERROR); });
+    },
+    stop(): Promise<void> {
+      ++actionGeneration;
+      return command('ANMERKO_JOURNEY_STOP', !owner && validIntent(intent) ? { intent } : {}) as Promise<void>;
+    },
+    discard(): Promise<void> {
+      ++actionGeneration;
+      return command('ANMERKO_JOURNEY_DISCARD') as Promise<void>;
+    },
+    subscribe(changed: () => void): () => void {
+      const listener = (message: unknown, sender: chrome.runtime.MessageSender) => {
+        if (sender.id !== api.runtime.id || sender.tab
+          || (sender.url !== undefined && sender.url !== api.runtime.getURL('background.js'))) return;
+        if (message && typeof message === 'object'
+          && (message as { type?: unknown }).type === 'ANMERKO_JOURNEY_CHANGED') changed();
+      };
+      api.runtime.onMessage.addListener(listener);
+      return () => api.runtime.onMessage.removeListener(listener);
+    },
+  };
+}
