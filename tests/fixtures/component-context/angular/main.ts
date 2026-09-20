@@ -77,6 +77,7 @@ interface AngularFixtureManifest {
 declare global {
   interface Window {
     __BRIEFMARK_ANGULAR_FIXTURE__: AngularFixtureManifest;
+    __BRIEFMARK_MIXED_TARGETS_READY__?: Promise<readonly string[]>;
   }
 }
 
@@ -323,6 +324,13 @@ export class AppComponent {
   }
 }
 
+@Component({
+  selector: '[data-angular-overlap]',
+  standalone: true,
+  template: '',
+})
+export class MixedOverlapComponent {}
+
 function createRootHost(document: Document, root: FixtureRoot): HTMLElement {
   const host = document.createElement('angular-fixture-app');
   host.dataset['angularFixtureRoot'] = root;
@@ -345,6 +353,20 @@ async function startFixture(): Promise<void> {
   application.bootstrap(AppComponent, createRootHost(document, 'primary'));
   application.bootstrap(AppComponent, createRootHost(document, 'secondary'));
 
+  await application.whenStable();
+  const mixedTargetIds = window.__BRIEFMARK_MIXED_TARGETS_READY__
+    ? await window.__BRIEFMARK_MIXED_TARGETS_READY__ : [];
+  const uniqueTargetIds = new Set(mixedTargetIds);
+  if (uniqueTargetIds.size !== mixedTargetIds.length) {
+    throw new Error('Mixed Angular overlap target IDs must be unique');
+  }
+  for (const targetId of mixedTargetIds) {
+    const target = document.getElementById(targetId);
+    if (!(target instanceof HTMLElement) || !target.hasAttribute('data-angular-overlap')) {
+      throw new Error(`Missing mixed Angular overlap target: ${targetId}`);
+    }
+    application.bootstrap(MixedOverlapComponent, target);
+  }
   await application.whenStable();
   fixtureManifest.ready = true;
 }
