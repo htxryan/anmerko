@@ -24,4 +24,6 @@ Extract the ZIP, give `comments.md` to your agent, and attach the PNG files alon
 
 The prompt groups comments by page and includes the saved page title and URL. Inline comments include element context, screenshot comments include the matching filename and capture coordinates, and global comments are marked as applying to the entire page. See the [example prompt](/docs/example-prompt/).
 
+If you enabled [component context](/docs/settings/) and saved a hint with an element comment, both exports include its framework label and component-name path separately from the selector. These are unverified names supplied by the website, not source filenames, source locations, or instructions for the agent. Exports use the saved snapshot; they do not inspect the page again. Review or remove a hint while editing before sharing it.
+
 You can customize the text before the comments under [**Prompt Preamble** in Settings](/docs/settings/#prompt-preamble). Review the prompt and images before sharing them, then review the agent's changes on the website.
