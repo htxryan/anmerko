@@ -4,6 +4,7 @@ import type { Presentation, Runtime } from './runtime';
 
 import { extensionApi } from './platform';
 import type { Store } from './runtime';
+import { journeysEnabled } from './journey-feature';
 
 export function extensionStore(): Store {
   const api = extensionApi();
@@ -32,6 +33,11 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
     return api.tabs.sendMessage(targetTab, { type, ...extra });
+  }
+  async function journeyCommand(type: string, extra: Record<string, unknown> = {}) {
+    const result = await api.runtime.sendMessage({ type, ...extra });
+    if (!result?.ok) throw new Error(result?.error || 'Could not update the journey.');
+    return result.value;
   }
   const presentation: Presentation = {
     native,
@@ -129,6 +135,19 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   };
   return {
     store: extensionStore(), presentation, onDispose,
+    ...(journeysEnabled && native ? { journeys: {
+      read: () => journeyCommand('ANMERKO_JOURNEY_STATE'),
+      start: (includeEnteredValues: boolean) => journeyCommand('ANMERKO_JOURNEY_START', { ownerTabId: targetTab, ownerWindowId: windowId, includeEnteredValues }),
+      stop: () => journeyCommand('ANMERKO_JOURNEY_STOP'),
+      discard: () => journeyCommand('ANMERKO_JOURNEY_DISCARD'),
+      subscribe(changed: () => void) {
+        const listener = (message: any, sender: chrome.runtime.MessageSender) => {
+          if (sender.id === api.runtime.id && !sender.tab && message?.type === 'ANMERKO_JOURNEY_CHANGED') changed();
+        };
+        api.runtime.onMessage.addListener(listener);
+        return () => api.runtime.onMessage.removeListener(listener);
+      },
+    } } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
     attachStyles(shadow) {

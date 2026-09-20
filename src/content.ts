@@ -7,6 +7,7 @@ import type { Controller, PresentationMode, Runtime, ViewState } from './runtime
 import { statusMessage } from './status';
 import { splitMenu } from './split-menu';
 import { createUuid } from './uuid';
+import { mountJourneyUI } from './journey-ui';
 import { buildPrompt, captureElement, DEFAULT_PROMPT_PREAMBLE, elementHierarchy, pageUrl, readNotes, removeNote, resolveElement, samePage, saveNote, shorten, STORAGE_PREFIX, type Note } from './core';
 
 type Theme = 'light' | 'dark';
@@ -60,6 +61,28 @@ export function mount(runtime: Runtime): Controller {
   document.documentElement.append(host);
   const $ = <T extends HTMLElement = HTMLElement>(selector: string) => shadow.querySelector<T>(selector)!;
   const abort = new AbortController();
+  if (runtime.journeys) {
+    const client = runtime.journeys;
+    const record = document.createElement('button');
+    record.className = 'menu-action journey-record';
+    record.setAttribute('role', 'menuitem'); record.tabIndex = -1;
+    record.textContent = 'Record journey';
+    $('#comment-menu').append(record);
+    let disposeJourney: (() => void) | undefined;
+    record.addEventListener('click', event => {
+      if (!event.isTrusted || draft || captureBusy) return;
+      setCommentMenu(false);
+      disposeJourney?.();
+      const container = document.createElement('div'); container.className = 'journey-container';
+      const back = document.createElement('button'); back.className = 'journey-return secondary';
+      back.textContent = 'Back to comments'; back.type = 'button';
+      container.append(back); app.append(container);
+      const unmount = mountJourneyUI(container, client);
+      disposeJourney = () => { unmount(); container.remove(); disposeJourney = undefined; };
+      back.addEventListener('click', () => { disposeJourney?.(); $('.comment-options').focus(); });
+    }, { signal: abort.signal });
+    abort.signal.addEventListener('abort', () => disposeJourney?.(), { once: true });
+  }
   // Outside this shadow root, event.target is the host rather than the input.
   // Page shortcuts (e.g. GitHub's assignee picker) can otherwise steal focus.
   // Bubble after our controls handle the event; preserve native typing,

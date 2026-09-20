@@ -1,4 +1,5 @@
 import type { ElementContext, Note } from './core';
+import type { JourneyClient } from './journey-ui';
 
 export type StoreChanges = Record<string, { newValue?: unknown }>;
 
@@ -49,5 +50,6 @@ export interface Runtime {
   storageError: string;
   settingsLabel: string;
   presentation?: Presentation;
+  journeys?: JourneyClient;
   onDispose?: () => void;
 }
