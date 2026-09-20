@@ -34,6 +34,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let connectionVersion = 0;
   let sidebarRequestVersion: number | undefined;
   let closingLayoutVersion: number | undefined;
+  let sidebarReopenVersion: number | undefined;
   let sidebarClosing = false;
   let sidebarNeedsReconnect = false;
   let sidebarPort: chrome.runtime.Port | undefined;
@@ -64,6 +65,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           mode, state: state.url ? state : undefined,
         });
         closingLayoutVersion = sidebarRequestVersion;
+        sidebarReopenVersion = sidebarRequestVersion;
         sidebarClosing = true;
         sidebarNeedsReconnect = true;
         ++connectionVersion;
@@ -108,6 +110,10 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         sidebarPort = current;
         current.onMessage.addListener(result => {
           if (signal.aborted || sidebarPort !== current) return;
+          if (result.type === 'ANMERKO_SIDEBAR_REOPENED') {
+            if (sidebarReopenVersion !== undefined && result.version === sidebarReopenVersion) reopen(true);
+            return;
+          }
           if (result.type === 'ANMERKO_SIDEBAR_LAYOUT_ERROR') {
             if (result.version !== closingLayoutVersion) return;
             closingLayoutVersion = undefined;
@@ -136,6 +142,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       async function connect() {
         if (sidebarClosing) return;
         targetTab = undefined;
+        sidebarReopenVersion = undefined;
         const version = ++connectionVersion;
         try {
           const tabs = await api.tabs.query({ active: true, windowId });
@@ -147,16 +154,18 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           const port = connectionPort();
           port.postMessage({ tabId: targetTab, windowId, version });
           sidebarRequestVersion = version;
+          sidebarReopenVersion = version;
           sidebarNeedsReconnect = false;
         } catch (error) {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
       }
-      const reopen = () => {
-        if (signal.aborted || (!sidebarClosing && !sidebarNeedsReconnect) || document.hidden) return;
+      const reopen = (explicit = false) => {
+        if (signal.aborted || (!explicit && ((!sidebarClosing && !sidebarNeedsReconnect) || document.hidden))) return;
         sidebarClosing = false;
         closingLayoutVersion = undefined;
         sidebarRequestVersion = undefined;
+        sidebarReopenVersion = undefined;
         void connect();
       };
       const configuredPanelPath = api.runtime.getManifest().side_panel?.default_path;
@@ -165,22 +174,23 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         if (configuredPanelPath) panelPath = new URL(api.runtime.getURL(configuredPanelPath)).pathname;
       } catch { /* Ignore an invalid optional manifest path. */ }
       const opened = (info: chrome.sidePanel.PanelOpenedInfo) => {
-        if (panelPath && info.windowId === windowId && info.path === panelPath) reopen();
+        if (panelPath && info.windowId === windowId && info.path === panelPath) reopen(false);
       };
+      const lifecycleReopen = () => reopen(false);
       const activated = (info: { tabId: number; windowId: number }) => { if (info.windowId === windowId) void connect(); };
       const updated = (tabId: number, change: { status?: string }) => { if (tabId === targetTab && change.status === 'complete') void connect(); };
       api.tabs.onActivated.addListener(activated);
       api.tabs.onUpdated.addListener(updated);
       api.sidePanel?.onOpened?.addListener(opened);
-      document.addEventListener('visibilitychange', reopen);
-      window.addEventListener('pageshow', reopen);
+      document.addEventListener('visibilitychange', lifecycleReopen);
+      window.addEventListener('pageshow', lifecycleReopen);
       signal.addEventListener('abort', () => {
         ++connectionVersion;
         api.tabs.onActivated.removeListener(activated);
         api.tabs.onUpdated.removeListener(updated);
         api.sidePanel?.onOpened?.removeListener(opened);
-        document.removeEventListener('visibilitychange', reopen);
-        window.removeEventListener('pageshow', reopen);
+        document.removeEventListener('visibilitychange', lifecycleReopen);
+        window.removeEventListener('pageshow', lifecycleReopen);
         sidebarPort?.disconnect();
       }, { once: true });
       // Chrome can reuse the sidebar document after pagehide. Its mounted

@@ -10,10 +10,22 @@ export { activateTab } from './activate';
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
 const sidebarOwners = new Map<number, object>();
+const sidebarPorts = new Map<number, { port: chrome.runtime.Port; version: number }>();
 const screenshotService = createCaptureService(windowId => api.tabs.captureVisibleTab(windowId, { format: 'png' }));
 const journeys = journeysEnabled ? bindJourneyExtension(screenshotService) : undefined;
 type LayoutMode = 'dock' | 'overlay' | 'minimized' | 'closed';
 const layoutModes = new Set<LayoutMode>(['dock', 'overlay', 'minimized', 'closed']);
+
+function sidebarReopened(windowId: number) {
+  const target = sidebarPorts.get(windowId);
+  return () => {
+    if (!target || sidebarPorts.get(windowId) !== target) return;
+    sidebarPorts.delete(windowId);
+    try {
+      target.port.postMessage({ type: 'ANMERKO_SIDEBAR_REOPENED', version: target.version });
+    } catch { /* A disconnected sidebar reconnects through its normal startup path. */ }
+  };
+}
 
 async function requireActiveTab(tabId: number, windowId: number) {
   try {
@@ -25,9 +37,11 @@ async function requireActiveTab(tabId: number, windowId: number) {
 
 async function changeLayout(tabId: number, windowId: number, mode: LayoutMode, state: unknown, mobile: boolean, fromSidebar: boolean) {
   if (mode === 'dock' && (mobile || !supportsDocking())) throw new Error('Docking is unavailable on mobile.');
+  const reopened = mode === 'dock' ? sidebarReopened(windowId) : undefined;
   try {
     if (mode === 'dock') await openDock(windowId);
     await activateTab(tabId, mode === 'dock' ? 'remote' : mode, state, supportsDocking());
+    reopened?.();
   } catch {
     // A sidebar can still be dismissed when the active tab is protected.
     if (fromSidebar && ['closed', 'minimized'].includes(mode)) return;
@@ -43,6 +57,7 @@ api.action.onClicked.addListener(tab => {
     void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
     return;
   }
+  const reopened = sidebarReopened(tab.windowId);
   const opening = supportsDocking() ? openDock(tab.windowId).then(() => {
     // Firefox can keep an existing sidebar open after navigation. A fresh
     // toolbar grant must retry its port-owned connection in that window.
@@ -50,7 +65,7 @@ api.action.onClicked.addListener(tab => {
       return api.runtime.sendMessage({ type: 'ANMERKO_CONNECT_SIDEBAR', windowId: tab.windowId }).catch(() => {});
     }
     return activateTab(tab.id!, 'remote', undefined, true);
-  }) : activateTab(tab.id);
+  }).then(reopened) : activateTab(tab.id);
   void opening.catch(() => activateTab(tab.id!)).catch(() => api.tabs.create({ url: api.runtime.getURL('unavailable.html') }));
 });
 api.runtime.onMessage.addListener((message, sender, respond) => {
@@ -102,6 +117,13 @@ api.runtime.onConnect.addListener(port => {
     layout: async (tabId, windowId, mode, state) => {
       await requireActiveTab(tabId, windowId);
       await changeLayout(tabId, windowId, mode, state, false, true);
+    },
+    register: (windowId, version) => {
+      const target = { port, version };
+      sidebarPorts.set(windowId, target);
+      return () => {
+        if (sidebarPorts.get(windowId) === target) sidebarPorts.delete(windowId);
+      };
     },
   }, sidebarOwners);
 });

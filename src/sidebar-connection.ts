@@ -14,6 +14,7 @@ type Operations = {
   view(tabId: number): Promise<unknown>;
   closed(tabId: number): Promise<unknown>;
   layout(tabId: number, windowId: number, mode: ClosingLayout, state?: unknown): Promise<void>;
+  register?(windowId: number, version: number): () => void;
 };
 
 const closingLayouts = new Set<ClosingLayout>(['overlay', 'minimized', 'closed']);
@@ -25,7 +26,9 @@ const barrierFor = (value: object | undefined) => value && ownerBarrier in value
 // A delayed activation must not hide the resume button after sidebar dismissal.
 export function bindSidebarConnection(port: chrome.runtime.Port, operations: Operations, owners: Map<number, object>) {
   let current: Request | undefined;
+  let latest: Request | undefined;
   let disconnected = false;
+  let unregister: (() => void) | undefined;
   const owns = (request: Request) => owners.get(request.tabId) === request;
   const active = (request: Request) => !disconnected && current === request && owns(request);
   const restore = async (request: Request) => {
@@ -91,6 +94,7 @@ export function bindSidebarConnection(port: chrome.runtime.Port, operations: Ope
       ready: false, layoutAccepted: false, activation: Promise.resolve(false),
     };
     current = request;
+    latest = request;
     owners.set(request.tabId, request);
     request.activation = (async () => {
       try {
@@ -98,6 +102,11 @@ export function bindSidebarConnection(port: chrome.runtime.Port, operations: Ope
         if (!request.layoutAccepted && !active(request)) { await restore(request); return false; }
         await operations.activate(request.tabId, request.windowId);
         if (!request.layoutAccepted && !active(request)) { await restore(request); return false; }
+        if (!disconnected && latest === request && operations.register) {
+          const previous = unregister;
+          unregister = operations.register(request.windowId, request.version);
+          previous?.();
+        }
         return true;
       } catch (error) {
         respond(request, { ok: false, error: String(error) });
@@ -120,6 +129,8 @@ export function bindSidebarConnection(port: chrome.runtime.Port, operations: Ope
   });
   port.onDisconnect.addListener(() => {
     disconnected = true;
+    unregister?.();
+    unregister = undefined;
     if (current) release(current);
   });
 }

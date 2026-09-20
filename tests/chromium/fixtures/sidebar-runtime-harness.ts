@@ -8,14 +8,22 @@ const event = () => {
   return { addListener(value: Listener) { listeners.add(value); }, removeListener(value: Listener) { listeners.delete(value); },
     emit(...args: any[]) { listeners.forEach(listener => listener(...args)); } };
 };
-const messages = event(), connections = event(), requests = event();
+const messages = event(), connections = event(), requests = event(), actions = event();
 const disconnects = event();
 const broadcasts: unknown[] = [], replies: unknown[] = [], pageCommands: any[] = [], executions: unknown[] = [];
 let snapshot: (() => void) | undefined;
+let delayDock = false;
+let releaseDock: (() => void) | undefined;
 let tabState = { windowId: 1, active: true };
 const extensionUrl = (path: string) => `${location.origin}/extension/${path}`;
 Object.assign(globalThis, { chrome: {
-  action: { onClicked: event() },
+  action: { onClicked: actions },
+  sidePanel: { async open() {
+    if (delayDock) {
+      delayDock = false;
+      await new Promise<void>(resolve => { releaseDock = resolve; });
+    }
+  } },
   runtime: {
     id: 'test-extension', getURL: extensionUrl, getManifest: () => ({}),
     onMessage: messages, onConnect: connections,
@@ -46,6 +54,14 @@ void import('../../../src/background').then(() => {
     layout(version = 1) { requests.emit({ type: 'ANMERKO_SIDEBAR_LAYOUT', version, mode: 'overlay', state: { url: `${location.origin}/page` } }); },
     disconnect() { disconnects.emit(); },
     clearPageCommands() { pageCommands.length = 0; },
+    dock() { return new Promise(resolve => messages.emit(
+      { type: 'ANMERKO_LAYOUT', mode: 'dock' },
+      { id: 'test-extension', url: `${location.origin}/page`, tab: { id: 1, windowId: 1 } }, resolve,
+    )); },
+    toolbarAction() { actions.emit({ id: 1, windowId: 1, url: `${location.origin}/page` }); },
+    delayDock() { delayDock = true; },
+    dockPending() { return !!releaseDock; },
+    releaseDock() { const release = releaseDock; releaseDock = undefined; release?.(); },
     setTabState(windowId: number, active: boolean) { tabState = { windowId, active }; },
     async probeUntrustedConnections() {
       const before = executions.length;

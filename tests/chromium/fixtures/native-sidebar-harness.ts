@@ -78,6 +78,7 @@ Object.assign(globalThis, { nativeHarness: {
     port.serverDisconnect?.emit();
   },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
+  reopened(version?: number) { ports.at(-1)!.onMessage.emit({ type: 'ANMERKO_SIDEBAR_REOPENED', version }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
   reopen(windowId = 1, path = '/sidebar.html') { panelOpened.emit({ windowId, path }); },
   reopenFallback() { window.dispatchEvent(new PageTransitionEvent('pageshow')); },

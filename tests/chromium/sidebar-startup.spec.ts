@@ -34,6 +34,55 @@ test('toolbar activation still broadcasts state to reconnect an already open sid
   }]);
 });
 
+test('a successful explicit Dock notifies only the snapshotted live sidebar owner', async ({ page }) => {
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(1);
+  expect(await run(page, 'sidebarHarness.dock()')).toEqual({ ok: true });
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(2);
+  expect(await run(page, 'sidebarHarness.replies.at(-1)')).toEqual({
+    type: 'ANMERKO_SIDEBAR_REOPENED', version: 1,
+  });
+
+  await run(page, 'sidebarHarness.start(2)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot(); sidebarHarness.toolbarAction()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(4);
+  expect(await run(page, 'sidebarHarness.replies.at(-1)')).toEqual({
+    type: 'ANMERKO_SIDEBAR_REOPENED', version: 2,
+  });
+});
+
+test('a delayed Dock cannot notify an owner superseded during the open', async ({ page }) => {
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(1);
+
+  await run(page, 'sidebarHarness.delayDock(); void (globalThis.pendingDock = sidebarHarness.dock())');
+  await expect.poll(() => run(page, 'sidebarHarness.dockPending()')).toBe(true);
+  await run(page, 'sidebarHarness.start(2)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(2);
+  await run(page, 'sidebarHarness.releaseDock()');
+  expect(await run(page, 'globalThis.pendingDock')).toEqual({ ok: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(await run(page, 'sidebarHarness.replies')).toHaveLength(2);
+});
+
+test('an explicit Dock does not notify a disconnected sidebar port', async ({ page }) => {
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(1);
+  await run(page, 'sidebarHarness.disconnect()');
+  expect(await run(page, 'sidebarHarness.dock()')).toEqual({ ok: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(await run(page, 'sidebarHarness.replies')).toHaveLength(1);
+});
+
 test('an accepted port layout survives the intentional sidebar disconnect', async ({ page }) => {
   await run(page, 'sidebarHarness.start(1)');
   await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
@@ -167,7 +216,71 @@ test('page lifecycle fallback reconnects a reused sidebar document', async ({ pa
   await run(page, 'nativeHarness.reply()');
   const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
   await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  await run(page, `Object.defineProperty(document, 'hidden', { configurable: true, value: true }); nativeHarness.reopenFallback(); delete document.hidden`);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   await run(page, 'nativeHarness.reopenFallback()');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+});
+
+test('a versioned background reopen recovers a reused sidebar without lifecycle events', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply()');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+
+  await run(page, 'nativeHarness.delayNextQuery(); nativeHarness.reconnect()');
+  await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay',
+  }));
+  await run(page, 'nativeHarness.reopened()');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reopened(1)');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  await run(page, 'nativeHarness.reply()');
+  const freshVersion = await run(page, 'nativeHarness.startupRequests.at(-1).version');
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: freshVersion, mode: 'overlay',
+  }));
+
+  await run(page, 'nativeHarness.reopened(1)');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  await run(page, `nativeHarness.reopened(${freshVersion})`);
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(3);
+  await run(page, 'nativeHarness.releaseQuery()');
+});
+
+test('an explicit reopen while already open refreshes the owner for the next Float cycle', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply(); nativeHarness.reopened(1)');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  await run(page, 'nativeHarness.reply()');
+  const freshVersion = await run(page, 'nativeHarness.startupRequests.at(-1).version');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  await run(page, `nativeHarness.reopened(${freshVersion})`);
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(3);
+});
+
+test('a versioned reopen can recover after a closing layout error retired the owner', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply()');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  await run(page, 'nativeHarness.failLayout(); nativeHarness.reopened(1)');
   await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
 });
 
