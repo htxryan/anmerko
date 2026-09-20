@@ -3,7 +3,7 @@ type Platform = typeof platforms[number];
 type Installation = {
   os?: string;
   pending?: string;
-  store?: { label: string; href: string; requirements: string };
+  action?: { label: string; href: string; requirements: string };
 };
 type Browser = {
   id: string;
@@ -11,15 +11,15 @@ type Browser = {
   targets: Partial<Record<Platform, Installation>>;
 };
 
-// Store availability belongs to a specific browser/platform pair: a desktop
-// marketplace release must never accidentally enable its mobile install button.
+// Install actions belong to a specific browser/platform pair: a desktop
+// marketplace release must never accidentally enable its mobile action.
 export const browsers: Browser[] = [
   {
     id: 'chrome',
     name: 'Chrome',
     targets: {
       desktop: {
-        store: {
+        action: {
           label: 'Chrome Web Store',
           href: 'https://chromewebstore.google.com/detail/anmerko/oligkkknbmklalfnkipmheifammnpgpo',
           requirements: 'Desktop Google Chrome 142 or later',
@@ -32,7 +32,7 @@ export const browsers: Browser[] = [
     name: 'Edge',
     targets: {
       desktop: {
-        store: {
+        action: {
           label: 'Microsoft Edge Add-ons',
           href: 'https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka',
           requirements: 'Desktop Microsoft Edge',
@@ -40,7 +40,7 @@ export const browsers: Browser[] = [
       },
       mobile: {
         os: 'Android',
-        store: {
+        action: {
           label: 'Microsoft Edge Add-ons',
           href: 'https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka',
           requirements: 'Microsoft Edge for Android. Not available on iOS.',
@@ -52,7 +52,7 @@ export const browsers: Browser[] = [
     id: 'firefox', name: 'Firefox',
     targets: {
       desktop: {
-        store: {
+        action: {
           label: 'Firefox Add-ons',
           href: 'https://addons.mozilla.org/en-US/firefox/addon/anmerko/',
           requirements: 'Desktop Firefox 142 or later',
@@ -60,10 +60,24 @@ export const browsers: Browser[] = [
       },
       mobile: {
         os: 'Android',
-        store: {
+        action: {
           label: 'Firefox Add-ons',
           href: 'https://addons.mozilla.org/en-US/firefox/addon/anmerko/',
           requirements: 'Firefox for Android 142 or later. Not available on iOS.',
+        },
+      },
+    },
+  },
+  {
+    id: 'orion',
+    name: 'Orion',
+    targets: {
+      mobile: {
+        os: 'iPhone',
+        action: {
+          label: 'Install in Orion',
+          href: '/docs/install/orion-iphone/',
+          requirements: 'Orion on iPhone',
         },
       },
     },

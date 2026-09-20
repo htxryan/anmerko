@@ -29,7 +29,10 @@ for (const group of groups) {
     // Keep the platform's default when that browser is not an available choice.
     if (index !== -1) selectTab(index);
   }
-  selectDetectedBrowser(browserHint);
+  const initialBrowser = group.dataset.browserPlatform === 'mobile' && /iPhone/i.test(ua)
+    ? 'orion'
+    : browserHint;
+  selectDetectedBrowser(initialBrowser);
 
   tabs.forEach((tab, index) => {
     function chooseTab() {

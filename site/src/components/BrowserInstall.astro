@@ -14,10 +14,10 @@ import { browsers, platforms } from '../data/browsers';
           <div data-browser-platform={platform} hidden={platform !== 'desktop'}>
             <div class="browser-tabs" role="tablist" aria-label={`Choose your ${platform} browser`}>
               {options.map((browser, index) => (
-                <button class="browser-tab" type="button" role="tab" id={`tab-${browser.key}`} aria-label={browser.name} aria-controls={`panel-${browser.key}`} aria-selected={index === 0 ? 'true' : 'false'} aria-describedby={[!browser.store && `badge-${browser.key}`, browser.os && `os-${browser.key}`].filter(Boolean).join(' ') || undefined} tabindex={index === 0 ? 0 : -1}>
+                <button class="browser-tab" type="button" role="tab" id={`tab-${browser.key}`} aria-label={browser.name} aria-controls={`panel-${browser.key}`} aria-selected={index === 0 ? 'true' : 'false'} aria-describedby={[!browser.action && `badge-${browser.key}`, browser.os && `os-${browser.key}`].filter(Boolean).join(' ') || undefined} tabindex={index === 0 ? 0 : -1}>
                   <span class="browser-icon">
-                    <img class:list={{ 'browser-icon-soon': !browser.store }} src={`/browsers/${browser.id}.png`} width="28" height="28" alt="" />
-                    {!browser.store && <span class="browser-badge" id={`badge-${browser.key}`} aria-hidden="true">SOON</span>}
+                    <img class:list={{ 'browser-icon-soon': !browser.action }} src={`/browsers/${browser.id}.png`} width="28" height="28" alt="" />
+                    {!browser.action && <span class="browser-badge" id={`badge-${browser.key}`} aria-hidden="true">SOON</span>}
                   </span>
                   <span>{browser.name}</span>
                   {browser.os && <span class="browser-os" id={`os-${browser.key}`}>{browser.os}</span>}
@@ -26,10 +26,10 @@ import { browsers, platforms } from '../data/browsers';
             </div>
             {options.map((browser, index) => (
               <div class="browser-panel" role="tabpanel" id={`panel-${browser.key}`} aria-labelledby={`tab-${browser.key}`} tabindex="0" hidden={index !== 0}>
-                {browser.store ? (
+                {browser.action ? (
                   <>
-                    <p class="release">{browser.store.requirements}</p>
-                    <a class="store-button" href={browser.store.href}>{browser.store.label}</a>
+                    <p class="release">{browser.action.requirements}</p>
+                    <a class="install-button" href={browser.action.href}>{browser.action.label}</a>
                   </>
                 ) : <p class="coming-soon">{browser.pending}</p>}
               </div>
