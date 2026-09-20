@@ -2,13 +2,13 @@ import { activateTab } from './activate';
 import { extensionApi } from './platform';
 import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
+import { createCaptureService } from './capture-service';
 export { activateTab } from './activate';
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
 const sidebarOwners = new Map<number, object>();
-let capturePending = false;
-let lastCapture = 0;
+const screenshotService = createCaptureService(windowId => api.tabs.captureVisibleTab(windowId, { format: 'png' }));
 api.action.onClicked.addListener(tab => {
   if (!tab.id) return;
   if (!tab.url || !/^https?:/.test(tab.url)) {
@@ -35,8 +35,6 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
   };
   if (message?.type === 'ANMERKO_CAPTURE_VISIBLE' && fromPage && sender.frameId === 0) {
     return reply((async () => {
-      if (capturePending || Date.now() - lastCapture < 600) throw new Error('Wait a moment before taking another screenshot.');
-      capturePending = true; lastCapture = Date.now();
       const tabId = sender.tab!.id!;
       const windowId = sender.tab!.windowId;
       let changed = false;
@@ -46,12 +44,12 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
       try {
         const before = await api.tabs.get(tabId);
         if (!before.active || before.url !== sender.url || !/^https?:/.test(before.url || '')) throw new Error('Return to the original page and try again.');
-        const dataUrl = await api.tabs.captureVisibleTab(windowId, { format: 'png' });
+        const dataUrl = await screenshotService.capture(windowId);
         const after = await api.tabs.get(tabId);
         if (changed || !after.active || after.url !== before.url) throw new Error('The page changed during capture. Try again.');
         return dataUrl;
       } finally {
-        api.tabs.onActivated.removeListener(activated); api.tabs.onUpdated.removeListener(updated); capturePending = false;
+        api.tabs.onActivated.removeListener(activated); api.tabs.onUpdated.removeListener(updated);
       }
     })());
   }
