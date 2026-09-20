@@ -27,8 +27,7 @@ export function reactComponentContextProbe(target: ComponentContextProbeTarget):
       if (!target || typeof target !== 'object' || !Array.isArray(target.selectorPath)
         || target.selectorPath.length < 1 || target.selectorPath.length > 8
         || typeof target.expectedTag !== 'string' || target.expectedTag.length < 1
-        || target.expectedTag.length > 256 || target.expectedTag !== target.expectedTag.toLowerCase()
-        || !/^[a-z][a-z0-9-]*$/u.test(target.expectedTag)
+        || !/^[a-z][a-z0-9._:-]{0,127}$/u.test(target.expectedTag)
         || typeof target.markerName !== 'string'
         || !/^data-anmerko-context-[0-9a-f]{32}$/u.test(target.markerName)) fail();
       let combinedLength = 0;
@@ -69,13 +68,15 @@ export function reactComponentContextProbe(target: ComponentContextProbeTarget):
       return usableName(data(value, 'name'), false);
     }
     function componentDetails(type: unknown, depth = 0): { name: string; identity: unknown } | null {
-      const direct = functionName(type);
-      if (direct) return { name: direct, identity: type };
-      if (!type || typeof type !== 'object' || depth >= 2) return null;
+      if (typeof type === 'function') {
+        const direct = functionName(type);
+        return direct ? { name: direct, identity: type } : null;
+      }
+      if (!type || typeof type !== 'object' || depth >= 2) fail();
       const wrapperKind = data(type, '$$typeof');
       const forwardRefKind = Symbol.for('react.forward_ref');
       const memoKind = Symbol.for('react.memo');
-      if (wrapperKind !== forwardRefKind && wrapperKind !== memoKind) return null;
+      if (wrapperKind !== forwardRefKind && wrapperKind !== memoKind) fail();
       const inner = componentDetails(data(type, wrapperKind === memoKind ? 'type' : 'render'), depth + 1);
       if (!inner) return null;
       const displayName = optionalNameData(type, 'displayName');
@@ -128,22 +129,43 @@ export function reactComponentContextProbe(target: ComponentContextProbeTarget):
     if (fiber !== null || innerToOuterComponents.length === 0) fail();
     if (resolveExactTarget() !== selected) return null;
 
+    checkClock();
     const path = innerToOuterComponents.reverse().map(component => component.name);
     let totalCodePoints = path.reduce((total, name) => total + Array.from(name).length, 0);
     let truncated = false;
+    checkClock();
     while (path.length > 8 || totalCodePoints > 384) {
+      checkClock();
       const removed = path.shift();
       if (!removed) fail();
       totalCodePoints -= Array.from(removed).length;
       truncated = true;
+      checkClock();
     }
-    let serialized = JSON.stringify({ version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path, truncated });
-    while (new TextEncoder().encode(serialized).byteLength > 2_048) {
+    function serialize(): string {
+      checkClock();
+      const value = JSON.stringify({
+        version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path, truncated,
+      });
+      checkClock();
+      return value;
+    }
+    function wireBytes(value: string): number {
+      checkClock();
+      const length = new TextEncoder().encode(value).byteLength;
+      checkClock();
+      return length;
+    }
+    let serialized = serialize();
+    while (wireBytes(serialized) > 2_048) {
+      checkClock();
       const removed = path.shift();
       if (!removed || path.length === 0) fail();
       truncated = true;
-      serialized = JSON.stringify({ version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path, truncated });
+      checkClock();
+      serialized = serialize();
     }
+    checkClock();
     return serialized;
   } catch {
     throw new Error(failureToken);
