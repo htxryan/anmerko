@@ -122,6 +122,24 @@ function maskBounds(rect: JourneyMaskRect, image: { width: number; height: numbe
   return rounded;
 }
 
+function readNormalizedJourneyPng(dataUrl: string) {
+  if (typeof dataUrl !== 'string') throw captureError('Screenshot must be a PNG data URL.');
+  const bytes = decodeBoundedPng(dataUrl, JOURNEY_LIMITS.maxImageBytes);
+  const dimensions = readPngDimensions(
+    bytes,
+    JOURNEY_LIMITS.maxImageLongestSide,
+    JOURNEY_LIMITS.maxImageLongestSide ** 2,
+  );
+  return { bytes, ...dimensions };
+}
+
+export function inspectNormalizedJourneyPng(
+  dataUrl: string,
+): Pick<NormalizedJourneyPng, 'width' | 'height' | 'byteLength'> {
+  const { bytes, width, height } = readNormalizedJourneyPng(dataUrl);
+  return { width, height, byteLength: bytes.byteLength };
+}
+
 export async function normalizeJourneyPng(dataUrl: string): Promise<NormalizedJourneyPng> {
   if (typeof dataUrl !== 'string') throw captureError('Screenshot must be a PNG data URL.');
   const bytes = decodeBoundedPng(dataUrl);
@@ -160,13 +178,8 @@ export async function normalizeJourneyPng(dataUrl: string): Promise<NormalizedJo
 }
 
 export async function maskJourneyPng(dataUrl: string, rect: JourneyMaskRect): Promise<NormalizedJourneyPng> {
-  if (typeof dataUrl !== 'string') throw captureError('Screenshot must be a PNG data URL.');
-  const bytes = decodeBoundedPng(dataUrl, JOURNEY_LIMITS.maxImageBytes);
-  const source = readPngDimensions(
-    bytes,
-    JOURNEY_LIMITS.maxImageLongestSide,
-    JOURNEY_LIMITS.maxImageLongestSide ** 2,
-  );
+  const { bytes, width, height } = readNormalizedJourneyPng(dataUrl);
+  const source = { width, height };
   const mask = maskBounds(rect, source);
   let bitmap: ImageBitmap | undefined;
   let canvas: OffscreenCanvas | undefined;

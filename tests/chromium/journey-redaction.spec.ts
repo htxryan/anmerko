@@ -11,6 +11,11 @@ type NormalizedImage = {
 
 type JourneyImageWindow = typeof globalThis & {
   anmerkoJourneyImage: {
+    inspectNormalizedJourneyPng(dataUrl: string): {
+      width: number;
+      height: number;
+      byteLength: number;
+    };
     maskJourneyPng(
       dataUrl: string,
       rect: { x: number; y: number; width: number; height: number },
@@ -30,6 +35,88 @@ async function loadHelper(page: Page) {
   await page.goto('http://127.0.0.1:4173');
   await page.addScriptTag({ content: bundle });
 }
+
+test('inspects bounded normalized PNG metadata without decoding image pixels', async ({ page }) => {
+  await loadHelper(page);
+
+  const result = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 37;
+    canvas.height = 19;
+    const dataUrl = canvas.toDataURL('image/png');
+    const payload = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+    const expectedBytes = payload.length / 4 * 3 - padding;
+    const originalCreateImageBitmap = globalThis.createImageBitmap;
+    let decodeCalls = 0;
+    globalThis.createImageBitmap = (() => {
+      decodeCalls += 1;
+      throw new Error('Unexpected decode');
+    }) as typeof createImageBitmap;
+    try {
+      return {
+        inspected: (globalThis as JourneyImageWindow).anmerkoJourneyImage.inspectNormalizedJourneyPng(dataUrl),
+        expectedBytes,
+        decodeCalls,
+      };
+    } finally {
+      globalThis.createImageBitmap = originalCreateImageBitmap;
+    }
+  });
+
+  expect(result.inspected).toEqual({ width: 37, height: 19, byteLength: result.expectedBytes });
+  expect(result.decodeCalls).toBe(0);
+});
+
+test('inspector rejects external, oversized, and over-dimensioned inputs before image decode', async ({ page }) => {
+  await loadHelper(page);
+
+  const result = await page.evaluate(maxImageBytes => {
+    const api = (globalThis as JourneyImageWindow).anmerkoJourneyImage;
+    const originalCreateImageBitmap = globalThis.createImageBitmap;
+    let decodeCalls = 0;
+    globalThis.createImageBitmap = (() => {
+      decodeCalls += 1;
+      throw new Error('Unexpected decode');
+    }) as typeof createImageBitmap;
+    const header = (width: number, height: number) => {
+      const bytes = new Uint8Array([
+        137, 80, 78, 71, 13, 10, 26, 10,
+        0, 0, 0, 13, 73, 72, 68, 82,
+        width >>> 24, width >>> 16, width >>> 8, width,
+        height >>> 24, height >>> 16, height >>> 8, height,
+      ]);
+      return `data:image/png;base64,${btoa(String.fromCharCode(...bytes))}`;
+    };
+    const inspect = (dataUrl: string) => {
+      try {
+        api.inspectNormalizedJourneyPng(dataUrl);
+        return { accepted: true };
+      } catch (error) {
+        return {
+          accepted: false,
+          name: error instanceof Error ? error.name : '',
+          reason: error && typeof error === 'object' && 'reason' in error ? error.reason : undefined,
+        };
+      }
+    };
+    try {
+      return {
+        external: inspect('https://example.test/private.png'),
+        oversized: inspect(`data:image/png;base64,${'A'.repeat(Math.ceil((maxImageBytes + 1) / 3) * 4)}`),
+        tooWide: inspect(header(1_921, 1)),
+        decodeCalls,
+      };
+    } finally {
+      globalThis.createImageBitmap = originalCreateImageBitmap;
+    }
+  }, JOURNEY_LIMITS.maxImageBytes);
+
+  for (const item of [result.external, result.oversized, result.tooWide]) {
+    expect(item).toEqual({ accepted: false, name: 'JourneyImageError', reason: 'capture-error' });
+  }
+  expect(result.decodeCalls).toBe(0);
+});
 
 test('masks every fractionally covered pixel with opaque black and preserves the rest', async ({ page }) => {
   await loadHelper(page);
