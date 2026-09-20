@@ -3,13 +3,17 @@ import { extensionApi } from './platform';
 import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
 import { createCaptureService } from './capture-service';
+import { journeysEnabled } from './journey-feature';
+import { bindJourneyExtension } from './journey-extension';
 export { activateTab } from './activate';
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
 const sidebarOwners = new Map<number, object>();
 const screenshotService = createCaptureService(windowId => api.tabs.captureVisibleTab(windowId, { format: 'png' }));
+const journeys = journeysEnabled ? bindJourneyExtension(screenshotService) : undefined;
 api.action.onClicked.addListener(tab => {
+  if (journeys?.stopIfRecording()) return;
   if (!tab.id) return;
   if (!tab.url || !/^https?:/.test(tab.url)) {
     void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
