@@ -7,6 +7,7 @@ import {
   failInitialImage,
   resolveJourneyCapture,
   stopJourney,
+  supersedeJourneyImagesAfter,
   type JourneyDraftImage,
   type JourneySession,
   type Point,
@@ -136,6 +137,14 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
         await safeEnd(input.ownerTabId, accepted.sessionId, state.epoch);
         return;
       }
+      const confirmed = await adapter.identify(input.ownerTabId);
+      if (!isCurrentStart(generation, starting)) {
+        await safeEnd(input.ownerTabId, accepted.sessionId, state.epoch);
+        return;
+      }
+      if (!confirmed.visible || !sameIdentity(after, confirmed) || now() >= Date.parse(starting.deadlineAt)) {
+        throw new JourneyControllerError('initial-capture-failed', 'The initial journey screenshot could not be captured. Try again.');
+      }
       publish(accepted);
     } catch (error) {
       const current = state as JourneySession;
@@ -163,8 +172,16 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
     const expectedUrl = committedUrl(state);
     if (!expectedUrl || validated.value.events.some(event => !sameUrl(event.sourceUrl, expectedUrl))) return;
     const previous = state;
-    let next = acceptJourneyEventBatch(previous, validated.value);
-    if (next === previous) return;
+    const candidate = acceptJourneyEventBatch(previous, validated.value);
+    if (candidate === previous) return;
+    const firstObservedAt = validated.value.events.reduce((earliest, event) => (
+      Date.parse(event.observedAt) < Date.parse(earliest) ? event.observedAt : earliest
+    ), validated.value.events[0].observedAt);
+    const cleaned = supersedeJourneyImagesAfter(previous, {
+      epoch: previous.epoch,
+      observedAt: firstObservedAt,
+    });
+    let next = acceptJourneyEventBatch(cleaned, validated.value);
     const generation = invalidateWork();
     if (next.phase !== 'recording') {
       publish(next);
@@ -189,8 +206,16 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
   function observeNavigation(input: { ownerTabId: number; url: string; kind: 'document' | 'same-document' }): void {
     if (state.phase !== 'recording' || input.ownerTabId !== state.ownerTabId) return;
     let toUrl: string;
-    try { toUrl = stripUrlCredentials(input.url); }
-    catch { return; }
+    try {
+      toUrl = stripUrlCredentials(input.url);
+    } catch {
+      void stop('protected-page');
+      return;
+    }
+    if (new TextEncoder().encode(toUrl).byteLength > JOURNEY_LIMITS.maxUrlBytes) {
+      void stop('capture-failed');
+      return;
+    }
     const sourceUrl = committedUrl(state);
     if (!sourceUrl) return;
     const previous = state;

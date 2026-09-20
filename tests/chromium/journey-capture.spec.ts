@@ -208,12 +208,12 @@ test('an action image-budget stop tears down the page recorder', async () => {
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
 
-  for (let counter = 1; counter <= 6; counter += 1) {
+  for (let counter = 1; counter <= 7; counter += 1) {
     const state = recording(controller.getState());
     controller.acceptBatch(clickBatch(state, counter, `budget-step-${counter}`, `budget-capture-${counter}`), 42);
     fixture.resolveDelay(counter - 1);
     await eventually(() => {
-      if (counter < 6) expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained');
+      if (counter < 7) expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained');
       else expect(controller.getState().phase).toBe('reviewing');
     });
   }

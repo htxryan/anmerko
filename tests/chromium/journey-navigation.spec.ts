@@ -270,6 +270,142 @@ test('navigation capture uses the destination URL and times out within five seco
     .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
 });
 
+test('a later-arriving action invalidates an earlier navigation image captured after the action occurred', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 1_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+
+  let state = recording(controller.getState());
+  const navigationStep = state.draft.steps.at(-1)!;
+  const navigationImageId = navigationStep.image.status === 'retained' ? navigationStep.image.imageId : '';
+  expect(state.draft.images[navigationImageId].capturedAt).toBe('2026-09-20T12:00:01.600Z');
+  fixture.nowMs = START_MS + 1_700;
+  const action = clickBatch(state, 1, fixture.current.url, 'late-action-capture');
+  action.events[0].observedAt = '2026-09-20T12:00:01.550Z';
+  action.events[0].elapsedMs = 1_550;
+  controller.acceptBatch(action, 42);
+
+  state = recording(controller.getState());
+  expect(state.draft.steps.at(-2)?.image).toEqual({ status: 'unavailable', reason: 'superseded' });
+  expect(state.draft.images).not.toHaveProperty(navigationImageId);
+  expect(state.draft.steps.at(-1)?.image).toEqual({ status: 'pending', captureId: 'late-action-capture' });
+});
+
+test('a terminal 30th action still invalidates an overlapping retained navigation image', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  const event = clickBatch(state, 1, START_URL).events[0];
+  controller.acceptBatch({
+    schemaVersion: 1,
+    sessionId: state.sessionId,
+    epoch: state.epoch,
+    documentToken: state.documentToken,
+    localCounter: 1,
+    events: Array.from({ length: 27 }, (_, index) => ({
+      ...event,
+      id: `setup-click-${index + 1}`,
+      observedAt: new Date(START_MS + (index + 1) * 100).toISOString(),
+      elapsedMs: (index + 1) * 100,
+    })),
+  }, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps).toHaveLength(28);
+
+  fixture.nowMs = START_MS + 3_000;
+  fixture.current = identity(state.documentToken, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 3_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  state = recording(controller.getState());
+  const imageState = state.draft.steps.at(-1)!.image;
+  const navigationImageId = imageState.status === 'retained' ? imageState.imageId : '';
+
+  fixture.nowMs = START_MS + 3_700;
+  const terminalAction = clickBatch(state, 2, fixture.current.url, 'terminal-action-capture');
+  terminalAction.events[0].observedAt = '2026-09-20T12:00:03.550Z';
+  terminalAction.events[0].elapsedMs = 3_550;
+  controller.acceptBatch(terminalAction, 42);
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review at the step limit');
+  expect(stopped.draft.stopReason).toBe('step-limit');
+  expect(stopped.draft.steps.at(-2)?.image).toEqual({ status: 'unavailable', reason: 'superseded' });
+  expect(stopped.draft.images).not.toHaveProperty(navigationImageId);
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'stopped' });
+});
+
+test('an oversized document destination stops for capture failure and tears down instead of silently ignoring navigation', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const oversizedUrl = `https://example.com/${'a'.repeat(JOURNEY_LIMITS.maxUrlBytes)}`;
+
+  controller.observeNavigation({ ownerTabId: 42, url: oversizedUrl, kind: 'document' });
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason).toBe('capture-failed');
+  expect(fixture.calls.connect).toEqual([]);
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('a non-HTTP document destination stops as a protected page', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  controller.observeNavigation({ ownerTabId: 42, url: 'chrome://settings/', kind: 'document' });
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason).toBe('protected-page');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('navigation while the initial recorder begin is pending cannot publish the old document', async () => {
+  const initialBegin = deferred<void>();
+  const fixture = navigationFixture({ begin: () => initialBegin.promise });
+  const controller = createJourneyController(fixture.adapter);
+  const starting = controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(1));
+
+  fixture.current = identity('document-next', 'https://example.com/next', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'document' });
+  initialBegin.resolve();
+
+  await expect(starting).rejects.toMatchObject({ code: 'initial-capture-failed' });
+  expect(controller.getState().phase).toBe('idle');
+  expect(fixture.calls.end).toHaveLength(1);
+  expect(fixture.calls.connect).toEqual([]);
+});
+
+test('an initial recorder begin that crosses the session deadline cannot publish recording', async () => {
+  const initialBegin = deferred<void>();
+  const fixture = navigationFixture({ begin: () => initialBegin.promise });
+  const controller = createJourneyController(fixture.adapter);
+  const starting = controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(1));
+
+  fixture.nowMs = START_MS + JOURNEY_LIMITS.maxDurationMs;
+  initialBegin.resolve();
+
+  await expect(starting).rejects.toMatchObject({ code: 'initial-capture-failed' });
+  expect(controller.getState().phase).toBe('idle');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
 test('a navigation image-budget stop tears down the page recorder', async () => {
   let capturedMs = START_MS + 100;
   const fixture = navigationFixture({
