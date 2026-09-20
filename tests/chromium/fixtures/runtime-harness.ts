@@ -22,8 +22,9 @@ const store: Store = {
 };
 let controller: ReturnType<typeof mount>;
 let disposed = 0;
-function open() {
+function open(componentContext = false) {
   controller = mount({ store, settingsLabel: 'Feedback settings',
+    captureComponentContext: componentContext ? async () => null : undefined,
     storageError: 'Could not save or load comments. Keep your draft and try again.',
     attachStyles(shadow) { const sheet = document.createElement('style'); sheet.textContent = styles; shadow.prepend(sheet); },
     onDispose() { ++disposed; },
@@ -31,6 +32,7 @@ function open() {
 }
 const harness = { open, dispose: () => controller.dispose(), close: () => controller.close(),
   controller: () => controller,
+  read: store.read, write: store.write,
   failures(reads: boolean, writes: boolean) { failReads = reads; failWrites = writes; },
   delay() { delayWrites = true; },
   release() { delayWrites = false; releaseWrite?.(); },

@@ -1,3 +1,4 @@
+import { COMPONENT_CONTEXT_DEFAULT, COMPONENT_CONTEXT_KEY } from './component-context';
 import { createSupportIcon } from './support-icon';
 import { icon, renderIcons } from './icons';
 import { createCommentCard } from './comment-card';
@@ -35,7 +36,7 @@ export function mount(runtime: Runtime): Controller {
       <header><span class="logo" aria-hidden="true">↗</span><div class="brand">anmerko</div><button class="icon-button settings-button" aria-label="Extension settings" title="Settings" aria-expanded="false" aria-controls="settings"><span data-icon="settings"></span></button><button class="icon-button dock" hidden aria-label="Dock sidebar" title="Dock sidebar"><span data-icon="pin"></span></button><button class="icon-button minimize" aria-label="Minimize comments" title="Minimize comments"><span data-icon="minus"></span></button><button class="icon-button close" aria-label="Close anmerko" title="Close anmerko"><span data-icon="close"></span></button></header>
       <div class="scope-row"><select aria-label="Comment scope"><option value="page">This page</option><option value="all">All pages</option></select><span class="count">0 comments</span></div>
       <div class="content"><div class="editor-slot"></div><div class="notes"></div></div>
-      <section class="settings" id="settings" aria-label="Extension settings" hidden><div class="settings-heading"><button class="settings-back"><span data-icon="back"></span>Back</button><h1>Settings</h1></div><h2 id="theme-label">Appearance</h2><div class="theme-options" role="group" aria-labelledby="theme-label"><button class="theme-option" data-theme="light" aria-pressed="true"><span data-icon="sun"></span>Light</button><button class="theme-option" data-theme="dark" aria-pressed="false"><span data-icon="moon"></span>Dark</button></div><p class="settings-status" role="status" aria-live="polite"></p><section class="preferences" aria-labelledby="preferences-title"><h2 id="preferences-title">Preferences</h2><div class="preference-row"><span id="confirm-delete-label">Show individual comment deletion confirmation</span><button class="confirm-delete-toggle" role="switch" aria-checked="true" aria-labelledby="confirm-delete-label" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">On</span></button></div><p class="preferences-status" role="status" aria-live="polite"></p></section><div class="preamble-settings"><label for="preamble">Prompt Preamble</label><p id="preamble-help">Text before the comments. Markdown supported.</p><textarea id="preamble" rows="7" aria-describedby="preamble-help" spellcheck="false" disabled></textarea><div class="preamble-actions"><button class="primary save-preamble" disabled><span data-icon="save"></span>Save Preamble</button><button class="secondary reset-preamble" disabled><span data-icon="restore"></span>Restore Default</button></div><p class="preamble-status" role="status" aria-live="polite"></p></div></section>
+      <section class="settings" id="settings" aria-label="Extension settings" hidden><div class="settings-heading"><button class="settings-back"><span data-icon="back"></span>Back</button><h1>Settings</h1></div><h2 id="theme-label">Appearance</h2><div class="theme-options" role="group" aria-labelledby="theme-label"><button class="theme-option" data-theme="light" aria-pressed="true"><span data-icon="sun"></span>Light</button><button class="theme-option" data-theme="dark" aria-pressed="false"><span data-icon="moon"></span>Dark</button></div><p class="settings-status" role="status" aria-live="polite"></p><section class="preferences" aria-labelledby="preferences-title"><h2 id="preferences-title">Preferences</h2><div class="preference-row"><span id="confirm-delete-label">Show individual comment deletion confirmation</span><button class="confirm-delete-toggle" role="switch" aria-checked="true" aria-labelledby="confirm-delete-label" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">On</span></button></div><p class="preferences-status" role="status" aria-live="polite"></p><div class="preference-row component-context-preference"><span id="component-context-label">Capture component context</span><button class="component-context-toggle" role="switch" aria-checked="false" aria-labelledby="component-context-label" aria-describedby="component-context-help" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">Off</span></button></div><p class="preference-help" id="component-context-help">Add React, Vue or Angular component names to new element comments when debug metadata is available, including deployments that retain Vue or Angular debug tools. Names can reveal application structure; Vue names may match source filename basenames. Source paths and files are not read. Review names before sharing. Turning this off leaves saved hints unchanged.</p><p class="component-context-status" role="status" aria-live="polite"></p></section><div class="preamble-settings"><label for="preamble">Prompt Preamble</label><p id="preamble-help">Text before the comments. Markdown supported.</p><textarea id="preamble" rows="7" aria-describedby="preamble-help" spellcheck="false" disabled></textarea><div class="preamble-actions"><button class="primary save-preamble" disabled><span data-icon="save"></span>Save Preamble</button><button class="secondary reset-preamble" disabled><span data-icon="restore"></span>Restore Default</button></div><p class="preamble-status" role="status" aria-live="polite"></p></div></section>
       <p class="status" role="status" aria-live="polite"></p>
       <button class="danger-button clear-copied" hidden><span data-icon="trash"></span>Delete All Comments</button>
       <footer><section class="intro split-button" role="group" aria-label="Comment Actions"><button class="primary select split-main"><span data-icon="select"></span><span class="button-label">Select Element</span></button><button class="primary comment-options split-options" aria-label="More Comment Options" title="More Comment Options" aria-haspopup="menu" aria-expanded="false" aria-controls="comment-menu"><span data-icon="chevron"></span></button><div class="comment-menu split-menu" id="comment-menu" role="menu" aria-label="Comment Options" hidden><button class="menu-action capture" role="menuitem" tabindex="-1"><span data-icon="camera"></span><span class="button-label">Take Screenshot</span></button><button class="menu-action global-comment" role="menuitem" tabindex="-1"><span data-icon="comment"></span>New Global Comment</button></div></section><div class="footer-buttons split-button" role="group" aria-label="Prompt Actions"><button class="primary copy split-main" disabled><span data-icon="copy"></span>Copy Prompt</button><button class="primary copy-options split-options" aria-label="More Prompt Options" title="More Prompt Options" aria-haspopup="menu" aria-expanded="false" aria-controls="copy-menu" disabled><span data-icon="chevron"></span></button><div class="copy-menu split-menu" id="copy-menu" role="menu" aria-label="Prompt Options" hidden><button class="danger-button delete-all" role="menuitem" tabindex="-1" aria-disabled="true"><span data-icon="trash"></span>Delete All Comments</button></div></div><button class="text-button download" hidden><span data-icon="download"></span>Download Markdown + Images</button><a class="support-link" href="https://buymeacoffee.com/htxryan" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee (opens in new tab)" hidden>Buy me a coffee</a></footer>
@@ -71,6 +72,7 @@ export function mount(runtime: Runtime): Controller {
   const preambleStatus = statusMessage($('.preamble-status'), abort.signal);
   const settingsStatus = statusMessage($('.settings-status'), abort.signal);
   const preferencesStatus = statusMessage($('.preferences-status'), abort.signal);
+  const componentContextStatus = statusMessage($('.component-context-status'), abort.signal);
   let notes: Note[] = [];
   let noteViews: Array<() => void> = [];
   let disposeEditor: (() => void) | undefined;
@@ -97,6 +99,11 @@ export function mount(runtime: Runtime): Controller {
   let confirmIndividualDeletion = true;
   let deletionPreferenceVersion = 0;
   let deletionPreferenceSaving = false;
+  let componentContextEnabled: boolean = COMPONENT_CONTEXT_DEFAULT;
+  let componentContextReady = false;
+  let componentContextLoading = true;
+  let componentContextSaving = false;
+  let componentContextVersion = 0;
   let deleting = false;
   let connectionWarning = false;
   let captureBusy = false;
@@ -216,7 +223,7 @@ export function mount(runtime: Runtime): Controller {
   function applyDeletionPreference(value: unknown) {
     confirmIndividualDeletion = value !== false;
     $('.confirm-delete-toggle').setAttribute('aria-checked', String(confirmIndividualDeletion));
-    $('.switch-value').textContent = confirmIndividualDeletion ? 'On' : 'Off';
+    $('.confirm-delete-toggle .switch-value').textContent = confirmIndividualDeletion ? 'On' : 'Off';
   }
   async function loadDeletionPreference() {
     const version = deletionPreferenceVersion;
@@ -244,6 +251,57 @@ export function mount(runtime: Runtime): Controller {
     finally {
       deletionPreferenceSaving = false;
       if (alive) $<HTMLButtonElement>('.confirm-delete-toggle').disabled = false;
+    }
+  });
+  function renderComponentPreference() {
+    const toggle = $<HTMLButtonElement>('.component-context-toggle');
+    toggle.setAttribute('aria-checked', String(componentContextReady && componentContextEnabled));
+    toggle.disabled = !runtime.captureComponentContext || componentContextLoading || componentContextSaving;
+    $('.component-context-toggle .switch-value').textContent = componentContextReady && componentContextEnabled ? 'On' : 'Off';
+  }
+  function applyComponentPreference(value: unknown) {
+    componentContextEnabled = !!runtime.captureComponentContext && value === true;
+    componentContextReady = true;
+    componentContextLoading = false;
+    renderComponentPreference();
+  }
+  async function loadComponentPreference() {
+    if (!runtime.captureComponentContext) {
+      componentContextLoading = false;
+      renderComponentPreference();
+      componentContextStatus('Requires the extension.');
+      return;
+    }
+    const version = componentContextVersion;
+    try {
+      const value = await store.read(COMPONENT_CONTEXT_KEY);
+      if (alive && version === componentContextVersion) applyComponentPreference(value);
+    } catch {
+      if (alive && version === componentContextVersion) {
+        componentContextLoading = false;
+        renderComponentPreference();
+        componentContextStatus('Could not load component capture. It remains off until you save a preference.', { error: true });
+      }
+    }
+  }
+  $('.component-context-toggle').addEventListener('click', async () => {
+    if (!runtime.captureComponentContext || componentContextLoading || componentContextSaving) return;
+    const value = !(componentContextReady && componentContextEnabled);
+    const version = ++componentContextVersion;
+    componentContextSaving = true;
+    renderComponentPreference();
+    componentContextStatus();
+    try {
+      await store.write(COMPONENT_CONTEXT_KEY, value);
+      if (alive) {
+        if (version === componentContextVersion) applyComponentPreference(value);
+        componentContextStatus('Preference saved.');
+      }
+    } catch {
+      if (alive) componentContextStatus('Could not save component capture. Your previous setting is unchanged.', { error: true });
+    } finally {
+      componentContextSaving = false;
+      if (alive) renderComponentPreference();
     }
   });
   function renderView() {
@@ -306,7 +364,7 @@ export function mount(runtime: Runtime): Controller {
   }
   async function changeLayout(mode: string) {
     if (captureBusy) { status('Finish or cancel the screenshot first.'); return; }
-    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving) { status('Finishing your save…'); return; }
+    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving || componentContextSaving) { status('Finishing your save…'); return; }
     if (integration?.dockViaToolbar && !native && mode === 'dock') {
       setMinimized(false);
       status('Click anmerko in Firefox’s toolbar or Extensions menu to dock this panel.');
@@ -348,7 +406,7 @@ export function mount(runtime: Runtime): Controller {
   let minimizeAnimation: Animation | undefined;
   async function minimize() {
     if (minimizing || captureBusy) return;
-    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving) { status('Finishing your save…'); return; }
+    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving || componentContextSaving) { status('Finishing your save…'); return; }
     // Firefox must close its sidebar within the original user gesture.
     if (native && integration?.dockViaToolbar) { await changeLayout('minimized'); return; }
     const panel = $('.panel');
@@ -950,6 +1008,7 @@ export function mount(runtime: Runtime): Controller {
     } catch { status('Could not download the files. Your comments are still saved.', true); }
   });
   const unsubscribe = store.subscribe(changes => {
+    if (changes[COMPONENT_CONTEXT_KEY]) { ++componentContextVersion; applyComponentPreference(changes[COMPONENT_CONTEXT_KEY].newValue); }
     if (changes[CONFIRM_DELETE_KEY]) { ++deletionPreferenceVersion; applyDeletionPreference(changes[CONFIRM_DELETE_KEY].newValue); }
     if (changes[THEME_KEY]) { ++themeVersion; applyTheme(changes[THEME_KEY].newValue); }
     if (changes[PREAMBLE_KEY]) { ++preambleVersion; applyPreamble(changes[PREAMBLE_KEY].newValue); }
@@ -974,7 +1033,7 @@ export function mount(runtime: Runtime): Controller {
   }, 650);
   function close(): boolean {
     if (!alive) return true;
-    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving) { setMinimized(false); status('Finishing your save…'); return false; }
+    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving || componentContextSaving) { setMinimized(false); status('Finishing your save…'); return false; }
     if (draft?.comment.trim()) { setMinimized(false); status('Save or cancel your draft before closing.', true); setSettings(false); return false; }
     if (preambleDraft !== null) { setMinimized(false); setSettings(true); status('Save or restore your preamble before closing.', true); return false; }
     if (native) { void changeLayout('closed'); return false; }
@@ -1058,6 +1117,7 @@ export function mount(runtime: Runtime): Controller {
   applyTheme('light');
   void loadTheme();
   void loadDeletionPreference();
+  void loadComponentPreference();
   renderPreamble();
   void loadPreamble();
   void refresh();

@@ -1,4 +1,5 @@
 import type { ElementContext, Note } from './core';
+import type { ComponentContextV1 } from './component-context';
 
 export type StoreChanges = Record<string, { newValue?: unknown }>;
 
@@ -46,6 +47,7 @@ export interface Runtime {
   attachStyles(shadow: ShadowRoot, signal: AbortSignal): void | Promise<void>;
   capture?: () => Promise<string>;
   captureUnavailable?: string;
+  captureComponentContext?: (element: Element, selectorPath: string[], signal: AbortSignal) => Promise<ComponentContextV1 | null>;
   storageError: string;
   settingsLabel: string;
   presentation?: Presentation;
