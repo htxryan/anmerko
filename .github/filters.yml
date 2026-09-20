@@ -82,6 +82,7 @@ site:
   - 'tests/playwright.site.config.ts'
   - 'scripts/site/build-site.mjs'
   - 'scripts/site/serve-site.mjs'
+  - 'scripts/deployment/deploy-site-preview.mjs'
   - 'scripts/deployment/verify-site-deployment.mjs'
   - 'scripts/deployment/capture-deployment-state.mjs'
   - 'tests/deployment/**'
