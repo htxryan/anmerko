@@ -7,6 +7,12 @@ Orion logo from https://orionbrowser.com/android-chrome-192x192.png
 Unmodified 192x192 PNG asset, displayed at 28x28 CSS pixels.
 Orion is a trademark of Kagi. The Orion logo is used to identify the browser.
 
+Android and Apple platform icons from Font Awesome Free by Fonticons, Inc.
+Source: https://github.com/FortAwesome/Font-Awesome/tree/14c65a3747d0f3b751f15831fc719236aea8729d/svgs/brands
+Unmodified SVG assets, styled to match the site theme.
+Icons licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
+Android and Apple are trademarks of their respective owners, used to identify platforms.
+
 alrra/browser-logos repository license:
 
 Copyright (c) Cătălin Mariș
