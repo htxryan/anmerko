@@ -98,7 +98,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     view.append(node('p', 'anmerko', 'journey-brand'));
     if (state.phase === 'idle' || state.phase === 'saved') {
       view.append(node('h1', 'Record a journey'));
-      view.append(node('p', 'Record clicks and screenshots in this tab as you move between websites. Stop whenever you are ready to review.', 'journey-help'));
+      view.append(node('p', 'Record clicks and screenshots in the website tab you launched from as you move between websites. Stop whenever you are ready to review.', 'journey-help'));
       view.append(node('p', 'Screenshots and full URLs can contain personal information, even when entered values are off. Review and remove sensitive details before sharing.', 'journey-notice'));
       if (client.supportsEnteredValues) {
         const label = node('label', undefined, 'journey-option');
@@ -108,7 +108,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         label.append(input, node('span', 'Include entered values'));
         view.append(label);
       } else view.append(node('p', 'Entered values: Off', 'journey-help'));
-      view.append(node('p', 'Up to 5 minutes or 30 steps. Only this tab is recorded.', 'journey-help'));
+      view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded.', 'journey-help'));
       const buttons = node('div', undefined, 'journey-actions');
       buttons.append(action('Start journey', () => client.start(includeEnteredValues), true));
       if (busy) buttons.append(action('Cancel start', () => client.stop(), false, true));
