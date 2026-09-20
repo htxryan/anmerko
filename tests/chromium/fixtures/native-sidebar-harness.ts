@@ -12,11 +12,28 @@ const updated = event();
 const ports: { onMessage: ReturnType<typeof event>; onDisconnect: ReturnType<typeof event>; closed: boolean }[] = [];
 const requests: { tabId: number; version: number }[] = [];
 const pageMessages: unknown[] = [], layoutMessages: unknown[] = [];
+const layoutSequence: string[] = [];
+let deferLayout = false;
+let rejectLayout: ((error: Error) => void) | undefined;
 Object.assign(globalThis, { chrome: {
+  sidebarAction: {
+    open: async () => {},
+    close: async () => { layoutSequence.push('close'); },
+  },
   runtime: {
-    id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`, getManifest: () => ({}),
+    id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`, getManifest: () => ({ sidebar_action: {} }),
     onMessage: event(),
-    async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
+    sendMessage(message: unknown) {
+      layoutMessages.push(message);
+      if (!deferLayout) return Promise.resolve({ ok: true });
+      const request = new Promise<never>((_resolve, reject) => { rejectLayout = reject; });
+      const nativeCatch = request.catch.bind(request);
+      request.catch = handler => {
+        layoutSequence.push('request-catch');
+        return nativeCatch(handler);
+      };
+      return request;
+    },
     connect: () => {
       const port = { onMessage: event(), onDisconnect: event(), closed: false };
       ports.push(port);
@@ -36,7 +53,7 @@ Object.assign(globalThis, { chrome: {
 const controller = mount(extensionRuntime(() => {}));
 const state: ViewState = { url: `${location.origin}/page`, draft: null, scope: 'page', picking: false, settings: false };
 Object.assign(globalThis, { nativeHarness: {
-  requests, pageMessages, layoutMessages,
+  requests, pageMessages, layoutMessages, layoutSequence,
   get connections() { return ports.length; },
   reply(overrides: Partial<ViewState> = {}) { ports.at(-1)!.onMessage.emit({ ...requests.at(-1), ok: true, value: { ...state, ...overrides } }); },
   snapshot() { return controller.viewState(); },
@@ -44,4 +61,6 @@ Object.assign(globalThis, { nativeHarness: {
   disconnect() { const port = ports.at(-1)!; port.closed = true; port.onDisconnect.emit(); },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
+  deferLayout() { deferLayout = true; layoutSequence.length = 0; },
+  rejectLayout(message: string) { const reject = rejectLayout; rejectLayout = undefined; reject?.(new Error(message)); },
 } });

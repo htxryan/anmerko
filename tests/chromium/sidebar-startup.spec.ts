@@ -89,6 +89,26 @@ test('native controls wait for a page snapshot and disconnected settings cannot 
   }]);
 });
 
+test('native Float attaches teardown handling before close and preserves unrelated layout failures', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.requests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply()');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+
+  await run(page, 'nativeHarness.deferLayout()');
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, 'nativeHarness.layoutSequence')).toEqual(['request-catch', 'close']);
+  await run(page, `nativeHarness.rejectLayout("Actor 'Conduits' destroyed before query 'RuntimeMessage' resolved")`);
+  await expect(panel.getByRole('status')).not.toContainText('Could not change layout');
+
+  await run(page, 'nativeHarness.deferLayout()');
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  await run(page, `nativeHarness.rejectLayout('A different layout failure')`);
+  await expect(panel.getByRole('status')).toContainText('Could not change layout');
+});
+
 test('idle port shutdown preserves the current page, draft and unsaved settings without a keepalive', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');

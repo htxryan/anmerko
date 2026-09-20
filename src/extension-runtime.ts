@@ -8,6 +8,13 @@ import type { Store } from './runtime';
 import { journeysEnabled } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 
+const ignoredSidebarTeardown = Symbol('ignored Firefox sidebar teardown');
+
+function isFirefoxSidebarTeardown(error: unknown): boolean {
+  return error instanceof Error
+    && error.message === "Actor 'Conduits' destroyed before query 'RuntimeMessage' resolved";
+}
+
 export function extensionStore(): Store {
   const api = extensionApi();
   return {
@@ -53,9 +60,16 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     },
     async changeLayout(mode, state, mobile) {
       const request = api.runtime.sendMessage({ type: 'ANMERKO_LAYOUT', mode, state: state.url ? state : undefined, tabId: targetTab, windowId, mobile });
+      const guardedRequest = native && mode !== 'dock'
+        ? request.catch(error => {
+          if (!isFirefoxSidebarTeardown(error)) throw error;
+          return ignoredSidebarTeardown;
+        })
+        : request;
       // Firefox requires close() in the original click, before any await/message hop.
       if (native && mode !== 'dock') void closeDock(windowId || 0).catch(() => {});
-      const result = await request;
+      const result = await guardedRequest;
+      if (result === ignoredSidebarTeardown) return;
       if (!result?.ok) throw new Error(result?.error || 'Could not change layout.');
     },
     locate: (note, parent) => pageCommand(parent ? 'ANMERKO_PARENT' : 'ANMERKO_LOCATE', { note }),
