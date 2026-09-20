@@ -1,6 +1,6 @@
 ---
 title: Settings
-description: Choose appearance, deletion confirmation, and a prompt introduction.
+description: Choose appearance, component context, deletion confirmation, and a prompt introduction.
 ---
 
 Open the gear button in the panel header. Saved settings apply across tabs in this browser profile.
@@ -14,6 +14,12 @@ Choose **Light** (default) or **Dark** for anmerko's panels.
 ## Preferences
 
 **Show individual comment deletion confirmation** is on by default. Turn it off for immediate individual deletion. **Delete All Comments** always asks for confirmation.
+
+**Capture component context** is off by default. Enable it to add a component-name hint to new element comments when the website exposes supported React, Vue, or Angular metadata. The setting applies across tabs in this browser profile.
+
+Names can reveal application structure. Vue's inferred names may match source filename basenames, although anmerko does not read source files or paths. Review the hint before sharing it. **Remove component hint** removes it from the current draft; Save keeps that change and Cancel discards it. Turning capture off stops new lookups and retains hints already saved with comments.
+
+The website demo shows **Requires the extension** because it cannot collect component context. See [component hints](/docs/usage/inline-comments/#component-hints) for framework limits.
 
 ## Prompt Preamble
 

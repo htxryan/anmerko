@@ -3,9 +3,16 @@ import { test, expect } from '@playwright/test';
 const panel = (page: import('@playwright/test').Page) => page.getByRole('complementary', { name: 'anmerko feedback panel' });
 
 test('the built demo exposes the current shared settings and comment actions', async ({ page }) => {
+  await page.clock.install();
   await page.goto('/');
   await page.getByRole('button', { name: 'Try the Demo' }).click();
+  await expect(panel(page).getByRole('button', { name: 'Feedback settings', exact: true })).toBeVisible();
+  await page.clock.fastForward(10_000);
   await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const componentCapture = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(componentCapture).toBeDisabled();
+  await expect(componentCapture).not.toBeChecked();
+  await expect(panel(page).locator('.component-context-status')).toHaveText('Requires the extension.');
   const support = panel(page).getByRole('link', { name: 'Buy me a coffee (opens in new tab)' });
   await expect(support).toBeVisible();
   await expect(support).toHaveAttribute('href', 'https://buymeacoffee.com/htxryan');
