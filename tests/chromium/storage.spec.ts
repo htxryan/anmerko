@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { readNotes, saveNote, removeNote, STORAGE_PREFIX, type Note } from '../../src/core';
+import { buildPrompt, readNotes, saveNote, removeNote, STORAGE_PREFIX, type Note } from '../../src/core';
 
 function store() {
   const records: Record<string, unknown> = {};
@@ -15,6 +15,25 @@ const note: Note = {
   id: 'sample', pageUrl: 'https://example.com/', pageTitle: 'Example', comment: 'Clarify this heading',
   createdAt: '2026-09-12T00:00:00Z', updatedAt: '2026-09-12T00:00:00Z',
   element: { selectorPath: ['h1'], tag: 'h1', text: 'Example', label: '', viewport: { width: 1280, height: 720 } },
+};
+
+function inspectingStore() {
+  const records: Record<string, unknown> = {};
+  let writes = 0;
+  return {
+    records,
+    get writes() { return writes; },
+    read: async (key: string) => records[key],
+    readAll: async () => records,
+    write: async (key: string, value: unknown) => { writes++; records[key] = structuredClone(value); },
+    remove: async (key: string) => { delete records[key]; },
+    subscribe: () => () => {},
+  };
+}
+
+const componentContext = {
+  version: 1 as const, framework: 'react' as const, provenance: 'react-dom-fiber-dev' as const,
+  path: ['App', 'SaveButton'], truncated: false,
 };
 
 test('fresh anmerko storage ignores the retired preview namespace', async () => {
@@ -74,4 +93,74 @@ test('memory sessions clone records and notifications and unsubscribe on close',
   memory.clear();
   expect(await memory.readAll()).toEqual({});
   expect(notifications).toBe(1);
+});
+
+test('valid component context round-trips as a fresh normalized snapshot', async () => {
+  const memory = inspectingStore();
+  const enriched: Note = { ...note, element: { ...note.element!, componentContext } };
+  await saveNote(memory, enriched);
+  const [loaded] = await readNotes(memory);
+  expect(loaded).toEqual(enriched);
+  expect(loaded).not.toBe(enriched);
+  expect(loaded.element?.componentContext).not.toBe(componentContext);
+});
+
+test('read strips only invalid optional enrichment without rewriting the stored legacy note', async () => {
+  const memory = inspectingStore();
+  const stored = { ...note, element: { ...note.element, componentContext: { ...componentContext, version: 2, secret: 'do not leak' } } };
+  memory.records[STORAGE_PREFIX + note.id] = stored;
+  const writesBeforeRead = memory.writes;
+
+  expect(await readNotes(memory)).toEqual([note]);
+  expect(memory.writes).toBe(writesBeforeRead);
+  expect(memory.records[STORAGE_PREFIX + note.id]).toBe(stored);
+});
+
+test('save omits malformed or extra context fields instead of persisting raw enrichment', async () => {
+  const memory = inspectingStore();
+  const raw = {
+    ...note,
+    element: {
+      ...note.element,
+      componentContext: { ...componentContext, props: { password: 'secret' } },
+      runtimeObject: { state: 'excluded' },
+    },
+  } as unknown as Note;
+
+  await saveNote(memory, raw);
+  const saved = memory.records[STORAGE_PREFIX + note.id] as Note & { element: Record<string, unknown> };
+  expect(saved.element.componentContext).toBeUndefined();
+  expect(JSON.stringify(saved)).not.toContain('secret');
+  expect(JSON.stringify(saved)).not.toContain('runtimeObject');
+  expect(JSON.stringify(saved)).not.toContain('excluded');
+});
+
+test('page and screenshot notes cannot persist component context', async () => {
+  const memory = inspectingStore();
+  const { element: _element, ...base } = note;
+  const page = { ...base, id: 'page', kind: 'page', componentContext } as unknown as Note;
+  const screenshot = {
+    ...base,
+    id: 'shot',
+    screenshot: {
+      dataUrl: 'data:image/png;base64,QQ==', width: 1, height: 1,
+      region: { x: 0, y: 0, width: 1, height: 1 }, viewport: { width: 1, height: 1 }, scroll: { x: 0, y: 0 },
+      componentContext,
+    },
+  } as unknown as Note;
+
+  await saveNote(memory, page);
+  await saveNote(memory, screenshot);
+  expect(JSON.stringify(memory.records[STORAGE_PREFIX + 'page'])).not.toContain('componentContext');
+  expect(JSON.stringify(memory.records[STORAGE_PREFIX + 'shot'])).not.toContain('componentContext');
+});
+
+test('prompt preparation preserves absent-context output and cannot leak excluded context fields', () => {
+  const baseline = buildPrompt([note]);
+  const raw = {
+    ...note,
+    element: { ...note.element, componentContext: { ...componentContext, source: 'TOP-SECRET-SOURCE' } },
+  } as unknown as Note;
+  expect(buildPrompt([raw])).toBe(baseline);
+  expect(buildPrompt([raw])).not.toContain('TOP-SECRET-SOURCE');
 });
