@@ -7,6 +7,7 @@ import {
 import type { JourneyDraftImage, JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
 import { normalizeJourneyPng } from './journey-image';
+import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { extensionApi } from './platform';
 
 export interface JourneyScreenshotService {
@@ -617,6 +618,41 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   };
 
+  const disconnectPort = (port: chrome.runtime.Port) => {
+    try { port.disconnect(); } catch { /* The sender may already have unloaded. */ }
+  };
+
+  api.runtime.onConnect.addListener(port => {
+    if (port.name !== JOURNEY_EVENTS_PORT_NAME) return;
+    const sender = port.sender;
+    const senderTabId = sender?.tab?.id;
+    const senderWindowId = sender?.tab?.windowId;
+    const state = controller.getState();
+    let senderUrl: string | undefined;
+    try { senderUrl = normalizedUrl(sender?.url); }
+    catch { /* Invalid sender URLs are rejected below. */ }
+    if (sender?.id !== api.runtime.id || sender.frameId !== 0 || !validInteger(senderTabId)
+      || !validInteger(senderWindowId) || !senderUrl
+      || !activeState(state) || senderTabId !== state.ownerTabId || senderWindowId !== state.ownerWindowId) {
+      disconnectPort(port);
+      return;
+    }
+    const receive = (rawMessage: unknown) => {
+      if (!isRecord(rawMessage) || rawMessage.type !== 'ANMERKO_JOURNEY_EVENTS' || !isRecord(rawMessage.batch)) return;
+      const current = controller.getState();
+      if (current.phase !== 'recording' || current.ownerTabId !== senderTabId
+        || current.ownerWindowId !== senderWindowId || rawMessage.batch.sessionId !== current.sessionId
+        || rawMessage.batch.epoch !== current.epoch || rawMessage.batch.documentToken !== current.documentToken) return;
+      try { controller.acceptBatch(rawMessage.batch, senderTabId); } catch { /* Malformed page batches fail closed. */ }
+    };
+    const disconnected = () => {
+      port.onMessage.removeListener(receive);
+      port.onDisconnect.removeListener(disconnected);
+    };
+    port.onMessage.addListener(receive);
+    port.onDisconnect.addListener(disconnected);
+  });
+
   api.runtime.onMessage.addListener((rawMessage, sender, respond) => {
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
@@ -632,11 +668,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
     const state = controller.getState();
     if (!activeState(state) || senderTabId !== state.ownerTabId || sender.tab?.windowId !== state.ownerWindowId) return;
-    if (message.type === 'ANMERKO_JOURNEY_EVENTS' && isRecord(message.batch)
-      && message.batch.sessionId === state.sessionId && message.batch.epoch === state.epoch) {
-      controller.acceptBatch(message.batch, senderTabId);
-      respond(success());
-    } else if (message.type === 'ANMERKO_JOURNEY_STOP'
+    if (message.type === 'ANMERKO_JOURNEY_STOP'
       && message.sessionId === state.sessionId && message.epoch === state.epoch) {
       launchGeneration += 1;
       const operation = controller.stop('user');

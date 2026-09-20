@@ -1,5 +1,7 @@
 type JourneyRuntime = Pick<typeof chrome.runtime, 'id' | 'getManifest' | 'getURL'>;
 
+export const JOURNEY_EVENTS_PORT_NAME = 'anmerko-journey-events-v1';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

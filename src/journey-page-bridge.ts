@@ -1,5 +1,5 @@
 import { stripUrlCredentials, type JourneyEventBatchV1 } from './journey-events';
-import { isJourneyBackgroundSender } from './journey-messaging';
+import { isJourneyBackgroundSender, JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { attachJourneyRecorder } from './journey-recorder';
 import { extensionApi } from './platform';
 import { createUuid } from './uuid';
@@ -18,6 +18,8 @@ type Recording = {
   epoch: number;
   disposeRecorder: () => void;
   strip: JourneyStrip;
+  eventPort?: chrome.runtime.Port;
+  portDisconnected?: () => void;
 };
 
 type HiddenHost = {
@@ -181,10 +183,57 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
     }
   };
 
+  const disconnectEventPort = (active: Recording) => {
+    const port = active.eventPort;
+    const disconnected = active.portDisconnected;
+    active.eventPort = undefined;
+    active.portDisconnected = undefined;
+    if (!port) return;
+    if (disconnected) port.onDisconnect.removeListener(disconnected);
+    try { port.disconnect(); } catch { /* The document or extension context may already be gone. */ }
+  };
+
+  const connectEventPort = (active: Recording): chrome.runtime.Port | undefined => {
+    try {
+      const port = api.runtime.connect({ name: JOURNEY_EVENTS_PORT_NAME });
+      const disconnected = () => {
+        void api.runtime.lastError;
+        if (active.eventPort !== port) return;
+        active.eventPort = undefined;
+        active.portDisconnected = undefined;
+      };
+      port.onDisconnect.addListener(disconnected);
+      active.eventPort = port;
+      active.portDisconnected = disconnected;
+      return port;
+    } catch {
+      return;
+    }
+  };
+
+  const postEventBatch = (active: Recording, batch: JourneyEventBatchV1) => {
+    const port = active.eventPort ?? connectEventPort(active);
+    if (!port) return;
+    try {
+      port.postMessage({ type: 'ANMERKO_JOURNEY_EVENTS', batch });
+      return;
+    } catch {
+      disconnectEventPort(active);
+    }
+    const replacement = connectEventPort(active);
+    if (!replacement) return;
+    try {
+      replacement.postMessage({ type: 'ANMERKO_JOURNEY_EVENTS', batch });
+    } catch {
+      disconnectEventPort(active);
+    }
+  };
+
   const stopRecording = () => {
     const active = recording;
     recording = undefined;
     active?.disposeRecorder();
+    if (active) disconnectEventPort(active);
     active?.strip.host.remove();
     restoreUi();
   };
@@ -218,20 +267,31 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
         ? success(identity()) : failure();
     }
     let strip: JourneyStrip | undefined;
+    let active: Recording | undefined;
     try {
       strip = mountJourneyStrip(message.sessionId, message.epoch, (message.count as number | undefined) ?? 0, sendStop);
+      const nextActive: Recording = {
+        sessionId: message.sessionId,
+        epoch: message.epoch,
+        strip,
+        disposeRecorder: () => {},
+      };
+      active = nextActive;
+      if (!connectEventPort(nextActive)) throw new Error(GENERIC_ERROR);
       const disposeRecorder = attachJourneyRecorder({
         sessionId: message.sessionId,
         epoch: message.epoch,
         documentToken,
         startedAt: message.startedAt,
         onBatch(batch: JourneyEventBatchV1) {
-          void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_EVENTS', batch }).catch(() => {});
+          if (recording === nextActive) postEventBatch(nextActive, batch);
         },
       });
-      recording = { sessionId: message.sessionId, epoch: message.epoch, strip, disposeRecorder };
+      nextActive.disposeRecorder = disposeRecorder;
+      recording = nextActive;
       return success(identity());
     } catch {
+      if (active) disconnectEventPort(active);
       strip?.host.remove();
       return failure();
     }
