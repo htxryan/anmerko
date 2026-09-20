@@ -1,6 +1,8 @@
 import {
+  adoptJourneyDocument,
   acceptInitialImage,
   acceptJourneyEventBatch,
+  commitJourneyNavigation,
   createJourneySession,
   failInitialImage,
   resolveJourneyCapture,
@@ -25,6 +27,7 @@ export interface JourneyPageIdentity {
 
 export interface JourneyControllerAdapter {
   identify(tabId: number): Promise<JourneyPageIdentity>;
+  connect?(tabId: number, expectedUrl: string): Promise<JourneyPageIdentity>;
   capture(tabId: number, identity: JourneyPageIdentity, captureId: string): Promise<JourneyDraftImage>;
   begin(tabId: number, input: {
     sessionId: string;
@@ -32,22 +35,30 @@ export interface JourneyControllerAdapter {
     documentToken: string;
     startedAt: string;
     count: number;
+    expectedUrl: string;
   }): Promise<void>;
-  end(tabId: number, input: { sessionId: string; epoch: number }): Promise<void>;
+  end(tabId: number, input: { sessionId: string; epoch: number; documentToken?: string }): Promise<void>;
   changed(state: JourneySession): void;
   now?(): number;
-  delay?(ms: number): Promise<void>;
+  delay?(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
 export interface JourneyController {
   getState(): JourneySession;
   start(input: { ownerTabId: number; ownerWindowId: number; includeEnteredValues?: boolean }): Promise<void>;
+  observeNavigation(input: { ownerTabId: number; url: string; kind: 'document' | 'same-document' }): void;
   acceptBatch(batch: unknown, senderTabId: number): void;
   stop(reason?: StopReason): Promise<void>;
   discard(): Promise<void>;
 }
 
 export type JourneyControllerErrorCode = 'busy' | 'invalid-start' | 'owner-unavailable' | 'initial-capture-failed';
+
+interface PendingDocumentHandshake {
+  previousDocumentToken: string;
+  documentToken: string;
+  adopted: boolean;
+}
 
 export class JourneyControllerError extends Error {
   constructor(readonly code: JourneyControllerErrorCode, message: string) {
@@ -57,13 +68,16 @@ export class JourneyControllerError extends Error {
 }
 
 const POST_ACTION_DELAY_MS = 500;
+const NAVIGATION_WINDOW_MS = 5_000;
 
 export function createJourneyController(adapter: JourneyControllerAdapter): JourneyController {
   let state: JourneySession = { phase: 'idle', epoch: 0 };
   let workGeneration = 0;
   let launching = false;
+  let navigationAbort: AbortController | undefined;
+  let pendingHandshake: PendingDocumentHandshake | undefined;
   const now = () => adapter.now?.() ?? Date.now();
-  const delay = (ms: number) => adapter.delay?.(ms) ?? new Promise<void>(resolve => setTimeout(resolve, ms));
+  const delay = (ms: number, signal?: AbortSignal) => adapter.delay?.(ms, signal) ?? abortableDelay(ms, signal);
   const publish = (next: JourneySession) => {
     state = next;
     adapter.changed(state);
@@ -116,6 +130,7 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
         sessionId: accepted.sessionId, epoch: accepted.epoch,
         documentToken: accepted.documentToken,
         startedAt: accepted.draft.startedAt, count: accepted.draft.steps.length,
+        expectedUrl: stripUrlCredentials(after.url),
       });
       if (!isCurrentStart(generation, starting)) {
         await safeEnd(input.ownerTabId, accepted.sessionId, state.epoch);
@@ -145,10 +160,12 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
     }
     const validated = validateJourneyEventBatch(input);
     if (!validated.ok) return;
+    const expectedUrl = committedUrl(state);
+    if (!expectedUrl || validated.value.events.some(event => !sameUrl(event.sourceUrl, expectedUrl))) return;
     const previous = state;
     let next = acceptJourneyEventBatch(previous, validated.value);
     if (next === previous) return;
-    const generation = ++workGeneration;
+    const generation = invalidateWork();
     if (next.phase !== 'recording') {
       publish(next);
       void safeEnd(previous.ownerTabId, previous.sessionId, next.epoch);
@@ -167,6 +184,195 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
     }
     publish(next);
     if (latestCaptureId) void captureAfterAction(generation, latestCaptureId);
+  }
+
+  function observeNavigation(input: { ownerTabId: number; url: string; kind: 'document' | 'same-document' }): void {
+    if (state.phase !== 'recording' || input.ownerTabId !== state.ownerTabId) return;
+    let toUrl: string;
+    try { toUrl = stripUrlCredentials(input.url); }
+    catch { return; }
+    const sourceUrl = committedUrl(state);
+    if (!sourceUrl) return;
+    const previous = state;
+    const receiptMs = Math.max(now(), Date.parse(previous.draft.steps.at(-1)?.observedAt ?? previous.draft.startedAt));
+    const observedAt = new Date(receiptMs).toISOString();
+    const lastElapsed = previous.draft.steps.at(-1)?.elapsedMs ?? 0;
+    const elapsedMs = Math.max(lastElapsed, elapsed(Date.parse(previous.draft.startedAt), observedAt));
+    const generation = invalidateWork();
+    const captureId = newId('capture');
+    let next: JourneySession = settlePendingCaptures(previous, 'superseded');
+    if (next.phase !== 'recording') return;
+
+    let handshake = pendingHandshake;
+    let documentToken = next.documentToken;
+    if (input.kind === 'document') {
+      documentToken = uniqueProvisionalToken(next);
+      handshake = {
+        previousDocumentToken: pendingHandshake && !pendingHandshake.adopted
+          ? pendingHandshake.previousDocumentToken
+          : next.documentToken,
+        documentToken,
+        adopted: false,
+      };
+    }
+    const beforeCommit = next;
+    next = commitJourneyNavigation(beforeCommit, {
+      epoch: next.epoch,
+      id: newId('step'),
+      observedAt,
+      elapsedMs,
+      sourceUrl,
+      toUrl,
+      previousDocumentToken: next.documentToken,
+      documentToken,
+      image: { status: 'pending', captureId },
+    });
+    if (next === beforeCommit) {
+      if (beforeCommit !== previous) publish(beforeCommit);
+      return;
+    }
+    if (next.phase !== 'recording') {
+      pendingHandshake = undefined;
+      publish(next);
+      void safeEnd(previous.ownerTabId, previous.sessionId, next.epoch);
+      return;
+    }
+    pendingHandshake = handshake;
+    publish(next);
+    const abort = new AbortController();
+    navigationAbort = abort;
+    void completeNavigation({
+      generation, captureId, toUrl, observedMs: receiptMs,
+      handshake: handshake ? { ...handshake } : undefined,
+      handshakeReady: !handshake,
+      signal: abort.signal,
+    });
+  }
+
+  async function completeNavigation(input: {
+    generation: number;
+    captureId: string;
+    toUrl: string;
+    observedMs: number;
+    handshake?: PendingDocumentHandshake;
+    handshakeReady: boolean;
+    signal: AbortSignal;
+  }): Promise<void> {
+    const minimum = delay(POST_ACTION_DELAY_MS, input.signal);
+    const timeout = delay(NAVIGATION_WINDOW_MS, input.signal).then(() => 'timeout' as const);
+    const work = performNavigation(input, minimum).then(() => 'complete' as const, error => {
+      if (isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
+        settleCapture(input.captureId, captureFailureFromError(error));
+        if (input.handshake && !input.handshakeReady) void stop('capture-failed');
+      }
+      return 'complete' as const;
+    });
+    const result = await Promise.race([work, timeout]);
+    if (result === 'timeout' && isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
+      settleCapture(input.captureId, 'navigation-timeout');
+      if (input.handshake && !input.handshakeReady) void stop('capture-failed');
+    }
+    if (navigationAbort?.signal === input.signal) {
+      navigationAbort.abort();
+      navigationAbort = undefined;
+    }
+  }
+
+  async function performNavigation(input: {
+    generation: number;
+    captureId: string;
+    toUrl: string;
+    observedMs: number;
+    handshake?: PendingDocumentHandshake;
+    handshakeReady: boolean;
+  }, minimum: Promise<void>): Promise<void> {
+    if (input.handshake) {
+      const connect = adapter.connect ?? ((tabId: number) => adapter.identify(tabId));
+      const identity = await connect(state.phase === 'recording' ? state.ownerTabId : -1, input.toUrl);
+      if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl) || state.phase !== 'recording') return;
+      if (!identity.visible || !sameUrl(identity.url, input.toUrl)) {
+        throw captureFailure('page-document-changed');
+      }
+      let adopted = state;
+      if (input.handshake.adopted) {
+        if (state.documentToken !== input.handshake.documentToken
+          || identity.documentToken !== input.handshake.documentToken) {
+          throw captureFailure('page-document-changed');
+        }
+      } else {
+        if (identity.documentToken === input.handshake.previousDocumentToken) {
+          throw captureFailure('page-document-changed');
+        }
+        const transitioned = adoptJourneyDocument(state, {
+          epoch: state.epoch,
+          previousDocumentToken: input.handshake.documentToken,
+          documentToken: identity.documentToken,
+        });
+        if (transitioned === state || transitioned.phase !== 'recording') {
+          throw captureFailure('page-document-changed');
+        }
+        adopted = transitioned;
+        pendingHandshake = {
+          previousDocumentToken: input.handshake.previousDocumentToken,
+          documentToken: identity.documentToken,
+          adopted: true,
+        };
+        publish(adopted);
+      }
+      await adapter.begin(adopted.ownerTabId, {
+        sessionId: adopted.sessionId,
+        epoch: adopted.epoch,
+        documentToken: adopted.documentToken,
+        startedAt: adopted.draft.startedAt,
+        count: adopted.draft.steps.length,
+        expectedUrl: input.toUrl,
+      });
+      if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
+        await cleanupStaleBegin(adopted.ownerTabId, adopted.sessionId, adopted.epoch, adopted.documentToken);
+        return;
+      }
+      pendingHandshake = undefined;
+      input.handshakeReady = true;
+    }
+
+    await minimum;
+    if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl) || state.phase !== 'recording') return;
+    const current = state;
+    const before = await adapter.identify(current.ownerTabId);
+    if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) return;
+    if (!before.visible || before.documentToken !== current.documentToken || !sameUrl(before.url, input.toUrl)) {
+      settleCapture(input.captureId, before.visible ? 'page-document-changed' : 'capture-denied');
+      return;
+    }
+    const image = await adapter.capture(current.ownerTabId, before, input.captureId);
+    if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) return;
+    const after = await adapter.identify(current.ownerTabId);
+    if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) return;
+    const capturedMs = Date.parse(image.capturedAt);
+    if (!Number.isFinite(capturedMs) || capturedMs < input.observedMs + POST_ACTION_DELAY_MS
+      || capturedMs >= input.observedMs + NAVIGATION_WINDOW_MS
+      || capturedMs >= Date.parse(current.deadlineAt)) {
+      settleCapture(input.captureId, 'navigation-timeout');
+      return;
+    }
+    if (!after.visible || !sameDocumentAndUrl(before, after) || !sameUrl(after.url, input.toUrl)
+      || !sameUrl(image.captureUrl, input.toUrl)) {
+      settleCapture(input.captureId, after.visible ? 'page-document-changed' : 'capture-denied');
+      return;
+    }
+    if (!sameViewport(before, after) || !imageMatchesViewport(image, after)) {
+      settleCapture(input.captureId, 'viewport-changed');
+      return;
+    }
+    const resolved = resolveJourneyCapture(state, {
+      epoch: current.epoch,
+      documentToken: current.documentToken,
+      captureId: input.captureId,
+      status: 'retained',
+      imageId: newId('image'),
+      image,
+    });
+    if (resolved !== state) publish(resolved);
   }
 
   async function captureAfterAction(generation: number, captureId: string): Promise<void> {
@@ -226,10 +432,27 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
     if (next !== state) publish(next);
   }
 
+  function settlePendingCaptures(current: RecordingJourneySession, reason: CaptureFailure): RecordingJourneySession {
+    let next = current;
+    for (const step of current.draft.steps) {
+      if (step.image.status !== 'pending') continue;
+      const resolved = resolveJourneyCapture(next, {
+        epoch: next.epoch,
+        documentToken: next.documentToken,
+        captureId: step.image.captureId,
+        status: 'unavailable',
+        reason,
+      });
+      if (resolved.phase === 'recording') next = resolved;
+    }
+    return next;
+  }
+
   async function stop(reason: StopReason = 'user'): Promise<void> {
     const previous = state;
-    ++workGeneration;
+    invalidateWork();
     launching = false;
+    pendingHandshake = undefined;
     if (previous.phase !== 'starting' && previous.phase !== 'recording') return;
     const stopped = stopJourney(previous, {
       epoch: previous.epoch,
@@ -242,16 +465,17 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
 
   async function discard(): Promise<void> {
     const previous = state;
-    ++workGeneration;
+    invalidateWork();
     launching = false;
+    pendingHandshake = undefined;
     if (previous.phase === 'idle') return;
     const next: JourneySession = { phase: 'idle', epoch: previous.epoch + 1 };
     publish(next);
     if ('ownerTabId' in previous && 'sessionId' in previous) await safeEnd(previous.ownerTabId, previous.sessionId, next.epoch);
   }
 
-  async function safeEnd(tabId: number, sessionId: string, epoch: number): Promise<void> {
-    try { await adapter.end(tabId, { sessionId, epoch }); }
+  async function safeEnd(tabId: number, sessionId: string, epoch: number, documentToken?: string): Promise<void> {
+    try { await adapter.end(tabId, { sessionId, epoch, ...(documentToken ? { documentToken } : {}) }); }
     catch { /* State is already inactive; teardown is best effort. */ }
   }
 
@@ -264,11 +488,53 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
       && state.draft.steps.some(step => step.image.status === 'pending' && step.image.captureId === captureId);
   }
 
-  return { getState: () => state, start, acceptBatch, stop, discard };
+  function isCurrentNavigation(generation: number, captureId: string, expectedUrl: string): boolean {
+    return isCurrentRecording(generation, captureId) && state.phase === 'recording'
+      && sameUrl(committedUrl(state) ?? '', expectedUrl);
+  }
+
+  function invalidateWork(): number {
+    navigationAbort?.abort();
+    navigationAbort = undefined;
+    return ++workGeneration;
+  }
+
+  async function cleanupStaleBegin(tabId: number, sessionId: string, epoch: number, documentToken: string): Promise<void> {
+    if (state.phase === 'recording' && state.sessionId === sessionId && state.epoch === epoch
+      && state.documentToken === documentToken) return;
+    await safeEnd(tabId, sessionId, epoch, documentToken);
+  }
+
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard };
 }
 
 function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function uniqueProvisionalToken(state: RecordingJourneySession): string {
+  let token = newId('document-pending');
+  while (token === state.documentToken || Object.hasOwn(state.documentCounters, token)) token = newId('document-pending');
+  return token;
+}
+
+function committedUrl(state: RecordingJourneySession): string | undefined {
+  const step = state.draft.steps.at(-1);
+  if (!step) return;
+  return step.kind === 'navigation' ? step.navigation.toUrl : step.sourceUrl;
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal?.aborted) { resolve(); return; }
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+    function finish() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    }
+  });
 }
 
 function elapsed(startedMs: number, observedAt: string): number {
@@ -313,4 +579,8 @@ function captureFailureFromError(error: unknown): CaptureFailure {
     if (typeof reason === 'string' && CAPTURE_FAILURES.includes(reason as CaptureFailure)) return reason as CaptureFailure;
   }
   return 'capture-error';
+}
+
+function captureFailure(reason: CaptureFailure): Error & { reason: CaptureFailure } {
+  return Object.assign(new Error('Journey capture failed.'), { reason });
 }

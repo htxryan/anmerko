@@ -211,6 +211,12 @@ export interface NavigationInput {
   image: DraftImageState;
 }
 
+export interface AdoptJourneyDocumentInput {
+  epoch: number;
+  previousDocumentToken: string;
+  documentToken: string;
+}
+
 interface JourneyCaptureResolutionBase {
   epoch: number;
   documentToken: string;
@@ -670,7 +676,7 @@ export function acceptInitialImage(state: JourneySession, input: InitialImageInp
     }],
     images: { [input.imageId]: image },
   };
-  return { ...state, phase: 'recording', documentCounters: {}, draft };
+  return { ...state, phase: 'recording', documentCounters: { [state.documentToken]: 0 }, draft };
 }
 
 export function failInitialImage(state: JourneySession): JourneySession {
@@ -783,6 +789,18 @@ export function commitJourneyNavigation(state: JourneySession, input: Navigation
   return next.draft.steps.length >= JOURNEY_LIMITS.maxSteps
     ? stopJourney(next, { epoch: next.epoch, stoppedAt: input.observedAt, reason: 'step-limit' })
     : next;
+}
+
+export function adoptJourneyDocument(state: JourneySession, input: AdoptJourneyDocumentInput): JourneySession {
+  if (state.phase !== 'recording' || input.epoch !== state.epoch
+    || input.previousDocumentToken !== state.documentToken || !validId(input.documentToken)
+    || input.documentToken === input.previousDocumentToken
+    || Object.hasOwn(state.documentCounters, input.documentToken)) return state;
+  return {
+    ...state,
+    documentToken: input.documentToken,
+    documentCounters: { ...state.documentCounters, [input.documentToken]: 0 },
+  };
 }
 
 export function resolveJourneyCapture(state: JourneySession, input: JourneyCaptureResolution): JourneySession {
