@@ -34,6 +34,9 @@ const vueRoutes = ['development', 'production', 'production-devtools'].map(mode 
 const mixedRoutes = [
   { id: 'mixed-islands', framework: 'mixed', version: null, mode: 'islands', path: '/mixed/islands', asset: '/assets/mixed.js' },
   { id: 'mixed-dual-association', framework: 'mixed', version: null, mode: 'dual-association', path: '/mixed/dual-association', asset: '/assets/mixed.js' },
+  { id: 'mixed-react-angular-association', framework: 'mixed', version: null, mode: 'react-angular-association', path: '/mixed/react-angular-association', asset: '/assets/mixed.js' },
+  { id: 'mixed-vue-angular-association', framework: 'mixed', version: null, mode: 'vue-angular-association', path: '/mixed/vue-angular-association', asset: '/assets/mixed.js' },
+  { id: 'mixed-triple-association', framework: 'mixed', version: null, mode: 'triple-association', path: '/mixed/triple-association', asset: '/assets/mixed.js' },
 ];
 const angularRoutes = ['development', 'production'].map(mode => ({
   id: `angular-22.1.7-${mode}`,
@@ -180,18 +183,29 @@ export async function buildFixtures() {
   await writeFile(resolve(outputDirectory, 'unsupported.js'), `const reads={value:0};const target=document.querySelector('#unsupported-target');Object.defineProperty(target,'__reactFiber$unsupported',{get(){reads.value+=1;throw new Error('forbidden unknown shape')}});Object.defineProperty(globalThis,'__ANMERKO_FIXTURE__',{value:Object.freeze({ready:true,framework:'unknown',version:null,mode:'unsupported',targets:Object.freeze({unknown:{id:'unsupported-target',expectedPath:[],kind:'unknown-shape'}}),privacyReads:reads})});\n`);
 }
 
+function mixedShell(mode) {
+  if (mode === 'islands') return '<div id="mixed-react-root"></div><div id="mixed-vue-root"></div>';
+  if (mode === 'dual-association') return '<div id="mixed-dual-root"></div>';
+  if (mode === 'react-angular-association') return '<div id="mixed-react-angular-root"></div>';
+  if (mode === 'vue-angular-association') return '<div id="mixed-vue-angular-root"></div>';
+  if (mode === 'triple-association') return '<div id="mixed-triple-root"></div>';
+  throw new Error(`Unknown mixed fixture shell: ${mode}`);
+}
+
 function fixtureHtml(route) {
   const vue = route.framework === 'vue';
   const mixed = route.framework === 'mixed';
   const angular = route.framework === 'angular';
   const target = route.id === 'plain' ? '<button id="plain-target">Plain target</button>'
     : route.id === 'unsupported' ? '<button id="unsupported-target">Unsupported marker shape</button>'
-      : route.mode === 'islands' ? '<div id="mixed-react-root"></div><div id="mixed-vue-root"></div>'
-        : route.mode === 'dual-association' ? '<div id="mixed-dual-root"></div>'
-          : angular ? ''
+      : mixed ? mixedShell(route.mode)
+        : angular ? ''
       : vue ? '<div id="vue-root"></div><div id="vue-teleport"></div><div id="vue-hydration"><section id="vue-hydration-owner"><p id="vue-hydrated-first">Hydrated first</p><span id="vue-hydrated-later">Hydrated later</span></section></div>'
       : '<div id="react-root"></div><div id="react-portal"></div><div id="react-shadow-host"></div>';
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${route.id}</title><style>body{font:16px system-ui;margin:24px}button{min-height:36px;margin:6px}</style><body data-framework="${route.framework}" data-mode="${route.mode}"${mixed ? ` data-fixture-case="${route.mode}"` : ''}><h1>${route.id}</h1>${target}<script${angular ? ' type="module"' : ''} src="${route.asset}"></script></body></html>`;
+  const scripts = mixed
+    ? `<script src="${route.asset}"></script><script type="module" src="/angular-assets/development/main.js"></script>`
+    : `<script${angular ? ' type="module"' : ''} src="${route.asset}"></script>`;
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${route.id}</title><style>body{font:16px system-ui;margin:24px}button{min-height:36px;margin:6px}</style><body data-framework="${route.framework}" data-mode="${route.mode}"${mixed ? ` data-fixture-case="${route.mode}"` : ''}><h1>${route.id}</h1>${target}${scripts}</body></html>`;
 }
 
 function assetFile(route) {
@@ -308,18 +322,22 @@ async function checkFixtures() {
           const target = elementFor(id);
           return target ? Object.getOwnPropertyNames(target).find(name => name.startsWith('__reactFiber$')) || null : 'missing';
         };
-        const reactPathFor = id => {
+        const reactShapeFor = id => {
           const target = elementFor(id);
           const key = target && Object.getOwnPropertyNames(target).find(name => name.startsWith('__reactFiber$'));
-          const names = [];
-          for (let fiber = key ? target[key] : null; fiber; fiber = fiber.return) {
-            const type = fiber.elementType ?? fiber.type;
-            const name = typeof type === 'function' ? type.displayName || type.name
-              : type && typeof type === 'object' ? type.displayName || type.type?.displayName || type.type?.name || type.render?.displayName || type.render?.name
-                : null;
-            if (name) names.push(name);
+          const direct = key ? Object.getOwnPropertyDescriptor(target, key)?.value : null;
+          const tags = [];
+          for (let fiber = direct; fiber; fiber = Object.getOwnPropertyDescriptor(fiber, 'return')?.value) {
+            tags.push(Object.getOwnPropertyDescriptor(fiber, 'tag')?.value);
           }
-          return names.reverse();
+          const debugFields = direct ? ['_debugSource', '_debugOwner', '_debugStack', '_debugInfo']
+            .filter(name => Object.hasOwn(direct, name)) : [];
+          return {
+            exactHost: !!direct && Object.getOwnPropertyDescriptor(direct, 'tag')?.value === 5
+              && Object.getOwnPropertyDescriptor(direct, 'stateNode')?.value === target,
+            tags,
+            debugFields,
+          };
         };
         const vueMarkerFor = id => {
           const target = document.getElementById(id);
@@ -341,8 +359,8 @@ async function checkFixtures() {
         return {
           record,
           markers: Object.fromEntries(Object.values(record.targets).map(target => [target.id, markerFor(target.id)])),
-          reactPaths: record.framework === 'react'
-            ? Object.fromEntries(Object.values(record.targets).map(target => [target.id, reactPathFor(target.id)])) : {},
+          reactShapes: record.framework === 'react'
+            ? Object.fromEntries(Object.values(record.targets).map(target => [target.id, reactShapeFor(target.id)])) : {},
           vueMarkers: Object.fromEntries(Object.values(record.targets).map(target => [target.id, vueMarkerFor(target.id)])),
           vueInfo: Object.fromEntries(Object.values(record.targets).map(target => [target.id, vueInfoFor(target.id)])),
         };
@@ -354,8 +372,20 @@ async function checkFixtures() {
         assert.equal(result.record.rendererEntry, route.mode === 'profiling' ? 'react-dom/profiling' : 'react-dom/client');
         assert.deepEqual(result.record.privacyReads, { props: 0, state: 0, source: 0, stack: 0 });
         assert.ok(Object.values(result.markers).every(marker => typeof marker === 'string' && marker.startsWith('__reactFiber$')));
-        if (route.mode === 'development') for (const target of Object.values(result.record.targets)) {
-          assert.deepEqual(result.reactPaths[target.id], target.expectedPath);
+        for (const shape of Object.values(result.reactShapes)) {
+          assert.equal(shape.exactHost, true);
+          assert.equal(shape.tags[0], 5);
+          assert.equal(shape.tags.at(-1), 3);
+        }
+        if (route.mode === 'development') {
+          for (const shape of Object.values(result.reactShapes)) {
+            assert.ok(shape.debugFields.includes('_debugOwner'));
+            assert.ok(shape.debugFields.includes('_debugSource')
+              || (shape.debugFields.includes('_debugStack') && shape.debugFields.includes('_debugInfo')));
+          }
+          const memoTags = result.reactShapes['react-memo-button'].tags;
+          assert.ok(memoTags.includes(14), 'custom-comparator memo must render a tag-14 wrapper');
+          assert.ok(memoTags.includes(0), 'tag-14 memo must retain its inner function Fiber');
         }
       }
       if (route.framework === 'vue') {
@@ -378,17 +408,27 @@ async function checkFixtures() {
       }
       if (route.framework === 'mixed') {
         const associations = await page.evaluate(() => Object.fromEntries(Object.values(globalThis.__ANMERKO_FIXTURE__.targets).map(target => {
-          const element = document.getElementById(target.id);
+          let root = document;
+          let element = null;
+          for (const [index, selector] of target.selectorPath.entries()) {
+            element = root.querySelector(selector);
+            if (!element) break;
+            if (index < target.selectorPath.length - 1) root = element.shadowRoot;
+          }
           return [target.id, {
-            react: !!Object.getOwnPropertyNames(element).find(name => name.startsWith('__reactFiber$')),
-            vue: Object.hasOwn(element, '__vueParentComponent'),
+            react: !!element && !!Object.getOwnPropertyNames(element).find(name => name.startsWith('__reactFiber$')),
+            vue: !!element && Object.hasOwn(element, '__vueParentComponent'),
+            angular: !!element && (globalThis.ng?.getComponent(element) != null
+              || globalThis.ng?.getOwningComponent(element) != null),
           }];
         })));
-        if (route.mode === 'islands') assert.deepEqual(associations, {
-          'mixed-react-button': { react: true, vue: false },
-          'mixed-vue-button': { react: false, vue: true },
-        });
-        else assert.deepEqual(associations, { 'mixed-dual-button': { react: true, vue: true } });
+        for (const target of Object.values(result.record.targets)) {
+          assert.deepEqual(
+            Object.entries(associations[target.id]).filter(([, present]) => present).map(([framework]) => framework),
+            target.expectedFrameworks,
+            `${route.id} target ${target.id} framework associations`,
+          );
+        }
       }
     }
     assert.deepEqual(failures, []);
