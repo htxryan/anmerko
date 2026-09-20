@@ -642,6 +642,11 @@ test('Firefox production extension covers the shared component-context fixture m
     const row = await ui('.component-context-path');
     return row ? row.getText() : null;
   };
+  const readyComponentPreference = expected => driver.wait(async () => {
+    const toggle = await ui('.component-context-toggle');
+    if (!toggle || !(await toggle.isEnabled())) return false;
+    return await toggle.getAttribute('aria-checked') === expected ? toggle : false;
+  }, 5000, `component setting becomes enabled and ${expected === 'true' ? 'on' : 'off'}`);
   const privacyReads = () => driver.executeScript(() => {
     const angular = globalThis.__BRIEFMARK_ANGULAR_FIXTURE__;
     return globalThis.__ANMERKO_FIXTURE__?.privacyReads || angular?.sentinels.reads;
@@ -650,8 +655,7 @@ test('Firefox production extension covers the shared component-context fixture m
   await openScenario(first);
   await activate();
   await click('.settings-button');
-  const preference = await ui('.component-context-toggle');
-  await driver.wait(() => preference.isEnabled(), 5000, 'component setting becomes enabled');
+  const preference = await readyComponentPreference('false');
   assert.equal(await preference.getAttribute('aria-checked'), 'false');
   await click('.settings-back');
   await selectScenario(first);
@@ -659,15 +663,18 @@ test('Firefox production extension covers the shared component-context fixture m
   assert.ok(Object.values(await privacyReads()).every(value => value === 0));
   await click('.cancel');
   await click('.settings-button');
+  await readyComponentPreference('false');
   await click('.component-context-toggle');
-  assert.equal(await (await ui('.component-context-toggle')).getAttribute('aria-checked'), 'true');
+  const enabledPreference = await readyComponentPreference('true');
+  assert.equal(await enabledPreference.getAttribute('aria-checked'), 'true');
   await click('.settings-back');
 
   const outcomes = [];
   for (const scenario of matrix) {
     await openScenario(scenario);
     await activate();
-    assert.equal(await (await ui('.component-context-toggle')).getAttribute('aria-checked'), 'true');
+    const persistedPreference = await readyComponentPreference('true');
+    assert.equal(await persistedPreference.getAttribute('aria-checked'), 'true');
     await selectScenario(scenario);
     if (scenario.expectedPath) {
       await driver.wait(async () => await contextPath() === scenario.expectedPath.join(' → '), 5000,
