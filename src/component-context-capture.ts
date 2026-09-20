@@ -11,7 +11,7 @@ export function componentContextCapture() {
       stop?.();
       if (!runtime.captureComponentContext || !element.isConnected) return;
       const controller = new AbortController();
-      const observer = new MutationObserver(() => { if (!element.isConnected) cancel(); });
+      const observer = new MutationObserver(() => { if (!element.isConnected || !current()) cancel(); });
       const cancel = () => {
         controller.abort();
         observer.disconnect();
@@ -20,6 +20,11 @@ export function componentContextCapture() {
       };
       const timer = setTimeout(cancel, 750);
       stop = cancel;
+      let root: Node = element.getRootNode();
+      while (root instanceof ShadowRoot) {
+        observer.observe(root, { childList: true, subtree: true });
+        root = root.host.getRootNode();
+      }
       observer.observe(element.ownerDocument, { childList: true, subtree: true });
       // Runtime failures and timeouts are ordinary absence, never editor errors.
       void Promise.resolve().then(() => controller.signal.aborted ? null
