@@ -369,6 +369,21 @@ test('rejects a non-finite initial cooperative clock before framework calls', as
   });
 });
 
+test('rejects a result when final UTF-8 serialization exhausts the clock budget', async ({ page }) => {
+  const probeTarget = await installFakeAngular(page, ['_ClockComponent']);
+  await page.evaluate(() => {
+    let elapsed = 0;
+    const encode = TextEncoder.prototype.encode;
+    Object.defineProperty(performance, 'now', { configurable: true, value: () => elapsed });
+    TextEncoder.prototype.encode = function (value) {
+      const result = encode.call(this, value);
+      elapsed = 11;
+      return result;
+    };
+  });
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+});
+
 test('uses the cooperative 25 ms Android clock cap', async ({ page }) => {
   const probeTarget = await installFakeAngular(page, ['_AndroidComponent']);
   await page.evaluate(() => {
