@@ -57,8 +57,25 @@ test('production action, native docking, comments, capture, export and restart',
   await panel().getByRole('button', { name: 'Dock sidebar', exact: true }).click();
   dock = await sidebar(session.context, page);
   await expect.poll(() => dock.value('#comment')).toBe('Make this headline clearer.');
+  session.evidence.sidebarFloat = { before: { targetId: dock.targetId } };
   await dock.click('.dock');
-  await expect(panel().getByLabel('Comment', { exact: true })).toHaveValue('Make this headline clearer.');
+  try {
+    await expect(panel().getByLabel('Comment', { exact: true })).toHaveValue('Make this headline clearer.');
+  } catch (error) {
+    const [targets, surface] = await Promise.allSettled([dock.targets(), dock.surface()]);
+    session.evidence.sidebarFloat.after = {
+      targets: targets.status === 'fulfilled' ? targets.value : null,
+      surface: surface.status === 'fulfilled' ? surface.value : null,
+      page: await page.evaluate(() => {
+        const root = document.querySelector('anmerko-overlay')?.shadowRoot;
+        return {
+          host: !!root, panelHidden: root?.querySelector('.panel')?.hidden ?? null,
+          resumeHidden: root?.querySelector('.resume')?.hidden ?? null,
+        };
+      }),
+    };
+    throw error;
+  }
   await panel().getByLabel('Comment', { exact: true }).press('Control+Enter');
   await expect(panel().locator('.note')).toHaveCount(1);
   await panel().getByRole('button', { name: 'Minimize comments', exact: true }).click();

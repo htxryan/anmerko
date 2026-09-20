@@ -44,6 +44,21 @@ export async function sidebar(context: BrowserContext, page: Page) {
     const closesTarget = selector === '.dock' || selector === '.minimize';
     return evaluate(`const button = root.querySelector(${JSON.stringify(selector)}); if (!button) throw new Error('Sidebar button missing'); ${closesTarget ? 'setTimeout(() => button.click(), 0)' : 'button.click()'};`);
   }
+  async function targets() {
+    const snapshot = await cdp.send('Target.getTargets');
+    return snapshot.targetInfos.filter(target => target.url.endsWith('/sidebar.html')).map(target => ({
+      targetId: target.targetId, type: target.type, attached: target.attached,
+    }));
+  }
+  const surface = () => evaluate(`return {
+    hidden: document.hidden, visibilityState: document.visibilityState,
+    panelHidden: root?.querySelector('.panel')?.hidden ?? null,
+    promptHidden: root?.querySelector('.connection-prompt')?.hidden ?? null
+  }`);
   await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden")).toBe(true);
-  return { evaluate, command, click, value: (selector: string) => evaluate(`return root.querySelector(${JSON.stringify(selector)})?.value`), close: () => cdp.send('Target.closeTarget', { targetId }) };
+  return {
+    targetId, evaluate, command, click, targets, surface,
+    value: (selector: string) => evaluate(`return root.querySelector(${JSON.stringify(selector)})?.value`),
+    close: () => cdp.send('Target.closeTarget', { targetId }),
+  };
 }

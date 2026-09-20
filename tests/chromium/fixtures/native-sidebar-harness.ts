@@ -1,5 +1,6 @@
 import { mount } from '../../../src/content';
 import { extensionRuntime } from '../../../src/extension-runtime';
+import { bindSidebarConnection } from '../../../src/sidebar-connection';
 import type { ViewState } from '../../../src/runtime';
 
 type Listener = (...args: any[]) => void;
@@ -9,10 +10,18 @@ const event = () => {
     emit(...args: any[]) { listeners.forEach(listener => listener(...args)); } };
 };
 const updated = event();
-const ports: { onMessage: ReturnType<typeof event>; onDisconnect: ReturnType<typeof event>; closed: boolean }[] = [];
+const ports: {
+  onMessage: ReturnType<typeof event>;
+  onDisconnect: ReturnType<typeof event>;
+  serverMessages?: ReturnType<typeof event>;
+  serverDisconnect?: ReturnType<typeof event>;
+  closed: boolean;
+}[] = [];
 const requests: any[] = [];
 const pageMessages: unknown[] = [], layoutMessages: unknown[] = [];
 const layoutSequence: string[] = [];
+const backgroundModes: string[] = [];
+const backgroundOwners = new Map<number, object>();
 let delayQuery = false;
 let releaseQuery: (() => void) | undefined;
 Object.assign(globalThis, { chrome: {
@@ -25,12 +34,13 @@ Object.assign(globalThis, { chrome: {
     onMessage: event(),
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
-      const port = { onMessage: event(), onDisconnect: event(), closed: false };
+      const port: (typeof ports)[number] = { onMessage: event(), onDisconnect: event(), closed: false };
       ports.push(port);
       return { ...port, postMessage(request: any) {
         if (port.closed) throw new Error('Disconnected port');
         if (request.type === 'ANMERKO_SIDEBAR_LAYOUT') layoutSequence.push('port-post');
         requests.push(request);
+        port.serverMessages?.emit(request);
       }, disconnect() { port.closed = true; } };
     },
   },
@@ -51,18 +61,39 @@ Object.assign(globalThis, { chrome: {
 const controller = mount(extensionRuntime(() => {}));
 const state: ViewState = { url: `${location.origin}/page`, draft: null, scope: 'page', picking: false, settings: false };
 Object.assign(globalThis, { nativeHarness: {
-  requests, pageMessages, layoutMessages, layoutSequence,
+  requests, pageMessages, layoutMessages, layoutSequence, backgroundModes,
   get startupRequests() { return requests.filter(request => !request.type); },
   get connections() { return ports.length; },
   reply(overrides: Partial<ViewState> = {}) { ports.at(-1)!.onMessage.emit({ ...requests.at(-1), ok: true, value: { ...state, ...overrides } }); },
   snapshot() { return controller.viewState(); },
   fail() { ports.at(-1)!.onMessage.emit({ ...requests.at(-1), ok: false, error: 'Connection failed' }); },
-  disconnect() { const port = ports.at(-1)!; port.closed = true; port.onDisconnect.emit(); },
+  disconnect() {
+    const port = ports.at(-1)!;
+    port.closed = true;
+    port.onDisconnect.emit();
+    port.serverDisconnect?.emit();
+  },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
   delayNextQuery() { delayQuery = true; },
   queryPending() { return !!releaseQuery; },
   releaseQuery() { const release = releaseQuery; releaseQuery = undefined; release?.(); },
+  bindBackground() {
+    const port = ports.at(-1)!;
+    const serverMessages = event(), serverDisconnect = event();
+    port.serverMessages = serverMessages;
+    port.serverDisconnect = serverDisconnect;
+    bindSidebarConnection({
+      name: 'anmerko-sidebar', onMessage: serverMessages, onDisconnect: serverDisconnect,
+      postMessage: (value: unknown) => port.onMessage.emit(value),
+    } as unknown as chrome.runtime.Port, {
+      activate: async () => { backgroundModes.push('remote'); },
+      view: async () => state,
+      closed: async () => { backgroundModes.push('minimized'); },
+      layout: async (_tabId, _windowId, mode) => { backgroundModes.push(mode); },
+    }, backgroundOwners);
+    for (const request of requests) serverMessages.emit(request);
+  },
   resetLayoutSequence() { layoutSequence.length = 0; },
   failLayout() {
     const start = requests.slice().reverse().find((request: any) => !request.type);

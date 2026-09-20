@@ -100,7 +100,7 @@ test('native controls wait for a page snapshot and disconnected settings cannot 
   expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({
     type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay', state: undefined,
   }));
-  await run(page, 'nativeHarness.fail()');
+  await run(page, 'nativeHarness.failLayout()');
   await expect(prompt).toBeVisible();
   await expect(select).toBeDisabled();
   await expect(options).toBeDisabled();
@@ -152,12 +152,14 @@ test('native Float posts a one-way port command before close and reports a live-
   await expect(panel.getByRole('status')).toContainText('Could not change layout');
 });
 
-test('native Float uses the last posted owner while a replacement tab query is pending', async ({ page }) => {
+test('native Float cancels a pending replacement after posting with the current owner', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');
   await page.addScriptTag({ content: nativeBundle });
   await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
-  await run(page, 'nativeHarness.reply(); nativeHarness.delayNextQuery(); nativeHarness.reconnect()');
+  await run(page, 'nativeHarness.bindBackground()');
+  await expect.poll(() => run(page, 'nativeHarness.backgroundModes.join()')).toBe('remote');
+  await run(page, 'nativeHarness.delayNextQuery(); nativeHarness.reconnect()');
   await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
 
   const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
@@ -165,9 +167,15 @@ test('native Float uses the last posted owner while a replacement tab query is p
   expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({
     type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay',
   }));
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(1);
   await run(page, 'nativeHarness.releaseQuery()');
-  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
-  expect(await run(page, 'nativeHarness.startupRequests.at(-1).version')).toBe(2);
+  await run(page, 'nativeHarness.reconnect()');
+  await run(page, 'nativeHarness.disconnect()');
+  await run(page, 'nativeHarness.reconnect()');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  expect(await run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'overlay']);
 });
 
 test('idle port shutdown preserves the current page, draft and unsaved settings without a keepalive', async ({ page }) => {

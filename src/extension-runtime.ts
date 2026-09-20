@@ -33,6 +33,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let windowId: number | undefined;
   let connectionVersion = 0;
   let sidebarRequestVersion: number | undefined;
+  let closingLayoutVersion: number | undefined;
+  let sidebarClosing = false;
   let sidebarPort: chrome.runtime.Port | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
@@ -55,11 +57,14 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     },
     async changeLayout(mode, state, mobile) {
       if (native && ['overlay', 'minimized', 'closed'].includes(mode)) {
-        if (!sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
+        if (sidebarClosing || !sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
         sidebarPort.postMessage({
           type: 'ANMERKO_SIDEBAR_LAYOUT', version: sidebarRequestVersion,
           mode, state: state.url ? state : undefined,
         });
+        closingLayoutVersion = sidebarRequestVersion;
+        sidebarClosing = true;
+        ++connectionVersion;
         // Firefox requires close() in the original click, before any await/message hop.
         void closeDock(windowId || 0).catch(() => {});
         return;
@@ -100,11 +105,16 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         const current = api.runtime.connect({ name: 'anmerko-sidebar' });
         sidebarPort = current;
         current.onMessage.addListener(result => {
-          if (signal.aborted || sidebarPort !== current || result.version !== connectionVersion) return;
+          if (signal.aborted || sidebarPort !== current) return;
           if (result.type === 'ANMERKO_SIDEBAR_LAYOUT_ERROR') {
+            if (result.version !== closingLayoutVersion) return;
+            closingLayoutVersion = undefined;
+            sidebarRequestVersion = undefined;
+            sidebarClosing = false;
             if (result.code === 'layout-failed' && result.error === 'Could not change layout.') controller.status(result.error, true);
             return;
           }
+          if (result.version !== connectionVersion) return;
           if (!result.ok) { controller.connectionFailed(result.error); return; }
           controller.applyState(result.value);
         });
@@ -114,15 +124,19 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           // Recreate the port on the next activation, not in an idle keepalive loop.
           sidebarPort = undefined;
           sidebarRequestVersion = undefined;
+          // An intentional close can deliver disconnect before page disposal.
+          // Keep blocking late tab events so they cannot undo the accepted layout.
+          if (!sidebarClosing) closingLayoutVersion = undefined;
           ++connectionVersion;
         });
         return current;
       }
       async function connect() {
+        if (sidebarClosing) return;
         const version = ++connectionVersion;
         try {
           const tabs = await api.tabs.query({ active: true, windowId });
-          if (signal.aborted || version !== connectionVersion) return;
+          if (signal.aborted || sidebarClosing || version !== connectionVersion) return;
           const tab = tabs[0];
           if (!tab?.id) throw new Error('No active tab');
           targetTab = tab.id;
