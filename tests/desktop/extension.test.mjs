@@ -246,7 +246,9 @@ test('production component context covers the native Chrome and Edge fixture mat
         await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
       }
     } else {
-      await page.waitForTimeout(100);
+      // Keep the draft open beyond the broker's 750 ms deadline so a wrong
+      // late result cannot pass an early absence assertion.
+      await page.waitForTimeout(850);
       await expect(row).toHaveCount(0);
       await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
     }
