@@ -10,11 +10,15 @@ import {
   validateJourneyManifest,
   type JourneyDraftV1,
   type JourneyManifestV1,
+  type JourneySession,
 } from '../../src/journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch } from '../../src/journey-events';
 import { JOURNEY_LIMITS } from '../../src/journey-limits';
 
 const reviewed = (text: string) => ({ text, edited: false, redacted: false });
+const MINIMAL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC';
+const MINIMAL_PNG_DATA_URL = `data:image/png;base64,${MINIMAL_PNG_BASE64}`;
+const MINIMAL_PNG_BYTES = 69;
 
 function validManifest(): JourneyManifestV1 {
   return {
@@ -129,6 +133,25 @@ test('reviewed manifest rejects duplicate step IDs and dangling or unreferenced 
   expect(validateJourneyManifest(unreferenced).ok).toBe(false);
 });
 
+test('shared images require one marked click and its marked correlated navigation', () => {
+  const missingMarkers = validManifest();
+  const click = missingMarkers.steps[1];
+  const navigation = missingMarkers.steps[2];
+  if (click.image.status === 'retained') delete click.image.sharedNavigationResult;
+  if (navigation.image.status === 'retained') delete navigation.image.sharedNavigationResult;
+
+  const unrelated = validManifest();
+  const unrelatedNavigation = unrelated.steps[2];
+  if (unrelatedNavigation.kind === 'navigation') delete unrelatedNavigation.navigation.causedByStepId;
+
+  const orphanMarker = validManifest();
+  orphanMarker.steps = orphanMarker.steps.filter(step => step.kind !== 'navigation');
+
+  expect(validateJourneyManifest(missingMarkers).ok).toBe(false);
+  expect(validateJourneyManifest(unrelated).ok).toBe(false);
+  expect(validateJourneyManifest(orphanMarker).ok).toBe(false);
+});
+
 test('reviewed manifest enforces URL, target, value, image, and summary bounds', () => {
   const cases: JourneyManifestV1[] = [];
   const longUrl = validManifest();
@@ -173,6 +196,39 @@ test('raw draft permits pending images and blank summaries while reviewed valida
   expect(validateJourneyManifest(draft).ok).toBe(false);
 });
 
+test('raw PNG data uses canonical bytes for signature, IHDR, dimensions, and byte accounting', () => {
+  const recording = recordingSession();
+  if (recording.phase !== 'recording') throw new Error('expected recording fixture');
+  const pending = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
+  const forgedPayload = `data:image/png;base64,${'A'.repeat(1_100_000)}`;
+  const forged = resolveJourneyCapture(pending, {
+    epoch: 1, documentToken: 'document-1', captureId: 'capture-click',
+    status: 'retained', imageId: 'image-forged',
+    image: {
+      capturedAt: '2026-09-20T12:00:01.100Z', captureUrl: 'https://example.com/start',
+      width: 1, height: 1, byteLength: 1, dataUrl: forgedPayload,
+      viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+    },
+  });
+
+  expect(forged.phase).toBe('recording');
+  if (forged.phase === 'recording') {
+    expect(forged.draft.steps[1].image).toEqual({ status: 'unavailable', reason: 'too-large' });
+    expect(forged.draft.images['image-forged']).toBeUndefined();
+  }
+
+  const wrongByteLength = structuredClone(recording.draft);
+  wrongByteLength.images['image-initial'].byteLength = MINIMAL_PNG_BYTES - 1;
+  const wrongDimensions = structuredClone(recording.draft);
+  wrongDimensions.images['image-initial'].width = 2;
+  const wrongSignature = structuredClone(recording.draft);
+  wrongSignature.images['image-initial'].dataUrl = `data:image/png;base64,A${MINIMAL_PNG_BASE64.slice(1)}`;
+
+  for (const invalid of [wrongByteLength, wrongDimensions, wrongSignature]) {
+    expect(validateJourneyDraft(invalid).ok).toBe(false);
+  }
+});
+
 test('recording begins only after an accepted initial image', () => {
   const starting = createJourneySession({
     sessionId: 'session-1', journeyId: 'journey-1', ownerTabId: 42, ownerWindowId: 7,
@@ -186,7 +242,7 @@ test('recording begins only after an accepted initial image', () => {
     sourceUrl: 'https://user:secret@example.com/start?q=1#top', imageId: 'image-initial',
     image: {
       capturedAt: '2026-09-20T12:00:00.100Z', captureUrl: 'https://user:secret@example.com/start?q=1#top',
-      width: 390, height: 844, byteLength: 10_000,
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES, dataUrl: MINIMAL_PNG_DATA_URL,
       viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
     },
   });
@@ -197,6 +253,30 @@ test('recording begins only after an accepted initial image', () => {
     expect(recording.draft.steps[0].sourceUrl).toBe('https://example.com/start?q=1#top');
     expect(recording.draft.images['image-initial'].captureUrl).toBe('https://example.com/start?q=1#top');
   }
+});
+
+test('initial image gate rejects another URL and timestamps at the recording deadline', () => {
+  const starting = createJourneySession({
+    sessionId: 'session-1', journeyId: 'journey-1', ownerTabId: 42, ownerWindowId: 7,
+    documentToken: 'document-1', startedAt: '2026-09-20T12:00:00.000Z',
+    deadlineAt: '2026-09-20T12:05:00.000Z', includeEnteredValues: false,
+  });
+  const input = {
+    id: 'step-initial', observedAt: '2026-09-20T12:00:00.100Z', elapsedMs: 100,
+    sourceUrl: 'https://example.com/start?q=1#top', imageId: 'image-initial',
+    image: {
+      capturedAt: '2026-09-20T12:00:00.100Z', captureUrl: 'https://other.example/wrong',
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES, dataUrl: MINIMAL_PNG_DATA_URL,
+      viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+    },
+  };
+
+  expect(acceptInitialImage(starting, input)).toBe(starting);
+  expect(acceptInitialImage(starting, {
+    ...input,
+    observedAt: '2026-09-20T12:05:00.000Z', elapsedMs: 300_000,
+    image: { ...input.image, capturedAt: '2026-09-20T12:05:00.000Z', captureUrl: input.sourceUrl },
+  })).toBe(starting);
 });
 
 test('event batches are sequenced once, deduplicated by document counter, and ordered independently of wall clock', () => {
@@ -263,7 +343,7 @@ test('capture resolution replaces one pending state with bounded image metadata'
     epoch: 1, documentToken: 'document-1', captureId: 'capture-click', status: 'retained', imageId: 'image-click',
     image: {
       capturedAt: '2026-09-20T12:00:01.000Z', captureUrl: 'https://user:secret@example.com/result?x=1#done',
-      width: 390, height: 844, byteLength: 10_000,
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES, dataUrl: MINIMAL_PNG_DATA_URL,
       viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
     },
   });
@@ -303,6 +383,29 @@ test('Stop increments the epoch before cleanup, rejects late work, marks pending
   expect(stopJourney(stopped, { epoch: 2, stoppedAt: '2026-09-20T12:00:03.000Z', reason: 'user' })).toBe(stopped);
 });
 
+test('manifest lifecycle requires stoppedAt at or before updatedAt', () => {
+  const manifest = validManifest();
+  manifest.updatedAt = '2026-09-20T12:00:02.999Z';
+
+  expect(validateJourneyManifest(manifest).ok).toBe(false);
+});
+
+test('Stop bounds review deadlines at the maximum representable date', () => {
+  const recording = recordingSession();
+  let stopped: JourneySession | undefined;
+
+  expect(() => {
+    stopped = stopJourney(recording, {
+      epoch: 1, stoppedAt: '+275760-09-13T00:00:00.000Z', reason: 'user',
+    });
+  }).not.toThrow();
+  expect(stopped?.phase).toBe('reviewing');
+  if (stopped?.phase === 'reviewing') {
+    expect(stopped.warningAt).toBe('+275760-09-13T00:00:00.000Z');
+    expect(stopped.expiresAt).toBe('+275760-09-13T00:00:00.000Z');
+  }
+});
+
 function recordingSession() {
   const starting = createJourneySession({
     sessionId: 'session-1', journeyId: 'journey-1', ownerTabId: 42, ownerWindowId: 7,
@@ -314,7 +417,7 @@ function recordingSession() {
     sourceUrl: 'https://example.com/start', imageId: 'image-initial',
     image: {
       capturedAt: '2026-09-20T12:00:00.100Z', captureUrl: 'https://example.com/start',
-      width: 390, height: 844, byteLength: 10_000,
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES, dataUrl: MINIMAL_PNG_DATA_URL,
       viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
     },
   });

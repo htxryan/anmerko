@@ -231,6 +231,9 @@ export type JourneyCaptureResolution =
 
 const encoder = new TextEncoder();
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const MAX_DATE_MS = 8_640_000_000_000_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -269,6 +272,46 @@ function validTimestamp(value: unknown): value is string {
 
 function characters(value: string): number { return Array.from(value).length }
 function bytes(value: string): number { return encoder.encode(value).byteLength }
+
+type PngInspection = { ok: true } | { ok: false; reason: 'too-large' | 'capture-error'; detail: string };
+
+function inspectPngDataUrl(dataUrl: string, byteLength: number, width: number, height: number): PngInspection {
+  if (!dataUrl.startsWith(PNG_DATA_URL_PREFIX)) return { ok: false, reason: 'capture-error', detail: 'must be a PNG data URL' };
+  const payload = dataUrl.slice(PNG_DATA_URL_PREFIX.length);
+  const maxPayloadLength = Math.ceil(JOURNEY_LIMITS.maxImageBytes / 3) * 4;
+  if (payload.length > maxPayloadLength) return { ok: false, reason: 'too-large', detail: 'exceeds the encoded PNG limit' };
+  if (!payload || payload.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(payload)) {
+    return { ok: false, reason: 'capture-error', detail: 'must use canonical base64' };
+  }
+  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+  const decodedLength = payload.length / 4 * 3 - padding;
+  if (decodedLength > JOURNEY_LIMITS.maxImageBytes) return { ok: false, reason: 'too-large', detail: 'exceeds the PNG byte limit' };
+  if (decodedLength !== byteLength) return { ok: false, reason: 'capture-error', detail: 'does not match byteLength' };
+  let binary: string;
+  try { binary = atob(payload); }
+  catch { return { ok: false, reason: 'capture-error', detail: 'contains invalid base64' }; }
+  if (binary.length !== decodedLength || btoa(binary) !== payload) return { ok: false, reason: 'capture-error', detail: 'must use canonical base64' };
+  if (binary.length < 33 || PNG_SIGNATURE.some((value, index) => binary.charCodeAt(index) !== value)) {
+    return { ok: false, reason: 'capture-error', detail: 'has an invalid PNG signature' };
+  }
+  if (readUint32(binary, 8) !== 13 || binary.slice(12, 16) !== 'IHDR') {
+    return { ok: false, reason: 'capture-error', detail: 'must begin with a canonical IHDR chunk' };
+  }
+  if (readUint32(binary, 16) !== width || readUint32(binary, 20) !== height) {
+    return { ok: false, reason: 'capture-error', detail: 'IHDR dimensions do not match metadata' };
+  }
+  return { ok: true };
+}
+
+function readUint32(binary: string, offset: number): number {
+  return binary.charCodeAt(offset) * 0x1000000 + binary.charCodeAt(offset + 1) * 0x10000
+    + binary.charCodeAt(offset + 2) * 0x100 + binary.charCodeAt(offset + 3);
+}
+
+function boundedIsoAfter(baseMs: number, deltaMs: number): string {
+  return new Date(Math.min(MAX_DATE_MS, baseMs + deltaMs)).toISOString();
+}
 
 function validateUrl(value: unknown, path: string, errors: string[]): string | undefined {
   if (typeof value !== 'string') {
@@ -415,7 +458,14 @@ function validateImage(value: unknown, path: string, errors: string[], reviewed:
   } else {
     const sanitized = validateUrl(value.captureUrl, `${path}.captureUrl`, errors);
     if (sanitized !== undefined) value.captureUrl = sanitized;
-    if (value.dataUrl !== undefined && (typeof value.dataUrl !== 'string' || !value.dataUrl.startsWith('data:image/png;base64,'))) errors.push(`${path}.dataUrl must be a PNG data URL`);
+    if (value.dataUrl !== undefined) {
+      if (typeof value.dataUrl !== 'string' || typeof value.byteLength !== 'number'
+        || typeof value.width !== 'number' || typeof value.height !== 'number') errors.push(`${path}.dataUrl metadata is invalid`);
+      else {
+        const inspection = inspectPngDataUrl(value.dataUrl, value.byteLength, value.width, value.height);
+        if (!inspection.ok) errors.push(`${path}.dataUrl ${inspection.detail}`);
+      }
+    }
   }
   if (!Number.isInteger(value.width) || (value.width as number) <= 0 || (value.width as number) > JOURNEY_LIMITS.maxImageLongestSide) errors.push(`${path}.width is invalid`);
   if (!Number.isInteger(value.height) || (value.height as number) <= 0 || (value.height as number) > JOURNEY_LIMITS.maxImageLongestSide) errors.push(`${path}.height is invalid`);
@@ -480,7 +530,10 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
   for (const key of ['createdAt', 'updatedAt', 'startedAt'] as const) if (!validTimestamp(copy[key])) errors.push(`journey.${key} is invalid`);
   if (copy.stoppedAt !== undefined && !validTimestamp(copy.stoppedAt)) errors.push('journey.stoppedAt is invalid');
   if (validTimestamp(copy.createdAt) && validTimestamp(copy.updatedAt) && Date.parse(copy.updatedAt) < Date.parse(copy.createdAt)) errors.push('journey.updatedAt precedes createdAt');
+  if (validTimestamp(copy.createdAt) && validTimestamp(copy.startedAt) && Date.parse(copy.startedAt) < Date.parse(copy.createdAt)) errors.push('journey.startedAt precedes createdAt');
+  if (validTimestamp(copy.startedAt) && validTimestamp(copy.updatedAt) && Date.parse(copy.updatedAt) < Date.parse(copy.startedAt)) errors.push('journey.updatedAt precedes startedAt');
   if (validTimestamp(copy.startedAt) && validTimestamp(copy.stoppedAt) && Date.parse(copy.stoppedAt) < Date.parse(copy.startedAt)) errors.push('journey.stoppedAt precedes startedAt');
+  if (validTimestamp(copy.stoppedAt) && validTimestamp(copy.updatedAt) && Date.parse(copy.updatedAt) < Date.parse(copy.stoppedAt)) errors.push('journey.updatedAt precedes stoppedAt');
   if (typeof copy.includeEnteredValues !== 'boolean') errors.push('journey.includeEnteredValues must be a boolean');
   if (copy.stopReason !== undefined && (typeof copy.stopReason !== 'string' || !STOP_REASONS.includes(copy.stopReason as StopReason))) errors.push('journey.stopReason is unknown');
   if (reviewed && copy.stopReason === undefined) errors.push('journey.stopReason is required');
@@ -491,7 +544,7 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
   if (!Array.isArray(copy.steps) || copy.steps.length > JOURNEY_LIMITS.maxSteps || (reviewed && copy.steps.length < 1)) errors.push('journey.steps has an invalid length');
   const stepIds = new Set<string>();
   const stepKinds = new Map<string, string>();
-  const imageRefs = new Set<string>();
+  const imageRefs = new Map<string, Array<{ index: number; step: Record<string, unknown>; image: Record<string, unknown> }>>();
   const captureIds = new Set<string>();
   let previousSeq = 0;
   let previousElapsed = -1;
@@ -518,10 +571,32 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
         captureIds.add(step.image.captureId);
       }
     }
-    if (result.imageId) imageRefs.add(result.imageId);
+    if (result.imageId && isObject(step) && isObject(step.image)) {
+      const references = imageRefs.get(result.imageId) ?? [];
+      references.push({ index, step, image: step.image });
+      imageRefs.set(result.imageId, references);
+    }
     fieldBytes += result.fieldBytes;
   }
   if (fieldBytes > JOURNEY_LIMITS.maxJourneyFieldTextBytes) errors.push('journey field text exceeds its total limit');
+  for (const [imageId, references] of imageRefs) {
+    if (references.length === 1) {
+      if (references[0].image.sharedNavigationResult === true) errors.push(`retained image ${imageId} has an orphan shared-navigation marker`);
+      continue;
+    }
+    if (references.length !== 2) {
+      errors.push(`retained image ${imageId} has too many references`);
+      continue;
+    }
+    const [clickReference, navigationReference] = references;
+    const navigation = navigationReference.step.navigation;
+    if (clickReference.step.kind !== 'click' || navigationReference.step.kind !== 'navigation'
+      || clickReference.image.sharedNavigationResult !== true || navigationReference.image.sharedNavigationResult !== true
+      || !isObject(navigation) || navigation.causedByStepId !== clickReference.step.id
+      || clickReference.index >= navigationReference.index) {
+      errors.push(`retained image ${imageId} is not an explicit correlated click/navigation result`);
+    }
+  }
   if (!isObject(copy.images)) errors.push('journey.images must be an object');
   let imageBytes = 0;
   if (isObject(copy.images)) for (const [id, image] of Object.entries(copy.images)) {
@@ -529,7 +604,7 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
     imageBytes += validateImage(image, `journey.images.${id}`, errors, reviewed);
     if (!imageRefs.has(id)) errors.push(`journey.images.${id} is not referenced`);
   }
-  for (const imageId of imageRefs) if (!isObject(copy.images) || !Object.hasOwn(copy.images, imageId)) errors.push(`retained image ${imageId} is missing`);
+  for (const imageId of imageRefs.keys()) if (!isObject(copy.images) || !Object.hasOwn(copy.images, imageId)) errors.push(`retained image ${imageId} is missing`);
   if (imageBytes > JOURNEY_LIMITS.maxJourneyImageBytes) errors.push('journey images exceed the journey budget');
   if (!Array.isArray(copy.limitations) || copy.limitations.length > JOURNEY_LIMITS.maxLimitations
     || copy.limitations.some(item => typeof item !== 'string' || !item.trim() || characters(item) > JOURNEY_LIMITS.maxLimitationCharacters)) errors.push('journey.limitations is invalid');
@@ -570,11 +645,18 @@ export function createJourneySession(input: CreateJourneySessionInput): Starting
 
 export function acceptInitialImage(state: JourneySession, input: InitialImageInput): JourneySession {
   if (state.phase !== 'starting' || !validId(input.id) || !validId(input.imageId) || !validTimestamp(input.observedAt)
-    || !Number.isInteger(input.elapsedMs) || input.elapsedMs < 0 || input.elapsedMs > JOURNEY_LIMITS.maxDurationMs) return state;
+    || !Number.isInteger(input.elapsedMs) || input.elapsedMs < 0 || input.elapsedMs >= JOURNEY_LIMITS.maxDurationMs) return state;
   const sourceUrl = safeUrl(input.sourceUrl);
   const image = cloneJson(input.image);
   const captureUrl = safeUrl(image.captureUrl);
-  if (!sourceUrl || !captureUrl) return state;
+  const startedMs = Date.parse(state.draft.startedAt);
+  const deadlineMs = Date.parse(state.deadlineAt);
+  const observedMs = Date.parse(input.observedAt);
+  const capturedMs = Date.parse(image.capturedAt);
+  if (!sourceUrl || !captureUrl || sourceUrl !== captureUrl
+    || !Number.isFinite(capturedMs)
+    || observedMs < startedMs || observedMs >= deadlineMs
+    || capturedMs < startedMs || capturedMs >= deadlineMs) return state;
   image.captureUrl = captureUrl;
   const errors: string[] = [];
   validateImage(image, 'initial.image', errors, false);
@@ -727,9 +809,16 @@ export function resolveJourneyCapture(state: JourneySession, input: JourneyCaptu
     || image.width > JOURNEY_LIMITS.maxImageLongestSide || image.height > JOURNEY_LIMITS.maxImageLongestSide
     || image.byteLength > JOURNEY_LIMITS.maxImageBytes;
   if (tooLarge) return resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: 'too-large' });
+  if (image.dataUrl !== undefined) {
+    if (typeof image.dataUrl !== 'string') {
+      return resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: 'capture-error' });
+    }
+    const inspection = inspectPngDataUrl(image.dataUrl, image.byteLength, image.width, image.height);
+    if (!inspection.ok) return resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: inspection.reason });
+  }
   const errors: string[] = [];
   validateImage(image, 'capture.image', errors, false);
-  if (errors.length) return state;
+  if (errors.length) return resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: 'capture-error' });
   const steps = state.draft.steps.map(step => step.image.status === 'pending' && step.image.captureId === input.captureId
     ? { ...step, image: { status: 'retained', imageId: input.imageId, ...(input.sharedNavigationResult ? { sharedNavigationResult: true as const } : {}) } }
     : step) as JourneyDraftStep[];
@@ -763,8 +852,8 @@ export function stopJourney(state: JourneySession, input: { epoch: number; stopp
   return {
     phase: 'reviewing', sessionId: state.sessionId, journeyId: state.journeyId,
     epoch: state.epoch + 1, ownerTabId: state.ownerTabId, ownerWindowId: state.ownerWindowId,
-    warningAt: new Date(stoppedMs + JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs).toISOString(),
-    expiresAt: new Date(stoppedMs + JOURNEY_LIMITS.maxReviewIdleMs).toISOString(),
+    warningAt: boundedIsoAfter(stoppedMs, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs),
+    expiresAt: boundedIsoAfter(stoppedMs, JOURNEY_LIMITS.maxReviewIdleMs),
     draft: {
       ...state.draft,
       stoppedAt: input.stoppedAt,
