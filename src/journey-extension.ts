@@ -1,5 +1,6 @@
 import {
   createJourneyController,
+  JourneyControllerError,
   type JourneyController,
   type JourneyPageIdentity,
 } from './journey-controller';
@@ -15,22 +16,56 @@ export interface JourneyScreenshotService {
 
 export interface JourneyExtensionBinding {
   stopIfRecording(): boolean;
+  openReviewIfAvailable(): boolean;
 }
 
 type Message = Record<string, unknown> & { type?: unknown };
 type ActiveState = Extract<JourneySession, { phase: 'starting' | 'recording' }>;
+type JourneyCommandErrorCode = 'busy' | 'owner-unavailable' | 'initial-capture-failed'
+  | 'launch-expired' | 'permission-required';
+type TrustedSurface =
+  | { kind: 'sidebar' }
+  | { kind: 'review'; tabId: number }
+  | { kind: 'launch'; tabId: number; intent: string };
+
+interface LaunchIntent {
+  ownerTabId: number;
+  ownerWindowId: number;
+  documentToken: string;
+  url: string;
+  expiresAt: number;
+  launchTabId?: number;
+}
 
 const GENERIC_ERROR = 'Journey command unavailable.';
 const DEFAULT_ACTION_TITLE = 'Annotate with anmerko';
 const RECORDING_ACTION_TITLE = 'Stop journey recording';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+const LAUNCH_TTL_MS = 5 * 60 * 1_000;
+const REQUIRED_JOURNEY_PERMISSIONS: chrome.permissions.Permissions = {
+  origins: ['<all_urls>'], permissions: ['webNavigation'],
+};
 
 function success<T>(value?: T): { ok: true; value?: T } {
   return value === undefined ? { ok: true } : { ok: true, value };
 }
 
-function failure() {
-  return { ok: false as const, error: GENERIC_ERROR };
+class JourneyCommandError extends Error {
+  constructor(readonly code: JourneyCommandErrorCode) {
+    super(GENERIC_ERROR);
+    this.name = 'JourneyCommandError';
+  }
+}
+
+function failure(error?: unknown) {
+  let code: JourneyCommandErrorCode | undefined;
+  if (error instanceof JourneyCommandError) code = error.code;
+  else if (error instanceof JourneyControllerError) {
+    code = error.code === 'invalid-start' ? 'owner-unavailable' : error.code;
+  }
+  return code
+    ? { ok: false as const, error: GENERIC_ERROR, code }
+    : { ok: false as const, error: GENERIC_ERROR };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,9 +118,67 @@ function delay(ms: number): Promise<void> {
 export function bindJourneyExtension(screenshotService: JourneyScreenshotService): JourneyExtensionBinding {
   const api = extensionApi();
   const sidebarUrl = api.runtime.getURL('sidebar.html');
+  const journeyUrl = api.runtime.getURL('journey.html');
   const windowsApi = api.windows as typeof chrome.windows | undefined;
+  const launchIntents = new Map<string, LaunchIntent>();
   let decoratedTabId: number | undefined;
+  let launchGeneration = 0;
+  let launchOpening = false;
+  let reviewTabId: number | undefined;
+  let reviewOpening: Promise<void> | undefined;
   let controller: JourneyController;
+
+  const journeyLocation = (url: unknown): { kind: 'review' } | { kind: 'launch'; intent: string } | undefined => {
+    if (url === journeyUrl) return { kind: 'review' };
+    if (typeof url !== 'string') return;
+    const prefix = `${journeyUrl}#launch=`;
+    if (!url.startsWith(prefix)) return;
+    const intent = url.slice(prefix.length);
+    return SAFE_ID.test(intent) ? { kind: 'launch', intent } : undefined;
+  };
+
+  const trustedSurface = (sender: chrome.runtime.MessageSender): TrustedSurface | undefined => {
+    if (!sender.tab && sender.url === sidebarUrl) return { kind: 'sidebar' };
+    const tabId = sender.tab?.id;
+    if (!validInteger(tabId) || sender.frameId !== 0) return;
+    const location = journeyLocation(sender.url);
+    if (!location) return;
+    return location.kind === 'review'
+      ? { kind: 'review', tabId }
+      : { kind: 'launch', tabId, intent: location.intent };
+  };
+
+  const clearExpiredIntents = () => {
+    const now = Date.now();
+    for (const [id, intent] of launchIntents) if (intent.expiresAt <= now) launchIntents.delete(id);
+  };
+
+  const focusTab = async (tabId: number): Promise<void> => {
+    const tab = await api.tabs.update(tabId, { active: true });
+    if (!tab || !validInteger(tab.windowId)) throw new Error(GENERIC_ERROR);
+    if (windowsApi?.update) await windowsApi.update(tab.windowId, { focused: true });
+  };
+
+  const openReview = async (): Promise<void> => {
+    if (reviewOpening) return reviewOpening;
+    reviewOpening = (async () => {
+      if (reviewTabId !== undefined) {
+        try {
+          const existing = await api.tabs.get(reviewTabId);
+          if (!journeyLocation(existing.url)) throw new Error(GENERIC_ERROR);
+          await focusTab(reviewTabId);
+          return;
+        } catch {
+          reviewTabId = undefined;
+        }
+      }
+      const created = await api.tabs.create({ url: journeyUrl });
+      if (!validInteger(created.id)) throw new Error(GENERIC_ERROR);
+      reviewTabId = created.id;
+    })();
+    try { await reviewOpening; }
+    finally { reviewOpening = undefined; }
+  };
 
   const pageCommand = async (tabId: number, message: Message): Promise<unknown> => {
     const response = await api.tabs.sendMessage(tabId, message, { frameId: 0 });
@@ -240,6 +333,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   };
   const ownerRemoved = (tabId: number) => {
+    if (tabId === reviewTabId) reviewTabId = undefined;
+    for (const [id, intent] of launchIntents) if (intent.launchTabId === tabId) launchIntents.delete(id);
     const state = controller.getState();
     if (activeState(state) && tabId === state.ownerTabId) stopForOwner('tab-lost');
   };
@@ -252,42 +347,172 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   api.tabs.onRemoved.addListener(ownerRemoved);
   windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
 
-  const sidebarCommand = (
+  const reply = (
+    operation: Promise<unknown>,
+    respond: (response: unknown) => void,
+  ) => {
+    operation.then(value => respond(success(value)), error => respond(failure(error)));
+    return true;
+  };
+
+  const openLaunch = async (senderTabId: number, senderWindowId: number, senderUrl: string): Promise<void> => {
+    const state = controller.getState();
+    if (state.phase !== 'idle') {
+      if (!('ownerTabId' in state) || state.ownerTabId !== senderTabId || state.ownerWindowId !== senderWindowId) {
+        throw new JourneyCommandError('owner-unavailable');
+      }
+      await openReview();
+      return;
+    }
+    clearExpiredIntents();
+    if (launchOpening || launchIntents.size > 0) throw new JourneyCommandError('busy');
+    launchOpening = true;
+    let intent: LaunchIntent | undefined;
+    try {
+      let identity: JourneyPageIdentity;
+      try {
+        await focusedOwnerTab(senderTabId, senderWindowId, senderUrl);
+        identity = await identify(senderTabId);
+      } catch {
+        throw new JourneyCommandError('owner-unavailable');
+      }
+      if (!identity.visible || identity.url !== senderUrl || controller.getState().phase !== 'idle') {
+        throw new JourneyCommandError('owner-unavailable');
+      }
+      const id = crypto.randomUUID();
+      intent = {
+        ownerTabId: senderTabId, ownerWindowId: senderWindowId,
+        documentToken: identity.documentToken, url: identity.url,
+        expiresAt: Date.now() + LAUNCH_TTL_MS,
+      };
+      launchIntents.set(id, intent);
+      let created: chrome.tabs.Tab;
+      try {
+        created = await api.tabs.create({ url: `${journeyUrl}#launch=${id}` });
+      } catch (error) {
+        if (launchIntents.get(id) === intent) launchIntents.delete(id);
+        throw error;
+      }
+      if (!validInteger(created.id) || launchIntents.get(id) !== intent) {
+        if (validInteger(created.id)) await api.tabs.remove(created.id).catch(() => {});
+        throw new Error(GENERIC_ERROR);
+      }
+      intent.launchTabId = created.id;
+      reviewTabId = created.id;
+    } finally {
+      launchOpening = false;
+    }
+  };
+
+  const consumeLaunchIntent = (surface: TrustedSurface, value: unknown): LaunchIntent | undefined => {
+    clearExpiredIntents();
+    if (surface.kind !== 'launch' || typeof value !== 'string'
+      || value !== surface.intent || !SAFE_ID.test(value)) return;
+    const intent = launchIntents.get(value);
+    if (!intent || intent.launchTabId !== surface.tabId) return;
+    launchIntents.delete(value);
+    return intent;
+  };
+
+  const cancelLaunchIntent = (surface: TrustedSurface, value: unknown): boolean => {
+    clearExpiredIntents();
+    if (value === undefined) return true;
+    if (surface.kind !== 'launch' || typeof value !== 'string'
+      || value !== surface.intent || !SAFE_ID.test(value)) return false;
+    const intent = launchIntents.get(value);
+    if (intent) {
+      if (intent.launchTabId !== undefined && intent.launchTabId !== surface.tabId) return false;
+      launchIntents.delete(value);
+    }
+    return true;
+  };
+
+  const startFallback = async (intent: LaunchIntent, generation: number): Promise<void> => {
+    if (!api.permissions?.contains) {
+      throw new JourneyCommandError('permission-required');
+    }
+    const granted = await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS);
+    if (generation !== launchGeneration) return;
+    if (!granted) throw new JourneyCommandError('permission-required');
+    let identity: JourneyPageIdentity;
+    try {
+      const ownerTab = await api.tabs.update(intent.ownerTabId, { active: true });
+      if (generation !== launchGeneration) return;
+      if (!ownerTab || !validInteger(ownerTab.windowId)) throw new Error(GENERIC_ERROR);
+      if (windowsApi?.update) await windowsApi.update(ownerTab.windowId, { focused: true });
+      if (generation !== launchGeneration) return;
+      const owner = await focusedOwnerTab(intent.ownerTabId, intent.ownerWindowId, intent.url);
+      if (generation !== launchGeneration) return;
+      identity = await identify(intent.ownerTabId);
+      if (generation !== launchGeneration) return;
+      if (!identity.visible || identity.documentToken !== intent.documentToken
+        || identity.url !== intent.url || owner.url !== intent.url) throw new Error(GENERIC_ERROR);
+    } catch {
+      throw new JourneyCommandError('owner-unavailable');
+    }
+    await controller.start({ ownerTabId: intent.ownerTabId, ownerWindowId: intent.ownerWindowId, includeEnteredValues: false });
+  };
+
+  const trustedCommand = (
     message: Message,
+    surface: TrustedSurface,
     respond: (response: unknown) => void,
   ): boolean | void => {
     if (message.type === 'ANMERKO_JOURNEY_STATE') {
       respond(success(controller.getState()));
       return;
     }
-    const reply = (operation: Promise<unknown>) => {
-      operation.then(value => respond(success(value)), () => respond(failure()));
-      return true;
-    };
     if (message.type === 'ANMERKO_JOURNEY_START') {
-      if (!validInteger(message.ownerTabId) || !validInteger(message.ownerWindowId)) {
-        respond(failure());
+      if (surface.kind === 'launch') {
+        const generation = launchGeneration;
+        const intent = consumeLaunchIntent(surface, message.intent);
+        if (!intent) {
+          respond(failure(new JourneyCommandError('launch-expired')));
+          return;
+        }
+        return reply(startFallback(intent, generation), respond);
+      }
+      if (surface.kind !== 'sidebar' || !validInteger(message.ownerTabId) || !validInteger(message.ownerWindowId)) {
+        respond(failure(new JourneyCommandError('owner-unavailable')));
         return;
       }
       const ownerTabId = message.ownerTabId;
       const ownerWindowId = message.ownerWindowId;
+      const generation = launchGeneration;
       return reply((async () => {
-        await focusedOwnerTab(ownerTabId, ownerWindowId);
-        await controller.start({ ownerTabId, ownerWindowId });
-      })());
+        try { await focusedOwnerTab(ownerTabId, ownerWindowId); }
+        catch { throw new JourneyCommandError('owner-unavailable'); }
+        if (generation !== launchGeneration) return;
+        await controller.start({ ownerTabId, ownerWindowId, includeEnteredValues: false });
+      })(), respond);
     }
-    if (message.type === 'ANMERKO_JOURNEY_STOP') return reply(controller.stop('user'));
-    if (message.type === 'ANMERKO_JOURNEY_DISCARD') return reply(controller.discard());
+    if (message.type === 'ANMERKO_JOURNEY_STOP') {
+      launchGeneration += 1;
+      if (!cancelLaunchIntent(surface, message.intent)) {
+        respond(failure(new JourneyCommandError('launch-expired')));
+        return;
+      }
+      return reply(controller.stop('user'), respond);
+    }
+    if (message.type === 'ANMERKO_JOURNEY_DISCARD') {
+      launchGeneration += 1;
+      return reply(controller.discard(), respond);
+    }
   };
 
   api.runtime.onMessage.addListener((rawMessage, sender, respond) => {
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
-    const fromSidebar = !sender.tab && sender.url === sidebarUrl;
-    if (fromSidebar) return sidebarCommand(message, respond);
+    const surface = trustedSurface(sender);
+    if (surface) return trustedCommand(message, surface, respond);
     const senderTabId = sender.tab?.id;
-    if (!validInteger(senderTabId) || sender.frameId !== 0 || typeof sender.url !== 'string') return;
-    try { normalizedUrl(sender.url); } catch { return; }
+    const senderWindowId = sender.tab?.windowId;
+    if (!validInteger(senderTabId) || !validInteger(senderWindowId) || sender.frameId !== 0 || typeof sender.url !== 'string') return;
+    let senderUrl: string;
+    try { senderUrl = normalizedUrl(sender.url); } catch { return; }
+    if (message.type === 'ANMERKO_JOURNEY_OPEN') {
+      return reply(openLaunch(senderTabId, senderWindowId, senderUrl), respond);
+    }
     const state = controller.getState();
     if (!activeState(state) || senderTabId !== state.ownerTabId || sender.tab?.windowId !== state.ownerWindowId) return;
     if (message.type === 'ANMERKO_JOURNEY_EVENTS' && isRecord(message.batch)
@@ -296,9 +521,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       respond(success());
     } else if (message.type === 'ANMERKO_JOURNEY_STOP'
       && message.sessionId === state.sessionId && message.epoch === state.epoch) {
+      launchGeneration += 1;
       const operation = controller.stop('user');
-      operation.then(() => respond(success()), () => respond(failure()));
-      return true;
+      return reply(operation, respond);
     }
   });
 
@@ -306,6 +531,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     stopIfRecording() {
       if (!activeState(controller.getState())) return false;
       void controller.stop('user');
+      return true;
+    },
+    openReviewIfAvailable() {
+      const state = controller.getState();
+      if (state.phase !== 'reviewing' && state.phase !== 'saving') return false;
+      void openReview().catch(() => {});
       return true;
     },
   };
