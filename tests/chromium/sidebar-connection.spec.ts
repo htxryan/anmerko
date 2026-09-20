@@ -6,7 +6,7 @@ function fixture(owners = new Map<number, object>(), modes = new Map<number, str
   let receive!: (message: unknown) => void;
   let disconnect!: () => void;
   const replies: unknown[] = [];
-  const pending: { tabId: number; finish(): void }[] = [];
+  const pending: { tabId: number; finish(): void; fail(error: Error): void }[] = [];
   const layouts: { tabId: number; windowId: number; mode: string; state?: unknown }[] = [];
   const pendingLayouts: { finish(): void; fail(error: Error): void }[] = [];
   const port = {
@@ -15,7 +15,9 @@ function fixture(owners = new Map<number, object>(), modes = new Map<number, str
     postMessage: (message: unknown) => replies.push(message),
   } as unknown as chrome.runtime.Port;
   bindSidebarConnection(port, {
-    activate: tabId => new Promise<void>(resolve => pending.push({ tabId, finish() { modes.set(tabId, 'remote'); resolve(); } })),
+    activate: tabId => new Promise<void>((resolve, reject) => pending.push({
+      tabId, finish() { modes.set(tabId, 'remote'); resolve(); }, fail: reject,
+    })),
     view: async tabId => ({ url: `https://example.com/${tabId}` }),
     closed: async tabId => { modes.set(tabId, 'minimized'); },
     layout: (tabId, windowId, mode, state) => new Promise<void>((resolve, reject) => {
@@ -76,17 +78,16 @@ test('invalid and disconnected requests cannot start page activation', () => {
   expect(f.pending).toEqual([]);
 });
 
-test('only the ready current owner can transfer a closing layout through the port', async () => {
+test('only the exact current owner can transfer a closing layout and waits for activation', async () => {
   const f = fixture();
   f.receive({ tabId: 1, windowId: 10, version: 1 });
-  f.receive({ type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay', state: { url: 'https://example.com/1' } });
-  expect(f.layouts).toEqual([]);
-  f.pending[0].finish();
-  await flush();
   f.receive({ type: 'ANMERKO_SIDEBAR_LAYOUT', version: 2, mode: 'overlay' });
   f.receive({ type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'dock' });
   expect(f.layouts).toEqual([]);
   f.receive({ type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay', state: { url: 'https://example.com/1' }, tabId: 99 });
+  expect(f.layouts).toEqual([]);
+  f.pending[0].finish();
+  await flush();
   expect(f.layouts).toEqual([{
     tabId: 1, windowId: 10, mode: 'overlay', state: { url: 'https://example.com/1' },
   }]);
@@ -123,6 +124,18 @@ test('a failed transferred layout restores safely after the port disconnects wit
   await flush();
   expect(f.modes.get(1)).toBe('minimized');
   expect(f.replies).toEqual([{ version: 1, ok: true, value: { url: 'https://example.com/1' } }]);
+});
+
+test('a layout accepted during startup restores safely when activation fails', async () => {
+  const f = fixture();
+  f.receive({ tabId: 1, windowId: 10, version: 1 });
+  f.receive({ type: 'ANMERKO_SIDEBAR_LAYOUT', version: 1, mode: 'overlay' });
+  f.disconnect();
+  f.pending[0].fail(new Error('private activation failure'));
+  await flush();
+  expect(f.layouts).toEqual([]);
+  expect(f.modes.get(1)).toBe('minimized');
+  expect(f.replies).toEqual([]);
 });
 
 test('a replacement owner waits for an accepted layout handoff and then wins', async () => {

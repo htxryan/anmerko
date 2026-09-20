@@ -45,6 +45,16 @@ test('an accepted port layout survives the intentional sidebar disconnect', asyn
   expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_SIDEBAR_CLOSED')`)).toBe(false);
 });
 
+test('an exact current layout waits for startup when live page state arrives before the snapshot', async ({ page }) => {
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.toolbar()');
+  await expect.poll(() => run(page, `sidebarHarness.broadcasts.some(message => message.type === 'ANMERKO_VIEW_CHANGED')`)).toBe(true);
+  await run(page, 'sidebarHarness.clearPageCommands(); sidebarHarness.layout(1); sidebarHarness.disconnect()');
+  await expect.poll(() => run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_PRESENT' && message.mode === 'overlay')`)).toBe(true);
+  expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_SIDEBAR_CLOSED')`)).toBe(false);
+});
+
 test('background rejects sidebar ports without the exact extension-page sender', async ({ page }) => {
   expect(await run(page, 'sidebarHarness.probeUntrustedConnections()')).toBe(0);
 });

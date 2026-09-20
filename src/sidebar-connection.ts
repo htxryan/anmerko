@@ -1,7 +1,14 @@
 type ClosingLayout = 'overlay' | 'minimized' | 'closed';
 const ownerBarrier = Symbol('sidebar owner barrier');
 type Owner = { [ownerBarrier]?: Promise<void> };
-type Request = Owner & { tabId: number; windowId: number; version: number; ready: boolean };
+type Request = Owner & {
+  tabId: number;
+  windowId: number;
+  version: number;
+  ready: boolean;
+  layoutAccepted: boolean;
+  activation: Promise<boolean>;
+};
 type Operations = {
   activate(tabId: number, windowId: number): Promise<void>;
   view(tabId: number): Promise<unknown>;
@@ -45,14 +52,21 @@ export function bindSidebarConnection(port: chrome.runtime.Port, operations: Ope
     if (disconnected) return;
     if (message?.type === 'ANMERKO_SIDEBAR_LAYOUT') {
       const request = current;
-      if (!request?.ready || message.version !== request.version || !active(request) || !closingLayouts.has(message.mode)) return;
+      if (!request || message.version !== request.version || !active(request) || !closingLayouts.has(message.mode)) return;
+      request.layoutAccepted = true;
       current = undefined;
       let finishHandoff!: () => void;
       const handoff: Owner = {
         [ownerBarrier]: new Promise<void>(resolve => { finishHandoff = resolve; }),
       };
       owners.set(request.tabId, handoff);
-      void operations.layout(request.tabId, request.windowId, message.mode, message.state).catch(async () => {
+      const layout = request.ready
+        ? operations.layout(request.tabId, request.windowId, message.mode, message.state)
+        : (async () => {
+          if (!await request.activation) throw new Error('Sidebar activation failed.');
+          await operations.layout(request.tabId, request.windowId, message.mode, message.state);
+        })();
+      void layout.catch(async () => {
         if (owners.get(request.tabId) === handoff) owners.delete(request.tabId);
         await restore(request);
         if (disconnected) return;
@@ -73,17 +87,29 @@ export function bindSidebarConnection(port: chrome.runtime.Port, operations: Ope
     const previous = owners.get(message.tabId);
     const request: Request = {
       [ownerBarrier]: barrierFor(previous),
-      tabId: message.tabId, windowId: message.windowId, version: message.version, ready: false,
+      tabId: message.tabId, windowId: message.windowId, version: message.version,
+      ready: false, layoutAccepted: false, activation: Promise.resolve(false),
     };
     current = request;
     owners.set(request.tabId, request);
-    void (async () => {
+    request.activation = (async () => {
       try {
         if (request[ownerBarrier]) await request[ownerBarrier];
-        if (!active(request)) { await restore(request); return; }
+        if (!request.layoutAccepted && !active(request)) { await restore(request); return false; }
         await operations.activate(request.tabId, request.windowId);
+        if (!request.layoutAccepted && !active(request)) { await restore(request); return false; }
+        return true;
+      } catch (error) {
+        respond(request, { ok: false, error: String(error) });
+        return false;
+      }
+    })();
+    void (async () => {
+      try {
+        if (!await request.activation || request.layoutAccepted) return;
         if (!active(request)) { await restore(request); return; }
         const value = await operations.view(request.tabId);
+        if (request.layoutAccepted) return;
         if (!active(request)) { await restore(request); return; }
         request.ready = true;
         respond(request, { ok: true, value });
