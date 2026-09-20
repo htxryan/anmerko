@@ -176,6 +176,15 @@ test('native Float cancels a pending replacement after posting with the current 
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(await run(page, 'nativeHarness.startupRequests.length')).toBe(1);
   expect(await run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'overlay']);
+  await run(page, 'nativeHarness.delayNextQuery(); nativeHarness.reopen()');
+  await expect.poll(() => run(page, 'nativeHarness.queryPending()')).toBe(true);
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(1);
+  await run(page, 'nativeHarness.releaseQuery()');
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(2);
+  await run(page, 'nativeHarness.reply()');
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(2);
 });
 
 test('idle port shutdown preserves the current page, draft and unsaved settings without a keepalive', async ({ page }) => {

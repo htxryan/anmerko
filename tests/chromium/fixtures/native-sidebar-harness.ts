@@ -75,6 +75,7 @@ Object.assign(globalThis, { nativeHarness: {
   },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
+  reopen() { window.dispatchEvent(new PageTransitionEvent('pageshow')); },
   delayNextQuery() { delayQuery = true; },
   queryPending() { return !!releaseQuery; },
   releaseQuery() { const release = releaseQuery; releaseQuery = undefined; release?.(); },

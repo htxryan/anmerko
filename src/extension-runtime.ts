@@ -148,14 +148,25 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
       }
+      const reopen = () => {
+        if (signal.aborted || !sidebarClosing || document.hidden) return;
+        sidebarClosing = false;
+        closingLayoutVersion = undefined;
+        sidebarRequestVersion = undefined;
+        void connect();
+      };
       const activated = (info: { tabId: number; windowId: number }) => { if (info.windowId === windowId) void connect(); };
       const updated = (tabId: number, change: { status?: string }) => { if (tabId === targetTab && change.status === 'complete') void connect(); };
       api.tabs.onActivated.addListener(activated);
       api.tabs.onUpdated.addListener(updated);
+      document.addEventListener('visibilitychange', reopen);
+      window.addEventListener('pageshow', reopen);
       signal.addEventListener('abort', () => {
         ++connectionVersion;
         api.tabs.onActivated.removeListener(activated);
         api.tabs.onUpdated.removeListener(updated);
+        document.removeEventListener('visibilitychange', reopen);
+        window.removeEventListener('pageshow', reopen);
         sidebarPort?.disconnect();
       }, { once: true });
       // Chrome can reuse the sidebar document after pagehide. Its mounted

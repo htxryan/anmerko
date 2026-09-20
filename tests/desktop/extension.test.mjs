@@ -38,6 +38,7 @@ test('production action, native docking, comments, capture, export and restart',
   const width = await page.evaluate(() => innerWidth);
   await session.activate();
   let dock = await sidebar(session.context, page);
+  session.evidence.sidebarTargets = [dock.acquisition];
   await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(width - 200);
   assert.equal(session.evidence.manifest.host_permissions, undefined);
   assert.equal(session.evidence.manifest.background.service_worker, 'background.js');
@@ -56,6 +57,7 @@ test('production action, native docking, comments, capture, export and restart',
   await panel().getByLabel('Comment', { exact: true }).fill('Make this headline clearer.');
   await panel().getByRole('button', { name: 'Dock sidebar', exact: true }).click();
   dock = await sidebar(session.context, page);
+  session.evidence.sidebarTargets.push(dock.acquisition);
   await expect.poll(() => dock.value('#comment')).toBe('Make this headline clearer.');
   session.evidence.sidebarFloat = { before: { targetId: dock.targetId } };
   await dock.click('.dock');

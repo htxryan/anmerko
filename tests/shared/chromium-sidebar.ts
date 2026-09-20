@@ -5,8 +5,14 @@ import { expect, type BrowserContext, type Page } from '@playwright/test';
 export async function sidebar(context: BrowserContext, page: Page) {
   const cdp = await context.newCDPSession(page);
   let targetId = '';
+  let acquisition: { selectedTargetId: string; targets: { targetId: string; type: string; attached: boolean }[] } | undefined;
   await expect.poll(async () => {
-    targetId = (await cdp.send('Target.getTargets')).targetInfos.find(t => t.url.endsWith('/sidebar.html'))?.targetId || '';
+    const targets = (await cdp.send('Target.getTargets')).targetInfos.filter(target => target.url.endsWith('/sidebar.html'));
+    targetId = targets[0]?.targetId || '';
+    acquisition = {
+      selectedTargetId: targetId,
+      targets: targets.map(target => ({ targetId: target.targetId, type: target.type, attached: target.attached })),
+    };
     return targetId;
   }).not.toBe('');
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: false });
@@ -57,7 +63,7 @@ export async function sidebar(context: BrowserContext, page: Page) {
   }`);
   await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden")).toBe(true);
   return {
-    targetId, evaluate, command, click, targets, surface,
+    targetId, acquisition: acquisition!, evaluate, command, click, targets, surface,
     value: (selector: string) => evaluate(`return root.querySelector(${JSON.stringify(selector)})?.value`),
     close: () => cdp.send('Target.closeTarget', { targetId }),
   };
