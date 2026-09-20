@@ -32,9 +32,9 @@ Deploy a checked branch build to an isolated `workers.dev` Worker with:
 task site:preview NAME=pr17
 ```
 
-The suffix must contain 1–40 lowercase letters, numbers, or hyphens and must start and end with a letter or number. The task always names the Worker `anmerko-site-preview-<name>`, enables its `workers.dev` address, and configures no custom routes. It builds and checks the site before taking a snapshot, performs a Wrangler dry run, deploys that snapshot, and prints the preview URL. Reusing a name updates the same preview Worker.
+The suffix must contain 1–40 lowercase letters, numbers, or hyphens and must start and end with a letter or number. The task names the Worker `anmerko-site-preview-<name>` and serves the preview at its `workers.dev` address. It builds and checks the site before taking a snapshot, performs a Wrangler dry run, deploys that snapshot, and prints the preview URL. Reusing a name updates the same preview Worker.
 
-Authenticate first with `npx --no-install wrangler login`, or provide `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` through private environment configuration. Each run preserves its standalone Wrangler configuration, structured deployment output, and exact asset snapshot in the ignored `tasks/site-previews/` directory for inspection. The preview task does not read or modify either production Wrangler configuration and cannot bind `anmerko.com`.
+Authenticate first with `npx --no-install wrangler login`, or provide `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` through private environment configuration. Each run preserves its standalone Wrangler configuration, structured deployment output, and exact asset snapshot in the ignored `tasks/site-previews/` directory for inspection.
 
 ## Local validation
 

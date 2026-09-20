@@ -1,6 +1,6 @@
 # anmerko listing copy and review kit
 
-This is ready-to-enter draft copy for the existing Chrome Web Store and Firefox Add-ons records. It does not claim that a dashboard was changed, a name or slug is available, or a listing is published. Keep the real IDs and URLs in `listings.json` until the dashboards return verified replacements.
+This is ready-to-enter draft copy for the existing Chrome Web Store and Firefox Add-ons records. Keep the real IDs and URLs in `listings.json` until the dashboards return verified replacements.
 
 ## Shared fields
 
@@ -27,13 +27,11 @@ With anmerko, you can attach comments to webpage elements, capture a region of t
 - Keep comments and settings in your browser profile until you delete them.
 - Share only when you choose to copy or export.
 
-No account or AI API key is required. anmerko does not send feedback to the developer, run an AI agent, or share automatically.
-
 ## Reviewer fields
 
 **Product note:** anmerko stores feedback locally and shares it only through explicit copy or export actions. The package, documentation, listing assets, and support URLs use the current product name. No new permissions are requested.
 
-**Smoke test:** Open a normal HTTPS page. Activate anmerko, save an element comment, capture a region and comment on it, and add page-wide feedback. Inspect the combined prompt, copy or export it, reopen Settings, and follow the support and privacy links in the store listing. No account or paid service is needed.
+**Smoke test:** Open a normal HTTPS page. Activate anmerko, save an element comment, capture a region and comment on it, and add page-wide feedback. Inspect the combined prompt, copy or export it, reopen Settings, and follow the support and privacy links in the store listing.
 
 **Permissions and privacy:**
 

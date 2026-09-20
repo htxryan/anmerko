@@ -1,4 +1,4 @@
-anmerko collects website comments and screenshots to share with an AI agent. It targets Chrome, Edge, and Firefox on desktop, plus Edge and Firefox for Android. Edge is available from Microsoft Edge Add-ons on desktop and Android; Chrome and Firefox store review remain pending.
+Collect website comments and screenshots with anmerko, then copy or export them to your AI agent.
 
 ## Get started
 
@@ -13,8 +13,8 @@ anmerko collects website comments and screenshots to share with an AI agent. It 
 - **Copy fails or images are missing:** download **Markdown + Images**, extract the ZIP, and copy from `comments.md`. Attach PNGs separately.
 - **Save fails:** keep the draft open, export saved feedback, free storage by deleting comments, and retry.
 
-Export before uninstalling or changing installations. There is no import or automatic transfer of feedback.
+Export before uninstalling or changing installations.
 
-The extension has no analytics, AI calls, sync, or automatic sharing. Read the [privacy policy](/support/privacy/) for details.
+Read the [privacy policy](/support/privacy/) for details about stored data and permissions.
 
-[Installation guides and permanent approved manual downloads](https://anmerko.com/docs/install/) remain available independently of store access. Chrome/Edge ZIP installation is desktop-only; Firefox uses the signed XPI on desktop or Android.
+Follow the [installation guide for your browser](https://anmerko.com/docs/install/). Chrome/Edge ZIP installation is desktop-only; Firefox uses the signed XPI on desktop or Android.

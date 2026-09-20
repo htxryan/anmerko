@@ -22,18 +22,17 @@ and [Edge's update API](https://learn.microsoft.com/en-us/microsoft-edge/extensi
 document package publication/status operations; the complete listing/media and
 verified-site reconciliation still requires their owner dashboards.
 
-The rename reuses Chrome Web Store item `oligkkknbmklalfnkipmheifammnpgpo` and the registered Firefox add-on ID. These opaque package identities preserve the existing update path. Edge 0.5.5 became publicly Live on 2026-09-15 at the [canonical anmerko listing](https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka); native store installation and behavior acceptance passed. Chrome 0.5.5 became public on 2026-09-16, and its public macOS store installation and core workflow passed. Firefox 0.5.5 received public approval on 2026-09-18; its signed listed artifact was payload-verified and its public macOS AMO installation and extended workflow passed. The desktop and Android Edge CTAs use its verified listing; the owner confirmed Android functionality ([support provenance](../development.md#edge-android-support-provenance)), rather than independent agent native Android testing. Firefox unlisted 0.5.5.1 remains the approved website download and is accepted in Firefox Android; the public listed 0.5.5 artifact advertises Android compatibility and has the same non-manifest runtime payload. This comparison does not claim a fresh Android AMO UI installation. All approved website downloads are published. See the [verification summary](../evidence/anmerko/verification-summary.md) and [completed store-launch acceptance](validation.md). Use the [reviewable listing copy and source-review kit](listing-copy.md) when entering the dashboard fields.
+The rename reuses Chrome Web Store item `oligkkknbmklalfnkipmheifammnpgpo` and the registered Firefox add-on ID. These opaque package identities preserve the existing update path. Edge 0.5.5 became publicly Live on 2026-09-15 at the [canonical anmerko listing](https://microsoftedge.microsoft.com/addons/detail/anmerko/bfhobiphegcekelfokpcpeepoakkgcka); native store installation and behavior acceptance passed. Chrome 0.5.5 became public on 2026-09-16, and its public macOS store installation and core workflow passed. Firefox 0.5.5 received public approval on 2026-09-18; its signed listed artifact was payload-verified and its public macOS AMO installation and extended workflow passed. The desktop and Android Edge CTAs use its verified listing; the owner confirmed Android functionality ([support provenance](../development.md#edge-android-support-provenance)). Firefox unlisted 0.5.5.1 remains the approved website download and is accepted in Firefox Android; the public listed 0.5.5 artifact advertises Android compatibility and has the same non-manifest runtime payload. All approved website downloads are published. See the [verification summary](../evidence/anmerko/verification-summary.md) and [completed store-launch acceptance](validation.md). Use the [reviewable listing copy and source-review kit](listing-copy.md) when entering the dashboard fields.
 
 Use the current anmerko support and privacy URLs in store listing fields. Manage mailbox configuration outside Git; verify receiving and reply delivery before changing a store contact address.
 
-After release, record each store’s actual public version and identity, dashboard URL/slug reconciliation, and native installation evidence before activating its CTA. Chromium ZIP availability does not establish native Edge-store publication, and desktop Firefox automation does not establish Firefox Android installation and behavior.
+After release, record each store’s actual public version and identity, dashboard URL/slug reconciliation, and native installation evidence before activating its CTA.
 
 The current publication, native installation, minimum-version, and managed-update
 coverage for the three desktop stores is tracked in the
-[desktop store release validation matrix](validation.md). A completed
-automated release state does not replace that native evidence.
+[desktop store release validation matrix](validation.md).
 
-Repository administrators can replace the private Chrome publisher ID without writing it to a file:
+Set the private Chrome publisher ID as a production secret:
 
 ```sh
 gh secret set CWS_PUBLISHER_ID --env production
@@ -47,7 +46,7 @@ Mozilla receives two source-reproducible variants. Listed review uses `VERSION`;
 
 Store review and website publication have separate state. Chrome and Edge ZIP downloads publish immediately after validation. Firefox downloads publish after unlisted signing and payload verification. Listed Firefox and Chrome review can remain pending without blocking the website; the 15-minute continuation checks pending work without starting another release.
 
-Firefox listed packages use version `V`; the separately signed website/unlisted package uses `V.1`. Submit the matching `anmerko-V-firefox-source.zip` or `anmerko-V.1-firefox-source.zip` for the exact binary under review. The unlisted website track has no custom updater and requires the documented manual same-profile update flow.
+Firefox listed packages use version `V`; the separately signed website/unlisted package uses `V.1`. Submit the matching `anmerko-V-firefox-source.zip` or `anmerko-V.1-firefox-source.zip` for the exact binary under review. Use the documented manual same-profile update flow for the unlisted website track.
 
 New AMO versions include reviewer build instructions in the initial [version creation request](https://mozilla.github.io/addons-server/topics/api/addons.html#version-create). The uploaded source filename and instructions identify the exact candidate archive and `RELEASE_VERSION` command. Resuming an existing version does not edit its source or reviewer notes.
 

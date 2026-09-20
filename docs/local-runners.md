@@ -1,6 +1,6 @@
 # Local GitHub Actions runners
 
-Runner controls use `ANMERKO_*` environment names and default to the current local names. These settings are optional: public CI uses GitHub-hosted runners, and private local infrastructure can override each default through its environment without changing tracked files.
+Runner controls use `ANMERKO_*` environment names and default to the current local names. These settings are optional: public CI uses GitHub-hosted runners, and private local infrastructure can override each default through its environment.
 
 - **macOS:** one Tart VM (`anmerko-ci`), 6 CPUs / 12 GiB RAM. Its desktop,
   clipboard and audio stay separate from the host; no Mac folders are shared.
@@ -29,9 +29,7 @@ logged in and online; lid sleep still interrupts CI.
 Trusted private macOS jobs require `[self-hosted, macOS, ARM64,
 macbook-macos-vm]`; they have **no automatic hosted fallback or variable
 override**. When the VM is off, those jobs queue. Public and fork macOS jobs use
-hosted macOS runners and are not scheduled on the personal runner.
-Windows remains paused; its retained native build does not require runner
-provisioning.
+hosted macOS runners. Windows remains paused.
 
 Compatible Linux jobs across Check, Release, Deploy and Publish prefer local
 runners. `LINUX_RUNNER_MODE=hosted` selects `ubuntu-latest`; the Linux start/stop
@@ -75,7 +73,7 @@ identifying their repository registration.
 
 Optional source-control overrides use `ANMERKO_MACOS_VM`, `ANMERKO_TART_BIN`,
 `ANMERKO_DOCKER_CONTEXT`, `ANMERKO_RUNNER_IMAGE`, and `ANMERKO_REPOSITORY`.
-Their defaults use the names above. Local installations can override them without changing repository source.
+Their defaults use the names above.
 
 Host service plists are `~/Library/LaunchAgents/local.github-actions.{macos-vm,colima}.plist`;
 logs are in `~/Library/Logs/github-actions-{macos-vm,colima}/`. Both services hold

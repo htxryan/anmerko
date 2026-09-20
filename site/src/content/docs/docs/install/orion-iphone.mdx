@@ -3,7 +3,7 @@ title: Orion on iPhone
 description: Install anmerko from a local extension package in Orion on iPhone.
 ---
 
-Install anmerko in [Orion Browser by Kagi](https://apps.apple.com/app/orion-browser-by-kagi/id1484498200) from a locally delivered package. You do not need Xcode or an Apple Developer membership.
+Install anmerko in [Orion Browser by Kagi](https://apps.apple.com/app/orion-browser-by-kagi/id1484498200) from a locally delivered package.
 
 ## Prepare Orion
 
@@ -23,14 +23,12 @@ Install anmerko in [Orion Browser by Kagi](https://apps.apple.com/app/orion-brow
 
 1. Return to Orion and open **… → Extensions**.
 2. Select **+**, then **Install from File**.
-3. Choose the anmerko folder in **On My iPhone/Orion/Extensions**. Select the folder that contains `manifest.json`, rather than an individual file inside it.
+3. Choose the anmerko folder containing `manifest.json` in **On My iPhone/Orion/Extensions**.
 4. Confirm that anmerko is enabled in Orion's extension list.
-
-Kagi explains Orion's mobile extension support in its [iOS and iPadOS extensions guide](https://help.kagi.com/orion/browser-extensions/ios-ipados-extensions.html). The folder-based installation sequence follows the extension author guidance at [Inspector Lab](https://inspectorlab.dev/installation/).
 
 ## Add comments
 
-1. Open a regular `http://` or `https://` page in Orion. Browser settings, start pages, and other internal pages do not allow page annotation.
+1. Open a regular `http://` or `https://` page in Orion.
 2. Open Orion's extension menu and choose **anmerko**. If Orion asks for website access, allow it for the page you want to annotate.
 3. Select **Annotate This Page**.
 4. Add [inline comments](/docs/usage/inline-comments/), [screenshot comments](/docs/usage/screenshot-comments/), or [global comments](/docs/usage/global-comments/).
@@ -44,13 +42,13 @@ Before updating, export feedback you need to keep. Unzip the newer Orion package
 
 ### The folder is missing from the picker
 
-In Files, confirm the archive is unzipped and the whole resulting folder is under **On My iPhone/Orion/Extensions**. Open the folder and check that `manifest.json` is directly inside it, without an extra nested folder.
+In Files, confirm the archive is unzipped and the whole resulting folder is under **On My iPhone/Orion/Extensions**. Open the folder and check that `manifest.json` is directly inside it at the top level.
 
 If the **Orion** location is missing, open Orion and enable extension support, then return to **Browse → On My iPhone** in Files. Use the app's Orion location; a separate folder named Orion in iCloud Drive or Downloads is a different location.
 
 ### Annotate This Page does nothing
 
-Open a regular `http://` or `https://` page, reload it, and try again. Orion cannot inject extensions into its start page, settings, extension pages, or other internal pages.
+Open a regular `http://` or `https://` page, reload it, and try again.
 
 ### The extension is unavailable on a website
 

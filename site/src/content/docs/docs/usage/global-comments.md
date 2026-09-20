@@ -11,4 +11,4 @@ Use a global comment for feedback that applies to the whole current page, such a
 
 ![A global comment about Salad Recipe Finder in the current anmerko editor](/screenshots/03-global-comment.png)
 
-Global comments are saved with the current page's title and URL. They appear with the other comments for that page but have no element or screenshot target, so they do not offer **Locate**.
+Global comments are saved with the current page's title and URL. They appear with the other comments for that page.

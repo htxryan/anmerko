@@ -136,7 +136,6 @@ test('store guides identify each browser bundle and retain approved manual alter
   await expect(orion).toContainText('On My iPhone/Orion/Extensions');
   await expect(orion).toContainText('Install from File');
   await expect(orion).toContainText('Annotate This Page');
-  await expect(orion).toContainText('You do not need Xcode or an Apple Developer membership.');
   await page.goto('/docs/install/edge-iphone/');
   const edgeIphone = page.locator('.sl-markdown-content');
   await expect(edgeIphone.locator('pre')).toHaveText('edge://extensions/?id=bfhobiphegcekelfokpcpeepoakkgcka');
