@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { createJourneyController, type JourneyControllerAdapter, type JourneyPageIdentity } from '../../src/journey-controller';
 import type { JourneyDraftImage, JourneySession } from '../../src/journey-core';
 import type { JourneyEventBatchV1 } from '../../src/journey-events';
+import { JOURNEY_LIMITS } from '../../src/journey-limits';
 
 const START_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const START_URL = 'https://example.com/start';
@@ -269,6 +270,68 @@ test('navigation capture uses the destination URL and times out within five seco
     .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
 });
 
+test('a navigation image-budget stop tears down the page recorder', async () => {
+  let capturedMs = START_MS + 100;
+  const fixture = navigationFixture({
+    capture: async (_tabId, pageIdentity) => ({
+      ...image(pageIdentity.url, capturedMs),
+      byteLength: JOURNEY_LIMITS.maxImageBytes,
+    }),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  for (let counter = 1; counter <= 5; counter += 1) {
+    const state = recording(controller.getState());
+    controller.acceptBatch(clickBatch(state, counter, START_URL, `budget-action-${counter}`), 42);
+    fixture.resolveDelay(500, counter - 1);
+    await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  }
+
+  const token = recording(controller.getState()).documentToken;
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 1_500;
+  capturedMs = START_MS + 1_600;
+  fixture.resolveDelay(500, 5);
+
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review at the image budget');
+  expect(stopped.draft.stopReason).toBe('image-budget');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('navigation reaching the session deadline during capture stops for duration', async () => {
+  const navigationCapture = deferred<JourneyDraftImage>();
+  let captures = 0;
+  const fixture = navigationFixture({
+    capture: async (_tabId, pageIdentity) => {
+      captures += 1;
+      return captures === 1 ? image(pageIdentity.url, START_MS + 100) : navigationCapture.promise;
+    },
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 1_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
+
+  fixture.nowMs = START_MS + JOURNEY_LIMITS.maxDurationMs;
+  navigationCapture.resolve(image(fixture.current.url, START_MS + 1_600));
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review at the duration limit');
+  expect(stopped.draft.stopReason).toBe('duration-limit');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
 function navigationFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
   const delays: Array<{ ms: number; wait: ReturnType<typeof deferred<void>>; resolved: boolean }> = [];
   const calls = {
@@ -341,7 +404,12 @@ function image(captureUrl: string, capturedMs: number): JourneyDraftImage {
   };
 }
 
-function clickBatch(state: Extract<JourneySession, { phase: 'recording' }>, localCounter: number, sourceUrl: string): JourneyEventBatchV1 {
+function clickBatch(
+  state: Extract<JourneySession, { phase: 'recording' }>,
+  localCounter: number,
+  sourceUrl: string,
+  captureId?: string,
+): JourneyEventBatchV1 {
   const elapsedMs = (state.draft.steps.at(-1)?.elapsedMs ?? 0) + 100;
   return {
     schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
@@ -354,7 +422,9 @@ function clickBatch(state: Extract<JourneySession, { phase: 'recording' }>, loca
         tag: 'button', selectorPath: ['button'], label: 'Continue', editable: false,
         viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 }, point: { x: 10, y: 10 },
       },
-      image: { status: 'unavailable', reason: 'superseded' },
+      image: captureId
+        ? { status: 'pending', captureId }
+        : { status: 'unavailable', reason: 'superseded' },
     }],
   };
 }

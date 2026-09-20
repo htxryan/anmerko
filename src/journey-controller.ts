@@ -348,6 +348,10 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
     if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) return;
     const after = await adapter.identify(current.ownerTabId);
     if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) return;
+    if (now() >= Date.parse(current.deadlineAt)) {
+      await stop('duration-limit');
+      return;
+    }
     const capturedMs = Date.parse(image.capturedAt);
     if (!Number.isFinite(capturedMs) || capturedMs < input.observedMs + POST_ACTION_DELAY_MS
       || capturedMs >= input.observedMs + NAVIGATION_WINDOW_MS
@@ -372,7 +376,7 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
       imageId: newId('image'),
       image,
     });
-    if (resolved !== state) publish(resolved);
+    publishCaptureResolution(current, resolved);
   }
 
   async function captureAfterAction(generation: number, captureId: string): Promise<void> {
@@ -417,7 +421,7 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
         epoch: current.epoch, documentToken: current.documentToken,
         captureId, status: 'retained', imageId: newId('image'), image,
       });
-      if (resolved !== state) publish(resolved);
+      publishCaptureResolution(current, resolved);
     } catch (error) {
       if (isCurrentRecording(generation, captureId)) settleCapture(captureId, captureFailureFromError(error));
     }
@@ -430,6 +434,18 @@ export function createJourneyController(adapter: JourneyControllerAdapter): Jour
       captureId, status: 'unavailable', reason,
     });
     if (next !== state) publish(next);
+  }
+
+  function publishCaptureResolution(previous: RecordingJourneySession, next: JourneySession): void {
+    if (next === state) return;
+    if (next.phase === 'recording') {
+      publish(next);
+      return;
+    }
+    invalidateWork();
+    pendingHandshake = undefined;
+    publish(next);
+    void safeEnd(previous.ownerTabId, previous.sessionId, next.epoch);
   }
 
   function settlePendingCaptures(current: RecordingJourneySession, reason: CaptureFailure): RecordingJourneySession {

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { createJourneyController, type JourneyControllerAdapter, type JourneyPageIdentity } from '../../src/journey-controller';
 import type { JourneyDraftImage, JourneySession } from '../../src/journey-core';
 import type { JourneyEventBatchV1 } from '../../src/journey-events';
+import { JOURNEY_LIMITS } from '../../src/journey-limits';
 
 const startMs = Date.parse('2026-09-20T12:00:00.000Z');
 
@@ -195,6 +196,34 @@ test('Stop advances state and epoch before awaiting teardown, then ignores a lat
   end.resolve();
   await stopping;
   expect(controller.getState()).toBe(stopped);
+});
+
+test('an action image-budget stop tears down the page recorder', async () => {
+  const fixture = adapterFixture({
+    capture: async (_tabId, identity) => ({
+      ...image(identity.url),
+      byteLength: JOURNEY_LIMITS.maxImageBytes,
+    }),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  for (let counter = 1; counter <= 6; counter += 1) {
+    const state = recording(controller.getState());
+    controller.acceptBatch(clickBatch(state, counter, `budget-step-${counter}`, `budget-capture-${counter}`), 42);
+    fixture.resolveDelay(counter - 1);
+    await eventually(() => {
+      if (counter < 6) expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained');
+      else expect(controller.getState().phase).toBe('reviewing');
+    });
+  }
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason).toBe('image-budget');
+  expect(fixture.calls.end).toHaveLength(1);
+  expect(fixture.calls.end[0]).toMatchObject({ tabId: 42 });
+  expect((fixture.calls.end[0] as { input: object }).input).not.toHaveProperty('documentToken');
 });
 
 test('the core step and duration limits freeze capture for review', async () => {
