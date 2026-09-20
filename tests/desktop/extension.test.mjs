@@ -33,6 +33,46 @@ test('production permissions deny injection before activation and explain protec
 test('production action, native docking, comments, capture, export and restart', { timeout: 90000 }, async t => {
   const session = await createDesktopSession({ scenario: 'workflow' });
   t.after(() => session.close());
+  const lifecycleWorker = session.context.serviceWorkers().find(worker => worker.url().endsWith('/background.js'))
+    || await session.context.waitForEvent('serviceworker', { predicate: worker => worker.url().endsWith('/background.js') });
+  await lifecycleWorker.evaluate(() => {
+    globalThis.anmerkoSidebarLifecycle = [];
+    const record = entry => globalThis.anmerkoSidebarLifecycle.push({
+      sequence: globalThis.anmerkoSidebarLifecycle.length + 1, ...entry,
+    });
+    const recordPanel = type => info => record({
+      event: type,
+      windowId: Number.isInteger(info?.windowId) ? info.windowId : null,
+      tabId: Number.isInteger(info?.tabId) ? info.tabId : null,
+      path: typeof info?.path === 'string' ? info.path : null,
+    });
+    chrome.sidePanel?.onOpened?.addListener(recordPanel('side-panel-opened'));
+    chrome.sidePanel?.onClosed?.addListener(recordPanel('side-panel-closed'));
+    let connection = 0;
+    chrome.runtime.onConnect.addListener(port => {
+      if (port.name !== 'anmerko-sidebar') return;
+      const id = ++connection;
+      record({ event: 'sidebar-port-connected', connection: id });
+      port.onMessage.addListener(message => {
+        if (message?.type === 'ANMERKO_SIDEBAR_LAYOUT') {
+          record({
+            event: 'sidebar-layout-posted', connection: id,
+            version: Number.isInteger(message.version) ? message.version : null,
+            mode: ['overlay', 'minimized', 'closed'].includes(message.mode) ? message.mode : null,
+          });
+        } else if (Number.isInteger(message?.tabId) && Number.isInteger(message?.windowId) && Number.isInteger(message?.version)) {
+          record({
+            event: 'sidebar-startup-posted', connection: id,
+            tabId: message.tabId, windowId: message.windowId, version: message.version,
+          });
+        }
+      });
+      port.onDisconnect.addListener(() => record({ event: 'sidebar-port-disconnected', connection: id }));
+    });
+    globalThis.anmerkoSidePanelEventSupport = {
+      opened: !!chrome.sidePanel?.onOpened, closed: !!chrome.sidePanel?.onClosed,
+    };
+  });
   let page = session.page;
   const panel = () => page.getByRole('complementary', { name: 'anmerko feedback panel' });
   const width = await page.evaluate(() => innerWidth);
@@ -64,10 +104,16 @@ test('production action, native docking, comments, capture, export and restart',
   try {
     await expect(panel().getByLabel('Comment', { exact: true })).toHaveValue('Make this headline clearer.');
   } catch (error) {
-    const [targets, surface] = await Promise.allSettled([dock.targets(), dock.surface()]);
+    const [targets, surface, sidePanelEvents] = await Promise.allSettled([
+      dock.targets(), dock.surface(), lifecycleWorker.evaluate(() => ({
+        support: globalThis.anmerkoSidePanelEventSupport,
+        events: globalThis.anmerkoSidebarLifecycle,
+      })),
+    ]);
     session.evidence.sidebarFloat.after = {
       targets: targets.status === 'fulfilled' ? targets.value : null,
       surface: surface.status === 'fulfilled' ? surface.value : null,
+      sidePanelEvents: sidePanelEvents.status === 'fulfilled' ? sidePanelEvents.value : null,
       page: await page.evaluate(() => {
         const root = document.querySelector('anmerko-overlay')?.shadowRoot;
         return {

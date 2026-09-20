@@ -59,7 +59,8 @@ export async function sidebar(context: BrowserContext, page: Page) {
   const surface = () => evaluate(`return {
     hidden: document.hidden, visibilityState: document.visibilityState,
     panelHidden: root?.querySelector('.panel')?.hidden ?? null,
-    promptHidden: root?.querySelector('.connection-prompt')?.hidden ?? null
+    promptHidden: root?.querySelector('.connection-prompt')?.hidden ?? null,
+    statusText: root?.querySelector('.status')?.textContent?.trim() || ''
   }`);
   await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden")).toBe(true);
   return {
