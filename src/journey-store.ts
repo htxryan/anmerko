@@ -45,6 +45,7 @@ export interface JourneySnapshotSummary {
   revision: number;
   updatedAt: string;
   stepCount: number;
+  spansPages: boolean;
 }
 
 export const JOURNEY_SNAPSHOT_DB_NAME = 'anmerko:journey-store:v1';
@@ -225,11 +226,18 @@ function toSummary(record: unknown): JourneySnapshotSummary | undefined {
   if (!Number.isSafeInteger(revision) || (revision as number) < 0) return;
   if (!validTimestamp(updatedAt)) return;
   if (!Number.isSafeInteger(stepCount) || (stepCount as number) < 0) return;
+  const draft = (record as { draft?: unknown }).draft;
+  const steps = isObject(draft) && Array.isArray(draft.steps) ? draft.steps : [];
+  const sources = new Set<string>();
+  for (const step of steps) {
+    if (isObject(step) && typeof step.sourceUrl === 'string') sources.add(step.sourceUrl);
+  }
   return {
     journeyId,
     revision: revision as number,
     updatedAt: updatedAt as string,
     stepCount: stepCount as number,
+    spansPages: sources.size > 1,
   };
 }
 

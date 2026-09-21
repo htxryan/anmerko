@@ -6,6 +6,7 @@ import {
   createJourneySession,
   editJourneyValue,
   redactJourneyUrl,
+  reopenJourneySnapshot,
   resolveJourneyCapture,
   recordingSessionFits,
   removeJourneyStep,
@@ -560,6 +561,42 @@ test('save gating requires summaries, a retained step, and a valid draft', () =>
     },
   };
   expect(reviewSaveGating(imageless)).toEqual({ ready: false, reasons: ['retained-step-required'] });
+});
+
+test('saved snapshots reopen into a fresh reviewing session', () => {
+  const reviewing = reviewingSession();
+  const snapshot = {
+    draft: { ...reviewing.draft, expected: 'Kept.', actual: 'Gone.' },
+    images: structuredClone(reviewing.draft.images),
+  };
+  const idle = { phase: 'idle', epoch: 0 } as const;
+  const reopened = reopenJourneySnapshot(idle, {
+    sessionId: 'session-9', ownerTabId: 7, ownerWindowId: 8, nowMs: Date.parse('2026-09-20T12:02:00.000Z'),
+    draft: snapshot.draft, images: snapshot.images,
+  });
+  expect(reopened).not.toBe(idle);
+  if (!reopened || reopened.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(reopened.sessionId).toBe('session-9');
+  expect(reopened.journeyId).toBe('journey-1');
+  expect(reopened.epoch).toBe(1);
+  expect(reopened.ownerTabId).toBe(7);
+  expect(reopened.draft.expected).toBe('Kept.');
+  expect(reopened.draft.steps).toHaveLength(reviewing.draft.steps.length);
+  expect(reopened.draft.images['image-initial'].dataUrl).toBe(MINIMAL_PNG_DATA_URL);
+
+  expect(reopenJourneySnapshot(reviewing, {
+    sessionId: 'session-9', ownerTabId: 7, ownerWindowId: 8, nowMs: Date.parse('2026-09-20T12:02:00.000Z'),
+    draft: snapshot.draft, images: snapshot.images,
+  })).toBe(reviewing);
+
+  const missingBytes = {
+    draft: snapshot.draft,
+    images: {} as Record<string, { dataUrl?: string }>,
+  };
+  expect(reopenJourneySnapshot(idle, {
+    sessionId: 'session-9', ownerTabId: 7, ownerWindowId: 8, nowMs: Date.parse('2026-09-20T12:02:00.000Z'),
+    draft: missingBytes.draft, images: missingBytes.images as Record<string, never>,
+  })).toBe(idle);
 });
 
 function reviewingWithField() {

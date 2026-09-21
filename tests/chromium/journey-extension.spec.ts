@@ -708,6 +708,38 @@ test('review summaries and step removal apply with revision guards', async ({ pa
   const done = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(done.phase).toBe('saved');
   expect(done.epoch).toBe(reviewing.epoch + 1);
+
+  const opened = await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: done.journeyId });
+  expect(opened.ok).toBe(true);
+  expect((opened as any).value.draft.expected).toBe('The cart keeps its item.');
+  expect((opened as any).value.images[imageId].dataUrl).toMatch(/^data:image\/png;base64,/);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: 'journey-missing' }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
+
+  await page.evaluate(() => {
+    (globalThis as HarnessWindow).harness.tabs[80] = {
+      id: 80, windowId: 7, active: false, url: 'chrome-extension://test-extension/journey.html',
+    };
+  });
+  const reviewSender = {
+    id: 'test-extension', url: 'chrome-extension://test-extension/journey.html', frameId: 0,
+    tab: { id: 80, windowId: 7, active: false, url: 'chrome-extension://test-extension/journey.html' },
+  };
+  const reopened = await dispatch(page, { type: 'ANMERKO_JOURNEY_REOPEN', journeyId: done.journeyId }, reviewSender);
+  expect(reopened.ok).toBe(true);
+  const again = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(again.phase).toBe('reviewing');
+  expect(again.journeyId).toBe(done.journeyId);
+  expect(again.epoch).toBe(1);
+  expect(again.ownerTabId).toBe(80);
+  expect(again.draft.expected).toBe('The cart keeps its item.');
+  expect(again.draft.steps).toHaveLength(1);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY',
+    epoch: 1, journeyId: again.journeyId, revision: again.draft.revision,
+    updatedAt: new Date().toISOString(), expected: 'Edited after reopen.', actual: 'Checkout is empty.',
+  })).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.expected).toBe('Edited after reopen.');
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {

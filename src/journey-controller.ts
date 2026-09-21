@@ -9,6 +9,7 @@ import {
   failInitialImage,
   redactJourneyUrl,
   removeJourneyStep,
+  reopenJourneySnapshot,
   resolveJourneyCapture,
   reviewSaveGating,
   stopJourney,
@@ -70,7 +71,15 @@ export interface JourneyController {
   removeStep(input: JourneyRemoveStepInput): Promise<void>;
   editValue(input: JourneyEditValueInput): Promise<void>;
   redactUrl(input: JourneyRedactUrlInput): Promise<void>;
+  reopen(input: {
+    ownerTabId: number; ownerWindowId: number;
+    draft: JourneyDraftV1; images: Record<string, JourneyDraftImage>;
+  }): Promise<ReviewingJourneySession>;
   save(acknowledged: unknown): Promise<{ journeyId: string; revision: number }>;
+  reopen(input: {
+    ownerTabId: number; ownerWindowId: number;
+    draft: JourneyDraftV1; images: Record<string, JourneyDraftImage>;
+  }): Promise<ReviewingJourneySession>;
 }
 
 export type JourneyControllerErrorCode = 'busy' | 'invalid-start' | 'owner-unavailable' | 'initial-capture-failed' | 'stale-review';
@@ -604,6 +613,36 @@ export function createJourneyController(
     if (next !== previous) publish(next);
   }
 
+  async function reopen(input: {
+    ownerTabId: number; ownerWindowId: number;
+    draft: JourneyDraftV1; images: Record<string, JourneyDraftImage>;
+  }): Promise<ReviewingJourneySession> {
+    const previous = state;
+    if (previous.phase === 'starting' || previous.phase === 'recording'
+      || previous.phase === 'reviewing' || previous.phase === 'saving') {
+      throw new JourneyControllerError('busy', 'Finish or discard the current journey before reopening a saved one.');
+    }
+    if (!Number.isSafeInteger(input.ownerTabId) || input.ownerTabId < 0
+      || !Number.isSafeInteger(input.ownerWindowId) || input.ownerWindowId < 0) {
+      throw new Error('Reopening needs an available website tab.');
+    }
+    invalidateWork();
+    launching = false;
+    pendingHandshake = undefined;
+    const next = reopenJourneySnapshot(previous, {
+      sessionId: newId('session'),
+      ownerTabId: input.ownerTabId,
+      ownerWindowId: input.ownerWindowId,
+      nowMs: now(),
+      draft: input.draft,
+      images: input.images,
+    });
+    if (!next) throw new Error('The saved journey no longer fits in temporary storage.');
+    if (next === previous || next.phase !== 'reviewing') throw new Error('The saved journey could not be reopened.');
+    publish(next);
+    return next;
+  }
+
   async function save(acknowledged: unknown): Promise<{ journeyId: string; revision: number }> {
     const previous = state;
     if (previous.phase !== 'reviewing') throw new Error('Journey review is not ready to save.');
@@ -653,7 +692,7 @@ export function createJourneyController(
     await safeEnd(tabId, sessionId, epoch, documentToken);
   }
 
-  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, save };
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, save, reopen };
 }
 
 function newId(prefix: string): string {

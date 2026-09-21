@@ -932,6 +932,59 @@ export function removeJourneyStep(state: JourneySession, input: JourneyRemoveSte
   return { ...state, draft };
 }
 
+export interface JourneyReopenInput {
+  sessionId: string;
+  ownerTabId: number;
+  ownerWindowId: number;
+  nowMs: number;
+  draft: JourneyDraftV1;
+  images: Record<string, JourneyDraftImage>;
+}
+
+export function reopenJourneySnapshot(
+  state: JourneySession,
+  input: JourneyReopenInput,
+): JourneySession | undefined {
+  if (state.phase !== 'idle' && state.phase !== 'saved') return state;
+  if (!validId(input.sessionId) || !Number.isSafeInteger(input.ownerTabId) || input.ownerTabId < 0
+    || !Number.isSafeInteger(input.ownerWindowId) || input.ownerWindowId < 0
+    || !Number.isFinite(input.nowMs)) return state;
+  if (validateJourneyDraft(input.draft).ok === false) return state;
+  const source = input.draft;
+  const images: Record<string, JourneyDraftImage> = {};
+  for (const step of source.steps) {
+    if (step.image.status !== 'retained') continue;
+    const record = input.images[step.image.imageId];
+    if (!isObject(record) || typeof record.dataUrl !== 'string') return state;
+    images[step.image.imageId] = { ...record } as JourneyDraftImage;
+  }
+  const warningAt = boundedIsoAfter(input.nowMs, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs);
+  const expiresAt = boundedIsoAfter(input.nowMs, JOURNEY_LIMITS.maxReviewIdleMs);
+  const updatedAt = new Date(Math.min(input.nowMs, MAX_DATE_MS)).toISOString();
+  const draft = {
+    ...input.draft,
+    updatedAt,
+    images,
+  };
+  if (validateJourneyDraft(draft).ok === false) return state;
+  const next: ReviewingJourneySession = {
+    phase: 'reviewing',
+    sessionId: input.sessionId,
+    journeyId: draft.id,
+    epoch: 1,
+    ownerTabId: input.ownerTabId,
+    ownerWindowId: input.ownerWindowId,
+    warningAt,
+    expiresAt,
+    draft,
+  };
+  if (input.nowMs >= MAX_DATE_MS - JOURNEY_LIMITS.maxReviewIdleMs
+    || bytes(JSON.stringify(next)) > JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes) {
+    return undefined;
+  }
+  return next;
+}
+
 export type ReviewBlockReason = 'summaries-required' | 'retained-step-required' | 'images-pending' | 'invalid-draft';
 
 export function reviewSaveGating(state: JourneySession): { ready: boolean; reasons: ReviewBlockReason[] } {

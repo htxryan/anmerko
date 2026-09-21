@@ -244,12 +244,27 @@ test('save, open, list, and delete round-trip with byte-identical images', async
   const listed = await invoke(page, 'list', {});
   expect(listed).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2 }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false }],
   });
 
   expect(await invoke(page, 'delete', { journeyId: 'journey-1' })).toEqual({ ok: true, value: null });
   expect(await invoke(page, 'open', { journeyId: 'journey-1' })).toEqual({ ok: true, value: null });
   expect(await invoke(page, 'list', {})).toEqual({ ok: true, value: [] });
+});
+
+test('list marks journeys spanning more than one source URL', async ({ page }) => {
+  await openStore(page);
+  const spanned = baseDraft();
+  spanned.steps = spanned.steps.map((step, index) => index === 0
+    ? step
+    : { ...step, sourceUrl: 'https://other.example/checkout' });
+  expect(await invoke(page, 'save', { input: snapshotInput(spanned) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: 0 },
+  });
+  expect(await invoke(page, 'list', {})).toEqual({
+    ok: true,
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: true }],
+  });
 });
 
 test('invalid snapshots are rejected and never stored', async ({ page }) => {
@@ -365,7 +380,7 @@ test('a higher revision replaces the snapshot atomically', async ({ page }) => {
 
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 1, updatedAt: UPDATED_V2_AT, stepCount: 1 }],
+    value: [{ journeyId: 'journey-1', revision: 1, updatedAt: UPDATED_V2_AT, stepCount: 1, spansPages: false }],
   });
 });
 
@@ -412,7 +427,7 @@ test('deleted snapshots stay deleted and missing snapshots are safe', async ({ p
   });
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2 }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false }],
   });
 });
 
@@ -440,7 +455,7 @@ test('corrupt stored records never leak and never break the list', async ({ page
 
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2 }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false }],
   });
 
   const opened = await invoke(page, 'open', { journeyId: 'corrupt-1' });

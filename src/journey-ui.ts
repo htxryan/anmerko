@@ -15,7 +15,8 @@ export interface JourneyClient {
   redactUrl(stepId: string, url: 'source' | 'capture'): Promise<void>;
   save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
   openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
-  list(): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>>;
+  reopen(journeyId: string): Promise<void>;
+  list(): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
 }
@@ -69,7 +70,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let acknowledged = false;
   let acknowledgedFor = '';
   let rendering = false;
-  let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }> | null = null;
+  let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }> | null = null;
   let editingStepId: string | null = null;
   let editingText = '';
   let editingChecked = false;

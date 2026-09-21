@@ -103,10 +103,13 @@ export function createJourneyClient(
       }
       return result as { draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> };
     },
-    list: async (): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>> => {
+    reopen: async (journeyId: string): Promise<void> => {
+      await command('ANMERKO_JOURNEY_REOPEN', { journeyId });
+    },
+    list: async (): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>> => {
       const result = await command('ANMERKO_JOURNEY_LIST') as unknown;
       if (!Array.isArray(result)) throw new Error(CLIENT_ERROR);
-      return result as Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>;
+      return result as Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>;
     },
     start(includeEnteredValues: boolean): Promise<void> {
       let currentOwner: JourneyOwner | undefined;
