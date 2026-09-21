@@ -1,5 +1,5 @@
 import { extensionApi } from './platform';
-import type { JourneySession } from './journey-core';
+import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
 import { isJourneyBackgroundSender } from './journey-messaging';
 import type { JourneyClient } from './journey-ui';
 
@@ -53,7 +53,7 @@ export function createJourneyClient(
   }
 
   return {
-    supportsEnteredValues: false,
+    supportsEnteredValues: true,
     read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
     updateSummary: async (expected: string, actual: string): Promise<void> => {
       const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
@@ -95,6 +95,14 @@ export function createJourneyClient(
       }
       return result as { journeyId: string; revision: number };
     },
+    openSnapshot: async (journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }> => {
+      const result = await command('ANMERKO_JOURNEY_OPEN_SNAPSHOT', { journeyId }) as unknown;
+      if (!result || typeof result !== 'object'
+        || !('draft' in (result as Record<string, unknown>)) || !('images' in (result as Record<string, unknown>))) {
+        throw new Error(CLIENT_ERROR);
+      }
+      return result as { draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> };
+    },
     list: async (): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>> => {
       const result = await command('ANMERKO_JOURNEY_LIST') as unknown;
       if (!Array.isArray(result)) throw new Error(CLIENT_ERROR);
@@ -118,8 +126,8 @@ export function createJourneyClient(
         if (generation !== actionGeneration) return;
         if (!granted) throw new Error(PERMISSION_ERROR);
         if (generation !== actionGeneration) return;
-        if (native) await command('ANMERKO_JOURNEY_START', native);
-        else await command('ANMERKO_JOURNEY_START', { intent: fallbackIntent });
+        if (native) await command('ANMERKO_JOURNEY_START', { ...native, includeEnteredValues });
+        else await command('ANMERKO_JOURNEY_START', { intent: fallbackIntent, includeEnteredValues });
       }, () => {
         if (generation !== actionGeneration) return;
         throw new Error(PERMISSION_ERROR);

@@ -1,4 +1,4 @@
-import type { JourneyDraftV1, JourneySession } from './journey-core';
+import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
 import type { CaptureFailure } from './journey-limits';
 import { privateImage } from './screenshot';
 
@@ -14,6 +14,7 @@ export interface JourneyClient {
   editValue(stepId: string, value: unknown): Promise<void>;
   redactUrl(stepId: string, url: 'source' | 'capture'): Promise<void>;
   save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
+  openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
   list(): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
@@ -588,14 +589,16 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       view.append(node('h1', 'Record a journey'));
       view.append(node('p', 'Record clicks and screenshots in the website tab you launched from as you move between websites. Stop whenever you are ready to review.', 'journey-help'));
       view.append(node('p', 'Screenshots and full URLs can contain personal information, even when entered values are off. Review and remove sensitive details before sharing.', 'journey-notice'));
-      const label = node('label', undefined, 'journey-option');
-      const input = node('input');
-      input.type = 'checkbox'; input.checked = includeEnteredValues; input.disabled = busy;
-      input.setAttribute('data-focus-id', 'journey-include-values');
-      input.setAttribute('aria-label', 'Include entered values');
-      input.addEventListener('change', () => { includeEnteredValues = input.checked; });
-      label.append(input, node('span', 'Include entered values'));
-      view.append(label);
+      if (client.supportsEnteredValues) {
+        const label = node('label', undefined, 'journey-option');
+        const input = node('input');
+        input.type = 'checkbox'; input.checked = includeEnteredValues; input.disabled = busy;
+        input.setAttribute('data-focus-id', 'journey-include-values');
+        input.setAttribute('aria-label', 'Include entered values');
+        input.addEventListener('change', () => { includeEnteredValues = input.checked; });
+        label.append(input, node('span', 'Include entered values'));
+        view.append(label);
+      } else view.append(node('p', 'Entered values: Off', 'journey-help'));
       view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded.', 'journey-help'));
       const buttons = node('div', undefined, 'journey-actions');
       buttons.append(action('Start journey', () => client.start(includeEnteredValues), true));

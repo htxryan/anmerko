@@ -10,7 +10,7 @@ import { stripUrlCredentials } from './journey-events';
 import { normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
-import { listJourneySnapshots, saveJourneySnapshot } from './journey-store';
+import { listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
 import { extensionApi } from './platform';
 
 export interface JourneyScreenshotService {
@@ -1087,6 +1087,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       return listJourneySnapshots();
     }
+    if (message.type === 'ANMERKO_JOURNEY_OPEN_SNAPSHOT') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      if (typeof message.journeyId !== 'string') throw new Error(GENERIC_ERROR);
+      const snapshot = await openJourneySnapshot(message.journeyId);
+      if (!snapshot) throw new Error(GENERIC_ERROR);
+      return snapshot;
+    }
     if (message.type === 'ANMERKO_JOURNEY_SAVE') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       let saved: { journeyId: string; revision: number } | undefined;
@@ -1180,7 +1187,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {
