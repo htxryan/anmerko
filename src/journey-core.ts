@@ -674,7 +674,7 @@ export function acceptInitialImage(state: JourneySession, input: InitialImageInp
   image.captureUrl = captureUrl;
   const errors: string[] = [];
   validateImage(image, 'initial.image', errors, false);
-  if (errors.length) return state;
+  if (errors.length || typeof image.dataUrl !== 'string') return state;
   const draft: JourneyDraftV1 = {
     ...state.draft,
     updatedAt: Date.parse(input.observedAt) > Date.parse(state.draft.updatedAt) ? input.observedAt : state.draft.updatedAt,
@@ -939,6 +939,8 @@ export function resolveJourneyCapture(state: JourneySession, input: JourneyCaptu
     }
     const inspection = inspectPngDataUrl(image.dataUrl, image.byteLength, image.width, image.height);
     if (!inspection.ok) return resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: inspection.reason });
+  } else {
+    return resolveJourneyCapture(state, { ...input, status: 'unavailable', reason: 'capture-error' });
   }
   const errors: string[] = [];
   validateImage(image, 'capture.image', errors, false);
@@ -997,8 +999,8 @@ function chronologicalTimestamp(state: RecordingJourneySession, candidate: strin
   )).toISOString();
 }
 
-function recordingSessionFits(state: RecordingJourneySession): boolean {
-  if (bytes(JSON.stringify(state)) > JOURNEY_LIMITS.maxSessionBytes) return false;
+export function recordingSessionFits(state: RecordingJourneySession): boolean {
+  if (bytes(JSON.stringify(state)) > JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes) return false;
   const terminal = stopJourney(state, {
     epoch: state.epoch,
     stoppedAt: chronologicalTimestamp(state, state.deadlineAt),

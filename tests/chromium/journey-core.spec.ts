@@ -5,6 +5,7 @@ import {
   commitJourneyNavigation,
   createJourneySession,
   resolveJourneyCapture,
+  recordingSessionFits,
   stopJourney,
   supersedeJourneyImagesAfter,
   validateJourneyDraft,
@@ -278,6 +279,8 @@ test('initial image gate rejects another URL and timestamps at the recording dea
     observedAt: '2026-09-20T12:05:00.000Z', elapsedMs: 300_000,
     image: { ...input.image, capturedAt: '2026-09-20T12:05:00.000Z', captureUrl: input.sourceUrl },
   })).toBe(starting);
+  const { dataUrl: _omitted, ...imageless } = input.image;
+  expect(acceptInitialImage(starting, { ...input, image: imageless })).toBe(starting);
 });
 
 test('event batches are sequenced once, deduplicated by document counter, and ordered independently of wall clock', () => {
@@ -436,6 +439,41 @@ test('capture resolution replaces one pending state with bounded image metadata'
     expect(resolved.draft.steps[1].image).toEqual({ status: 'retained', imageId: 'image-click' });
     expect(resolved.draft.images['image-click'].captureUrl).toBe('https://example.com/result?x=1#done');
   }
+});
+
+test('retained captures require an actual PNG payload', () => {
+  const recording = recordingSession();
+  const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
+  const resolved = resolveJourneyCapture(withClick, {
+    epoch: 1, documentToken: 'document-1', captureId: 'capture-click', status: 'retained', imageId: 'image-click',
+    image: {
+      capturedAt: '2026-09-20T12:00:01.000Z', captureUrl: 'https://example.com/start',
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES,
+      viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+    },
+  });
+
+  expect(resolved.phase).toBe('recording');
+  if (resolved.phase === 'recording') {
+    expect(resolved.draft.steps[1].image).toEqual({ status: 'unavailable', reason: 'capture-error' });
+    expect(resolved.draft.images['image-click']).toBeUndefined();
+  }
+});
+
+test('session fits reserves control space below the aggregate byte limit', () => {
+  const session = recordingSession();
+  if (session.phase !== 'recording') throw new Error('expected recording fixture');
+  const recording = session;
+  expect(recordingSessionFits(recording)).toBe(true);
+  const limit = JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes;
+  const base = new TextEncoder().encode(JSON.stringify(recording)).byteLength;
+  const padTo = (target: number) => {
+    const padded = structuredClone(recording);
+    padded.draft.expected = 'x'.repeat(Math.max(0, target - base));
+    return padded;
+  };
+  expect(recordingSessionFits(padTo(limit - 2048))).toBe(true);
+  expect(recordingSessionFits(padTo(limit + 1))).toBe(false);
 });
 
 test('batches cannot reuse pending capture IDs or cross the aggregate field-text budget', () => {

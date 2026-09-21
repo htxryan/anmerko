@@ -284,7 +284,7 @@ export function createJourneyController(
     const abort = new AbortController();
     navigationAbort = abort;
     void completeNavigation({
-      generation, captureId, toUrl, observedMs: receiptMs,
+      generation, captureId, toUrl, observedMs: actionWindowStartMs(previous),
       handshake: handshake ? { ...handshake } : undefined,
       handshakeReady: !handshake,
       signal: abort.signal,
@@ -300,8 +300,9 @@ export function createJourneyController(
     handshakeReady: boolean;
     signal: AbortSignal;
   }): Promise<void> {
-    const minimum = delay(POST_ACTION_DELAY_MS, input.signal);
-    const timeout = delay(NAVIGATION_WINDOW_MS, input.signal).then(() => 'timeout' as const);
+    const settledMs = now();
+    const minimum = delay(Math.max(0, input.observedMs + POST_ACTION_DELAY_MS - settledMs), input.signal);
+    const timeout = delay(Math.max(0, input.observedMs + NAVIGATION_WINDOW_MS - settledMs), input.signal).then(() => 'timeout' as const);
     const work = performNavigation(input, minimum).then(() => 'complete' as const, error => {
       if (isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
         settleCapture(input.captureId, captureFailureFromError(error));
@@ -423,8 +424,18 @@ export function createJourneyController(
 
   async function captureAfterAction(generation: number, captureId: string): Promise<void> {
     try {
-      await delay(POST_ACTION_DELAY_MS);
+      const started = state;
+      if (started.phase !== 'recording') return;
+      const actionStep = started.draft.steps.find(
+        step => step.image.status === 'pending' && step.image.captureId === captureId);
+      if (!actionStep) return;
+      const actionMs = Date.parse(actionStep.observedAt);
+      await delay(Math.max(0, actionMs + POST_ACTION_DELAY_MS - now()));
       if (!isCurrentRecording(generation, captureId)) return;
+      if (now() >= actionMs + NAVIGATION_WINDOW_MS) {
+        settleCapture(captureId, 'navigation-timeout');
+        return;
+      }
       const current = state as RecordingJourneySession;
       const before = await adapter.identify(current.ownerTabId);
       if (!isCurrentRecording(generation, captureId)) return;
@@ -444,6 +455,12 @@ export function createJourneyController(
       if (!isCurrentRecording(generation, captureId)) return;
       if (now() >= Date.parse(current.deadlineAt)) {
         await stop('duration-limit');
+        return;
+      }
+      const capturedMs = Date.parse(image.capturedAt);
+      if (!Number.isFinite(capturedMs) || capturedMs < actionMs + POST_ACTION_DELAY_MS
+        || capturedMs >= actionMs + NAVIGATION_WINDOW_MS) {
+        settleCapture(captureId, 'navigation-timeout');
         return;
       }
       if (!after.visible) {
@@ -583,6 +600,14 @@ function committedUrl(state: RecordingJourneySession): string | undefined {
   const step = state.draft.steps.at(-1);
   if (!step) return;
   return step.kind === 'navigation' ? step.navigation.toUrl : step.sourceUrl;
+}
+
+function actionWindowStartMs(state: RecordingJourneySession): number {
+  const steps = state.draft.steps;
+  let index = steps.length - 1;
+  while (index >= 0 && steps[index].kind === 'navigation') index -= 1;
+  const anchor = index >= 0 ? steps[index].observedAt : state.draft.startedAt;
+  return Date.parse(anchor);
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {

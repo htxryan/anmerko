@@ -92,11 +92,13 @@ test('only the owner can add a current batch and its image is captured after 500
   controller.acceptBatch({ ...batch, documentToken: 'stale-document' }, 42);
   expect(recording(controller.getState()).draft.steps).toHaveLength(1);
 
+  fixture.nowMs = startMs + 100;
   controller.acceptBatch(batch, 42);
   expect(recording(controller.getState()).draft.steps.map(step => step.seq)).toEqual([1, 2]);
   expect(fixture.calls.delays).toEqual([500]);
   expect(fixture.calls.capture).toHaveLength(1);
 
+  fixture.nowMs = startMs + 600;
   fixture.resolveDelay(0);
   await eventually(() => {
     const updated = recording(controller.getState());
@@ -121,6 +123,7 @@ test('a newer action supersedes an older pending image without queuing its captu
   fixture.resolveDelay(0);
   await Promise.resolve();
   expect(fixture.calls.capture).toHaveLength(1);
+  fixture.nowMs = startMs + 700;
   fixture.resolveDelay(1);
   await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
   expect(recording(controller.getState()).draft.steps[2].image.status).toBe('retained');
@@ -131,13 +134,16 @@ test('a post-action image from another URL is explicitly unavailable', async () 
   const fixture = adapterFixture({
     capture: async (_tabId, identity) => {
       captures += 1;
-      return image(captures === 1 ? identity.url : 'https://wrong.example/result');
+      return captures === 1
+        ? image(identity.url)
+        : image('https://wrong.example/result', iso(fixture.nowMs));
     },
   });
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
   const state = recording(controller.getState());
   controller.acceptBatch(clickBatch(state, 1, 'step-click-1', 'capture-click-1'), 42);
+  fixture.nowMs = startMs + 600;
   fixture.resolveDelay(0);
 
   await eventually(() => {
@@ -201,19 +207,24 @@ test('Stop advances state and epoch before awaiting teardown, then ignores a lat
 test('an action image-budget stop tears down the page recorder', async () => {
   const fixture = adapterFixture({
     capture: async (_tabId, identity) => ({
-      ...image(identity.url),
+      ...image(identity.url, iso(fixture.nowMs)),
+      width: 1, height: 1,
       byteLength: JOURNEY_LIMITS.maxImageBytes,
+      dataUrl: fixturePngDataUrl(JOURNEY_LIMITS.maxImageBytes),
     }),
   });
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
 
-  for (let counter = 1; counter <= 7; counter += 1) {
+  for (let counter = 1; counter <= 6; counter += 1) {
     const state = recording(controller.getState());
-    controller.acceptBatch(clickBatch(state, counter, `budget-step-${counter}`, `budget-capture-${counter}`), 42);
+    const actionAt = startMs + counter * 1000;
+    fixture.nowMs = actionAt;
+    controller.acceptBatch(timedClickBatch(state, counter, `budget-step-${counter}`, `budget-capture-${counter}`, iso(actionAt), counter * 1000), 42);
+    fixture.nowMs = actionAt + 500;
     fixture.resolveDelay(counter - 1);
     await eventually(() => {
-      if (counter < 7) expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained');
+      if (counter < 6) expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained');
       else expect(controller.getState().phase).toBe('reviewing');
     });
   }
@@ -325,7 +336,7 @@ function adapterFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
     },
     capture: async (tabId, identity, captureId) => {
       calls.capture.push({ tabId, identity, captureId });
-      return overrides.capture ? overrides.capture(tabId, identity, captureId) : image(identity.url);
+      return overrides.capture ? overrides.capture(tabId, identity, captureId) : image(identity.url, iso(fixture.nowMs));
     },
     begin: async (tabId, input) => {
       calls.begin.push({ tabId, input });
@@ -340,10 +351,19 @@ function adapterFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
   return fixture;
 }
 
-function image(captureUrl: string): JourneyDraftImage {
+function fixturePngDataUrl(byteLength: number): string {
+  const png = new Uint8Array(byteLength);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png.set([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 8);
+  png.set([0, 0, 0, 1, 0, 0, 0, 1], 16);
+  return `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
+}
+
+function image(captureUrl: string, capturedAt = '2026-09-20T12:00:00.100Z'): JourneyDraftImage {
   return {
-    capturedAt: '2026-09-20T12:00:00.100Z', captureUrl,
-    width: 390, height: 844, byteLength: 10_000,
+    capturedAt, captureUrl,
+    width: 1, height: 1, byteLength: 64,
+    dataUrl: fixturePngDataUrl(64),
     viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
   };
 }
@@ -373,6 +393,133 @@ function recording(state: JourneySession) {
   if (state.phase !== 'recording') throw new Error(`Expected recording, received ${state.phase}`);
   return state;
 }
+
+function timedClickBatch(
+  state: Extract<JourneySession, { phase: 'recording' }>,
+  localCounter: number, id: string, captureId: string, observedAt: string, elapsedMs: number,
+): JourneyEventBatchV1 {
+  return {
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+    documentToken: state.documentToken, localCounter,
+    events: [{
+      kind: 'click', id, observedAt, elapsedMs,
+      sourceUrl: 'https://example.com/start?q=1#top',
+      target: {
+        tag: 'button', selectorPath: ['button'], label: 'Go', editable: false,
+        viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 }, point: { x: 10, y: 10 },
+      },
+      image: { status: 'pending', captureId },
+    }],
+  };
+}
+
+const iso = (ms: number) => new Date(ms).toISOString();
+
+test('an action capture 499 ms after the action is explicitly unavailable', async () => {
+  const actionAt = startMs + 1000;
+  let capturedAt: string | undefined;
+  const fixture = adapterFixture({
+    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  capturedAt = iso(actionAt + 499);
+  const state = recording(controller.getState());
+  controller.acceptBatch(timedClickBatch(state, 1, 'step-early', 'capture-early', iso(actionAt), 1000), 42);
+
+  expect(fixture.calls.delays.at(-1)).toBe(1500);
+  fixture.resolveDelay(fixture.calls.delays.length - 1);
+  await eventually(() => {
+    expect(recording(controller.getState()).draft.steps[1].image)
+      .toEqual({ status: 'unavailable', reason: 'navigation-timeout' });
+  });
+});
+
+test('an action capture exactly 500 ms after the action is retained', async () => {
+  const actionAt = startMs + 1000;
+  let capturedAt: string | undefined;
+  const fixture = adapterFixture({
+    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  capturedAt = iso(actionAt + 500);
+  const state = recording(controller.getState());
+  controller.acceptBatch(timedClickBatch(state, 1, 'step-boundary', 'capture-boundary', iso(actionAt), 1000), 42);
+
+  fixture.resolveDelay(fixture.calls.delays.length - 1);
+  await eventually(() => {
+    expect(recording(controller.getState()).draft.steps[1].image.status).toBe('retained');
+  });
+});
+
+test('an action capture 4999 ms after the action is retained', async () => {
+  const actionAt = startMs + 1000;
+  let capturedAt: string | undefined;
+  const fixture = adapterFixture({
+    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const state = recording(controller.getState());
+  fixture.nowMs = actionAt + 4999;
+  controller.acceptBatch(timedClickBatch(state, 1, 'step-late', 'capture-late', iso(actionAt), 1000), 42);
+
+  fixture.resolveDelay(fixture.calls.delays.length - 1);
+  await eventually(() => {
+    expect(recording(controller.getState()).draft.steps[1].image.status).toBe('retained');
+  });
+});
+
+test('an action capture at the five-second window end is explicitly unavailable', async () => {
+  const actionAt = startMs + 1000;
+  let capturedAt: string | undefined;
+  const fixture = adapterFixture({
+    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const state = recording(controller.getState());
+  fixture.nowMs = actionAt + 5000;
+  const capturesBefore = fixture.calls.capture.length;
+  controller.acceptBatch(timedClickBatch(state, 1, 'step-expired', 'capture-expired', iso(actionAt), 1000), 42);
+
+  fixture.resolveDelay(fixture.calls.delays.length - 1);
+  await eventually(() => {
+    expect(recording(controller.getState()).draft.steps[1].image)
+      .toEqual({ status: 'unavailable', reason: 'navigation-timeout' });
+  });
+  expect(fixture.calls.capture.length).toBe(capturesBefore);
+});
+
+test('a redirect shares the initiating action window instead of restarting it', async () => {
+  let capturedAt: string | undefined;
+  const fixture = adapterFixture({
+    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = startMs + 100;
+  fixture.identity.url = 'https://example.com/second';
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/second', kind: 'same-document' });
+  capturedAt = iso(startMs + 600);
+  fixture.resolveDelay(0);
+  await eventually(() => {
+    expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained');
+  });
+
+  fixture.nowMs = startMs + 4100;
+  fixture.identity.url = 'https://example.com/third';
+  capturedAt = iso(startMs + 5100);
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/third', kind: 'same-document' });
+  fixture.resolveDelay(2);
+  await eventually(() => {
+    const steps = recording(controller.getState()).draft.steps;
+    expect(steps.map(step => step.kind)).toEqual(['initial', 'navigation', 'navigation']);
+    expect(steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'navigation-timeout' });
+  });
+});
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

@@ -22,6 +22,7 @@ export const JOURNEY_LIMITS = {
   maxSelectorSegmentCharacters: 256,
   maxLimitations: 30,
   maxLimitationCharacters: 500,
+  sessionMetadataReserveBytes: 1_024,
 } as const;
 
 export const CAPTURE_FAILURES = [
