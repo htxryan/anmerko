@@ -75,6 +75,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let summarySaving = false;
   let confirmingRemove: string | null = null;
   let removing = false;
+  let confirmingDelete: string | null = null;
+  let deletingJourney: string | null = null;
+  let confirmingDeleteAll = false;
+  let deletingAll = false;
+  let deleteStatus = '';
   let acknowledged = false;
   let acknowledgedFor = '';
   let rendering = false;
@@ -121,6 +126,15 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         downloadBusy = false;
         exportStatus = '';
         exportStatusFor = null;
+      }
+      if (next.phase !== 'idle') {
+        confirmingDelete = null;
+        deletingJourney = null;
+        confirmingDeleteAll = false;
+        deletingAll = false;
+        deleteStatus = '';
+      } else if (confirmingDelete !== null && savedJourneys?.some(item => item.journeyId === confirmingDelete) !== true) {
+        confirmingDelete = null;
       }
       if (next.phase === 'idle') {
         try {
@@ -169,6 +183,29 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       });
     });
     return button;
+  }
+
+  function isStaleReview(caught: unknown): boolean {
+    return caught instanceof Error && (caught as { code?: unknown }).code === 'stale-review';
+  }
+
+  async function refreshSavedList(): Promise<void> {
+    try {
+      const list = typeof (client as Partial<JourneyClient>).list === 'function'
+        ? await client.list()
+        : null;
+      if (!alive) return;
+      savedJourneys = list;
+      if (confirmingDelete !== null && !savedJourneys?.some(item => item.journeyId === confirmingDelete)) {
+        confirmingDelete = null;
+      }
+    } catch {
+      if (!alive) return;
+      savedJourneys = null;
+      confirmingDelete = null;
+      confirmingDeleteAll = false;
+    }
+    if (alive) render();
   }
 
   function codePoints(value: string): number {
@@ -659,6 +696,146 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (alive) render();
   }
 
+  function renderDelete(
+    item: { journeyId: string; revision: number },
+  ): HTMLElement {
+    const wrap = node('div', undefined, 'journey-step-actions');
+    const idle = deletingJourney === null && !deletingAll && !busy;
+    if (confirmingDelete === item.journeyId) {
+      const confirm = node('button', `Confirm delete journey ${item.journeyId}`, 'journey-danger');
+      confirm.type = 'button';
+      confirm.disabled = !idle;
+      confirm.setAttribute('data-focus-id', `confirm-delete-${item.journeyId}`);
+      const disarm = (focusTrigger: boolean) => {
+        confirmingDelete = null;
+        render();
+        if (focusTrigger) {
+          const trigger = view.querySelector(`[data-focus-id="${CSS.escape(`delete-${item.journeyId}`)}"]`);
+          if (trigger instanceof HTMLElement) trigger.focus();
+        }
+      };
+      confirm.addEventListener('click', () => {
+        if (!idle) return;
+        confirmingDelete = null;
+        deletingJourney = item.journeyId;
+        deleteStatus = '';
+        error = '';
+        render();
+        void client.deleteSnapshot(item.journeyId, item.revision).then(() => {
+          error = '';
+        }).catch(caught => {
+          error = isStaleReview(caught)
+            ? 'A saved journey changed. The list was reloaded; try again.'
+            : 'Could not delete this journey. Try again.';
+        }).finally(() => {
+          deletingJourney = null;
+          if (alive) void refreshSavedList();
+          else render();
+        });
+      });
+      confirm.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); disarm(true); }
+      });
+      const keep = node('button', `Keep journey ${item.journeyId}`, 'journey-secondary');
+      keep.type = 'button';
+      keep.disabled = !idle;
+      keep.addEventListener('click', () => { disarm(true); });
+      wrap.append(confirm, keep);
+    } else {
+      const remove = node('button', `Delete journey ${item.journeyId}`, 'journey-secondary');
+      remove.type = 'button';
+      remove.disabled = !idle;
+      remove.setAttribute('data-focus-id', `delete-${item.journeyId}`);
+      remove.addEventListener('click', () => {
+        confirmingDelete = item.journeyId;
+        confirmingDeleteAll = false;
+        render();
+        const confirm = view.querySelector(`[data-focus-id="${CSS.escape(`confirm-delete-${item.journeyId}`)}"]`);
+        if (confirm instanceof HTMLElement) confirm.focus();
+      });
+      wrap.append(remove);
+    }
+    return wrap;
+  }
+
+  function renderDeleteAll(count: number): HTMLElement {
+    const wrap = node('div', undefined, 'journey-saved-delete-all');
+    const idle = deletingJourney === null && !deletingAll && !busy;
+    if (confirmingDeleteAll) {
+      const scope = node(
+        'p',
+        `Delete ${count} saved ${count === 1 ? 'journey' : 'journeys'}? This cannot be undone.`,
+        'journey-help',
+      );
+      scope.id = 'journey-delete-all-scope';
+      wrap.append(scope);
+      const actions = node('div', undefined, 'journey-step-actions');
+      const confirm = node('button', 'Confirm delete all journeys', 'journey-danger');
+      confirm.type = 'button';
+      confirm.disabled = !idle;
+      confirm.setAttribute('aria-describedby', 'journey-delete-all-scope');
+      confirm.setAttribute('data-focus-id', 'confirm-delete-all');
+      const disarm = (focusTrigger: boolean) => {
+        confirmingDeleteAll = false;
+        render();
+        if (focusTrigger) {
+          const trigger = view.querySelector('[data-focus-id="delete-all"]');
+          if (trigger instanceof HTMLElement) trigger.focus();
+        }
+      };
+      confirm.addEventListener('click', () => {
+        if (!idle) return;
+        confirmingDeleteAll = false;
+        deletingAll = true;
+        deleteStatus = '';
+        error = '';
+        render();
+        const snapshot = (savedJourneys ?? []).map(item => ({ journeyId: item.journeyId, revision: item.revision }));
+        const failures: string[] = [];
+        let deleted = 0;
+        void (async () => {
+          for (const item of snapshot) {
+            try {
+              await client.deleteSnapshot(item.journeyId, item.revision);
+              deleted += 1;
+            } catch {
+              failures.push(item.journeyId);
+            }
+          }
+          deleteStatus = `Deleted ${deleted} of ${snapshot.length} journeys.`;
+          error = failures.map(journeyId => `Could not delete journey ${journeyId}.`).join(' ');
+        })().finally(() => {
+          deletingAll = false;
+          if (alive) void refreshSavedList();
+          else render();
+        });
+      });
+      confirm.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); disarm(true); }
+      });
+      const cancel = node('button', 'Cancel', 'journey-secondary');
+      cancel.type = 'button';
+      cancel.disabled = !idle;
+      cancel.addEventListener('click', () => { disarm(true); });
+      actions.append(confirm, cancel);
+      wrap.append(actions);
+    } else {
+      const remove = node('button', 'Delete all journeys', 'journey-secondary');
+      remove.type = 'button';
+      remove.disabled = !idle;
+      remove.setAttribute('data-focus-id', 'delete-all');
+      remove.addEventListener('click', () => {
+        confirmingDeleteAll = true;
+        confirmingDelete = null;
+        render();
+        const confirm = view.querySelector('[data-focus-id="confirm-delete-all"]');
+        if (confirm instanceof HTMLElement) confirm.focus();
+      });
+      wrap.append(remove);
+    }
+    return wrap;
+  }
+
   function renderSavedList(): HTMLElement | null {
     if (savedJourneys === null) return null;
     const section = node('section', undefined, 'journey-saved-list');
@@ -681,9 +858,20 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
           reopen.setAttribute('data-focus-id', `reopen-${item.journeyId}`);
           row.append(reopen);
         }
+        if (typeof (client as Partial<JourneyClient>).deleteSnapshot === 'function') {
+          row.append(renderDelete(item));
+        }
         list.append(row);
       }
       section.append(list);
+      if (typeof (client as Partial<JourneyClient>).deleteSnapshot === 'function') {
+        section.append(renderDeleteAll(savedJourneys.length));
+      }
+    }
+    if (deleteStatus) {
+      const status = node('p', deleteStatus, 'journey-status');
+      status.setAttribute('role', 'status');
+      section.append(status);
     }
     return section;
   }
