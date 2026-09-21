@@ -68,23 +68,50 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let acknowledged = false;
   let acknowledgedFor = '';
   let rendering = false;
+  let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }> | null = null;
+  let editingStepId: string | null = null;
+  let editingText = '';
+  let editingChecked = false;
+  let valueBusy: string | null = null;
+  let redactBusy: string | null = null;
+  let saveBusy = false;
 
   async function refresh() {
     const current = ++version;
     try {
       const next = await client.read();
       if (!alive || current !== version) return;
-      if (next.phase === 'idle' && state.phase !== 'idle') includeEnteredValues = false;
+      if ((next.phase === 'idle' || next.phase === 'saved')
+        && state.phase !== 'idle' && state.phase !== 'saved') includeEnteredValues = false;
       state = next;
       if (next.phase === 'reviewing') {
         if (acknowledgedFor !== '' && acknowledgedFor !== next.draft.id) acknowledged = false;
         acknowledgedFor = next.draft.id;
         if (confirmingRemove !== null && !next.draft.steps.some(step => step.id === confirmingRemove)) confirmingRemove = null;
+        if (editingStepId !== null && !next.draft.steps.some(step => step.id === editingStepId)) {
+          editingStepId = null;
+        }
       } else {
         acknowledged = false;
         acknowledgedFor = '';
         summaryPending = null;
         confirmingRemove = null;
+        editingStepId = null;
+        valueBusy = null;
+        redactBusy = null;
+        saveBusy = false;
+      }
+      if (next.phase === 'idle') {
+        try {
+          const list = typeof (client as Partial<JourneyClient>).list === 'function'
+            ? await client.list()
+            : null;
+          if (!alive || current !== version) return;
+          savedJourneys = list;
+        } catch {
+          if (!alive || current !== version) return;
+          savedJourneys = null;
+        }
       }
       loadFailed = false;
       render();
@@ -235,6 +262,237 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return wrap;
   }
 
+  function valueDisplay(value: { kind: string; value?: string; values?: string[]; checked?: boolean }): string {
+    if (value.kind === 'text') return value.value === '' ? '(empty value)' : String(value.value ?? '');
+    if (value.kind === 'selection') {
+      const values = Array.isArray(value.values) ? value.values : [];
+      return values.length === 0 ? '(empty value)' : values.join(', ');
+    }
+    if (value.kind === 'checked') return value.checked === true ? 'Checked' : 'Not checked';
+    return '';
+  }
+
+  function emptyValueFor(enteredValue: { kind: string; multiple?: boolean }): { kind: string; value?: string; values?: string[]; multiple?: boolean; checked?: boolean; truncated?: boolean } {
+    if (enteredValue.kind === 'text') return { kind: 'text', value: '', truncated: false };
+    if (enteredValue.kind === 'selection') return { kind: 'selection', values: [], multiple: enteredValue.multiple === true, truncated: false };
+    return { kind: 'checked', checked: false };
+  }
+
+  function editedValueFor(
+    enteredValue: { kind: string; multiple?: boolean },
+    text: string,
+    checked: boolean,
+  ): { kind: string; value?: string; values?: string[]; multiple?: boolean; checked?: boolean; truncated?: boolean } {
+    if (enteredValue.kind === 'text') return { kind: 'text', value: text, truncated: false };
+    if (enteredValue.kind === 'selection') {
+      if (enteredValue.multiple === true) {
+        const values = text === '' ? [] : text.split('\n');
+        return { kind: 'selection', values, multiple: true, truncated: false };
+      }
+      return { kind: 'selection', values: text === '' ? [] : [text], multiple: false, truncated: false };
+    }
+    return { kind: 'checked', checked };
+  }
+
+  function renderValueEditor(step: { id: string; seq: number; enteredValue: { kind: string; value?: string; values?: string[]; multiple?: boolean; checked?: boolean } }): HTMLElement {
+    const wrap = node('div', undefined, 'journey-value-editor');
+    const labelText = `Edit entered value for step ${step.seq}`;
+    const cancelEditing = () => { editingStepId = null; render(); };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); cancelEditing(); }
+    };
+    if (step.enteredValue.kind === 'checked') {
+      const label = node('label', undefined, 'journey-option');
+      const input = node('input');
+      input.type = 'checkbox';
+      input.checked = editingChecked;
+      input.disabled = busy || valueBusy !== null;
+      input.setAttribute('aria-label', labelText);
+      input.setAttribute('data-focus-id', `value-${step.id}`);
+      input.addEventListener('change', () => { editingChecked = input.checked; });
+      input.addEventListener('keydown', onEscape);
+      label.append(input, node('span', labelText));
+      wrap.append(label);
+    } else if (step.enteredValue.kind === 'selection' && step.enteredValue.multiple === true) {
+      const label = node('label', labelText, 'journey-field-label');
+      label.setAttribute('for', `journey-value-${step.id}`);
+      const area = document.createElement('textarea');
+      area.id = `journey-value-${step.id}`;
+      area.className = 'journey-textarea';
+      area.rows = 3;
+      area.value = editingText;
+      area.disabled = busy || valueBusy !== null;
+      area.setAttribute('data-focus-id', `value-${step.id}`);
+      area.addEventListener('input', () => { editingText = area.value; });
+      area.addEventListener('keydown', onEscape);
+      const help = node('p', 'One value per line.', 'journey-help');
+      wrap.append(label, area, help);
+    } else {
+      const label = node('label', labelText, 'journey-field-label');
+      label.setAttribute('for', `journey-value-${step.id}`);
+      const input = document.createElement('input');
+      input.id = `journey-value-${step.id}`;
+      input.type = 'text';
+      input.className = 'journey-input';
+      input.value = editingText;
+      input.disabled = busy || valueBusy !== null;
+      input.setAttribute('data-focus-id', `value-${step.id}`);
+      input.addEventListener('input', () => { editingText = input.value; });
+      input.addEventListener('keydown', onEscape);
+      // Text kinds with long values benefit from a textarea; keep single-line
+      // input for selects and short text to stay keyboard-simple at 320px.
+      if (step.enteredValue.kind === 'text' && editingText.length > 80) {
+        const area = document.createElement('textarea');
+        area.id = input.id;
+        area.className = 'journey-textarea';
+        area.rows = 3;
+        area.value = editingText;
+        area.disabled = input.disabled;
+        area.setAttribute('aria-label', labelText);
+        area.setAttribute('data-focus-id', `value-${step.id}`);
+        area.addEventListener('input', () => { editingText = area.value; });
+        area.addEventListener('keydown', onEscape);
+        wrap.append(label, area);
+      } else {
+        wrap.append(label, input);
+      }
+    }
+    const actions = node('div', undefined, 'journey-step-actions');
+    const save = node('button', `Save value for step ${step.seq}`, 'journey-primary');
+    save.type = 'button';
+    save.disabled = busy || valueBusy !== null;
+    save.setAttribute('data-focus-id', `save-value-${step.id}`);
+    save.addEventListener('click', () => {
+      if (busy || valueBusy !== null) return;
+      valueBusy = step.id;
+      error = '';
+      render();
+      const wanted = editedValueFor(step.enteredValue, editingText, editingChecked);
+      void client.editValue(step.id, wanted).then(() => { error = ''; }).catch(caught => {
+        error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+      }).finally(() => {
+        valueBusy = null;
+        if (error === '') editingStepId = null;
+        if (alive) void refresh();
+        else render();
+      });
+    });
+    const cancel = node('button', `Cancel editing step ${step.seq}`, 'journey-secondary');
+    cancel.type = 'button';
+    cancel.disabled = busy || valueBusy !== null;
+    cancel.addEventListener('click', () => { editingStepId = null; render(); });
+    cancel.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); editingStepId = null; render(); }
+    });
+    actions.append(save, cancel);
+    wrap.append(actions);
+    return wrap;
+  }
+
+  function renderEnteredValue(step: { id: string; seq: number; kind: string; enteredValue?: { kind: string; value?: string; values?: string[]; multiple?: boolean; checked?: boolean; truncated?: boolean; edited?: true } }): HTMLElement | null {
+    if (step.kind !== 'field-change' || !step.enteredValue) return null;
+    const entered = step.enteredValue;
+    const section = node('div', undefined, 'journey-entered-value');
+    section.append(node('p', 'Entered value', 'journey-meta-label'));
+    section.append(node('p', valueDisplay(entered as { kind: string; value?: string; values?: string[]; checked?: boolean }), 'journey-value'));
+    if ((entered as { edited?: unknown }).edited === true) {
+      section.append(node('p', 'Edited during review.', 'journey-edited'));
+    }
+    if ((entered as { truncated?: unknown }).truncated === true) {
+      section.append(node('p', 'Value was truncated during capture.', 'journey-help'));
+    }
+    if (editingStepId === step.id) {
+      section.append(renderValueEditor(step as { id: string; seq: number; enteredValue: { kind: string; value?: string; values?: string[]; multiple?: boolean; checked?: boolean } }));
+    } else {
+      const actions = node('div', undefined, 'journey-step-actions');
+      const edit = node('button', `Edit value for step ${step.seq}`, 'journey-secondary');
+      edit.type = 'button';
+      edit.disabled = busy || valueBusy !== null;
+      edit.setAttribute('data-focus-id', `edit-value-${step.id}`);
+      edit.addEventListener('click', () => {
+        const current = entered;
+        if (current.kind === 'text') editingText = String(current.value ?? '');
+        else if (current.kind === 'selection') {
+          const values = Array.isArray(current.values) ? current.values : [];
+          editingText = current.multiple === true ? values.join('\n') : String(values[0] ?? '');
+        } else editingChecked = current.checked === true;
+        editingStepId = step.id;
+        render();
+      });
+      const remove = node('button', `Remove value for step ${step.seq}`, 'journey-secondary');
+      remove.type = 'button';
+      remove.disabled = busy || valueBusy !== null;
+      remove.setAttribute('data-focus-id', `remove-value-${step.id}`);
+      remove.addEventListener('click', () => {
+        if (busy || valueBusy !== null) return;
+        valueBusy = step.id;
+        error = '';
+        render();
+        void client.editValue(step.id, emptyValueFor(entered as { kind: string; multiple?: boolean })).then(() => { error = ''; }).catch(caught => {
+          error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+        }).finally(() => {
+          valueBusy = null;
+          if (alive) void refresh();
+        });
+      });
+      actions.append(edit, remove);
+      section.append(actions);
+    }
+    return section;
+  }
+
+  function renderUrlRedact(step: { id: string; seq: number; sourceUrl: string; image: { status: string; imageId?: string } }, draft: JourneyDraftV1): HTMLElement {
+    const wrap = node('div', undefined, 'journey-url-actions');
+    if (step.sourceUrl === '[redacted]') {
+      wrap.append(node('p', 'Redacted during review.', 'journey-edited'));
+    } else {
+      const redactSource = node('button', `Redact source URL for step ${step.seq}`, 'journey-secondary');
+      redactSource.type = 'button';
+      redactSource.disabled = busy || redactBusy !== null;
+      redactSource.setAttribute('data-focus-id', `redact-source-${step.id}`);
+      redactSource.addEventListener('click', () => {
+        if (busy || redactBusy !== null) return;
+        redactBusy = `${step.id}:source`;
+        error = '';
+        render();
+        void client.redactUrl(step.id, 'source').then(() => { error = ''; }).catch(caught => {
+          error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+        }).finally(() => {
+          redactBusy = null;
+          if (alive) void refresh();
+        });
+      });
+      wrap.append(redactSource);
+    }
+    if (step.image.status === 'retained' && step.image.imageId) {
+      const image = draft.images[step.image.imageId];
+      if (image) {
+        if (image.captureUrl === '[redacted]') {
+          wrap.append(node('p', 'Redacted during review.', 'journey-edited'));
+        } else {
+          const redactCapture = node('button', `Redact image URL for step ${step.seq}`, 'journey-secondary');
+          redactCapture.type = 'button';
+          redactCapture.disabled = busy || redactBusy !== null;
+          redactCapture.setAttribute('data-focus-id', `redact-capture-${step.id}`);
+          redactCapture.addEventListener('click', () => {
+            if (busy || redactBusy !== null) return;
+            redactBusy = `${step.id}:capture`;
+            error = '';
+            render();
+            void client.redactUrl(step.id, 'capture').then(() => { error = ''; }).catch(caught => {
+              error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+            }).finally(() => {
+              redactBusy = null;
+              if (alive) void refresh();
+            });
+          });
+          wrap.append(redactCapture);
+        }
+      }
+    }
+    return wrap;
+  }
+
   function renderSave(draft: JourneyDraftV1): HTMLElement {
     const section = node('section', undefined, 'journey-save');
     section.setAttribute('aria-label', 'Save journey');
@@ -243,7 +501,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const ack = node('input');
     ack.type = 'checkbox';
     ack.checked = acknowledged;
-    ack.disabled = busy;
+    ack.disabled = busy || saveBusy;
+    ack.setAttribute('data-focus-id', 'journey-ack');
+    ack.setAttribute('aria-label', 'I understand this journey retains full URLs and any entered values.');
     ack.addEventListener('change', () => { acknowledged = ack.checked; render(); });
     ackLabel.append(ack, node('span', 'I understand this journey retains full URLs and any entered values.'));
     section.append(ackLabel);
@@ -264,16 +524,48 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       section.append(list);
       describedBy += ' journey-save-reasons';
     } else {
-      section.append(node('p', 'This review is ready to save. Saving unlocks in the next update.', 'journey-help'));
+      section.append(node('p', 'This review is ready to save.', 'journey-help'));
     }
     const save = node('button', 'Save journey', 'journey-primary');
     save.type = 'button';
-    save.disabled = true;
+    save.disabled = reasons.length > 0 || busy || saveBusy;
     save.setAttribute('aria-describedby', describedBy);
+    save.setAttribute('data-focus-id', 'journey-save');
+    save.addEventListener('click', () => {
+      if (save.disabled) return;
+      saveBusy = true;
+      error = '';
+      render();
+      void client.save(acknowledged).then(() => { error = ''; }).catch(caught => {
+        error = caught instanceof Error ? caught.message : 'Could not save this journey. Try again.';
+      }).finally(() => {
+        saveBusy = false;
+        if (alive) void refresh();
+      });
+    });
     section.append(save);
-    const note = node('p', 'Saving is not available in this build. Review saving arrives next; your draft stays in this tab until then.', 'journey-help');
+    const note = node('p', 'Saving stores a reviewed snapshot locally. Raw drafts are never exported.', 'journey-help');
     note.id = 'journey-save-note';
     section.append(note);
+    return section;
+  }
+
+  function renderSavedList(): HTMLElement | null {
+    if (savedJourneys === null) return null;
+    const section = node('section', undefined, 'journey-saved-list');
+    section.setAttribute('aria-label', 'Saved journeys');
+    section.append(node('h2', 'Saved journeys'));
+    if (savedJourneys.length === 0) {
+      section.append(node('p', 'No saved journeys yet.', 'journey-help'));
+    } else {
+      const list = node('ul', undefined, 'journey-saved-items');
+      for (const item of savedJourneys) {
+        const label = `Journey ${item.journeyId} · revision ${item.revision} · ${item.stepCount} ${item.stepCount === 1 ? 'step' : 'steps'} · updated ${item.updatedAt}`;
+        list.append(node('li', label, 'journey-saved-item'));
+      }
+      section.append(list);
+      section.append(node('p', 'Reopening a saved journey for editing arrives next.', 'journey-help'));
+    }
     return section;
   }
 
@@ -285,28 +577,36 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const focusId = inView ? activeElement.getAttribute('data-focus-id') : null;
     const selection = activeElement instanceof HTMLTextAreaElement && inView
       ? [activeElement.selectionStart, activeElement.selectionEnd] as const
-      : null;
+      : activeElement instanceof HTMLInputElement && activeElement.type === 'text' && inView
+        ? [activeElement.selectionStart ?? 0, activeElement.selectionEnd ?? 0] as const
+        : null;
     const oldFocus = view.contains(activeElement) ? activeElement?.textContent : null;
     rendering = true;
     try { view.replaceChildren(); } finally { rendering = false; }
     view.append(node('p', 'anmerko', 'journey-brand'));
-    if (state.phase === 'idle' || state.phase === 'saved') {
+    if (state.phase === 'idle') {
       view.append(node('h1', 'Record a journey'));
       view.append(node('p', 'Record clicks and screenshots in the website tab you launched from as you move between websites. Stop whenever you are ready to review.', 'journey-help'));
       view.append(node('p', 'Screenshots and full URLs can contain personal information, even when entered values are off. Review and remove sensitive details before sharing.', 'journey-notice'));
-      if (client.supportsEnteredValues) {
-        const label = node('label', undefined, 'journey-option');
-        const input = node('input');
-        input.type = 'checkbox'; input.checked = includeEnteredValues; input.disabled = busy;
-        input.addEventListener('change', () => { includeEnteredValues = input.checked; });
-        label.append(input, node('span', 'Include entered values'));
-        view.append(label);
-      } else view.append(node('p', 'Entered values: Off', 'journey-help'));
+      const label = node('label', undefined, 'journey-option');
+      const input = node('input');
+      input.type = 'checkbox'; input.checked = includeEnteredValues; input.disabled = busy;
+      input.setAttribute('data-focus-id', 'journey-include-values');
+      input.setAttribute('aria-label', 'Include entered values');
+      input.addEventListener('change', () => { includeEnteredValues = input.checked; });
+      label.append(input, node('span', 'Include entered values'));
+      view.append(label);
       view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded.', 'journey-help'));
       const buttons = node('div', undefined, 'journey-actions');
       buttons.append(action('Start journey', () => client.start(includeEnteredValues), true));
       if (busy) buttons.append(action('Cancel start', () => client.stop(), false, true));
       view.append(buttons);
+      const saved = renderSavedList();
+      if (saved) view.append(saved);
+    } else if (state.phase === 'saved') {
+      view.append(node('h1', 'Journey saved'));
+      view.append(node('p', `Journey ${state.journeyId} saved (revision ${state.revision}).`, 'journey-help'));
+      view.append(action('Back to comments', () => client.discard(), true));
     } else if (state.phase === 'starting' || state.phase === 'recording') {
       const recording = state.phase === 'recording';
       view.append(node('h1', recording ? 'Recording journey' : 'Taking the first screenshot…'));
@@ -325,15 +625,18 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const list = node('ol', undefined, 'journey-steps');
       for (const step of state.draft.steps) {
         const item = node('li'); item.value = step.seq;
+        const targetLabel = step.kind === 'field-change' || step.kind === 'click'
+          ? (typeof step.target.label === 'string' ? step.target.label : 'text field')
+          : '';
         const label = step.kind === 'initial' ? 'Initial view'
           : step.kind === 'navigation' ? 'Navigation'
-          : `${step.kind === 'click' ? 'Click' : 'Entered value'}: ${step.target.label}`;
+          : `${step.kind === 'click' ? 'Click' : 'Entered value'}: ${targetLabel}`;
         item.append(node('h2', `Step ${step.seq} · ${label}`), node('p', elapsed(step.elapsedMs), 'journey-time'));
-        item.append(node('p', 'Source URL', 'journey-meta-label'), node('p', step.sourceUrl, 'journey-url'));
+        item.append(node('p', 'Source URL', 'journey-meta-label'), node('p', String(step.sourceUrl), 'journey-url'));
         if (step.image.status === 'retained') {
           const image = state.draft.images[step.image.imageId];
           if (image) {
-            item.append(node('p', 'Screenshot URL', 'journey-meta-label'), node('p', image.captureUrl, 'journey-url'));
+            item.append(node('p', 'Screenshot URL', 'journey-meta-label'), node('p', String(image.captureUrl), 'journey-url'));
             item.append(node('p', `Captured ${image.capturedAt}`, 'journey-time'));
             if (image.dataUrl) {
               const preview = privateImage(image.dataUrl, `Screenshot for step ${step.seq}`);
@@ -346,6 +649,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
             : step.image.status === 'removed' ? 'removed during review' : 'capture pending';
           item.append(node('p', `Screenshot unavailable: ${reason}.`, 'journey-help'));
         }
+        const entered = renderEnteredValue(step as { id: string; seq: number; kind: string; enteredValue?: { kind: string; value?: string; values?: string[]; checked?: boolean; truncated?: boolean; edited?: true } });
+        if (entered) item.append(entered);
+        item.append(renderUrlRedact(step as { id: string; seq: number; sourceUrl: string; image: { status: string; imageId?: string } }, state.draft));
         item.append(renderRemove(step));
         list.append(item);
       }
@@ -364,7 +670,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const restore = view.querySelector(`[data-focus-id="${CSS.escape(focusId)}"]`);
       if (restore instanceof HTMLElement) {
         restore.focus();
-        if (restore instanceof HTMLTextAreaElement && selection) {
+        if ((restore instanceof HTMLTextAreaElement || (restore instanceof HTMLInputElement && restore.type === 'text')) && selection) {
           try { restore.setSelectionRange(selection[0], selection[1]); } catch { /* Keep focus without caret restore. */ }
         }
       }
