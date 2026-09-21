@@ -287,7 +287,6 @@ test('Firefox captures regions from the native sidebar and touch input, and down
   });
   await activateDock();
   await driver.wait(() => docked("return !!root?.querySelector('.capture') && !root.querySelector('.capture').disabled"), 5000);
-  await dockClick('.comment-options');
   await dockClick('.capture');
   await driver.wait(() => ui('.capture-layer'), 5000);
   await driver.actions().move({ x: 110, y: 110 }).press().move({ x: 290, y: 210, duration: 200 }).release().perform();
@@ -327,7 +326,6 @@ test('Firefox captures regions from the native sidebar and touch input, and down
   await dockClick('.dock');
   await driver.wait(async () => (await ui('.panel')).isDisplayed(), 5000);
   await driver.manage().window().setRect({ width: 450, height: 920 });
-  await click('.comment-options');
   await click('.capture'); await driver.wait(() => ui('.capture-layer'), 5000);
   const finger = new Pointer('capture-finger', Pointer.Type.TOUCH);
   await driver.actions().insert(finger, finger.move({ x: 50, y: 110, duration: 0 }), finger.press(), finger.move({ x: 320, y: 300, duration: 200 }), finger.release()).perform();
@@ -445,7 +443,7 @@ test('Firefox creates and renders element and global comments on ordinary HTTP',
   assert.deepEqual(await driver.executeScript(() => ({ secure: isSecureContext, uuid: typeof crypto.randomUUID })), { secure: false, uuid: 'undefined' });
   await activate();
   await comment('#hero-title', 'Ordinary HTTP element feedback');
-  await click('.comment-options'); await click('.global-comment');
+  await click('.global-comment');
   await driver.wait(() => ui('#comment'), 5000, 'HTTP global action opens its editor');
   await save('Ordinary HTTP global feedback');
   await driver.wait(async () => await count() === 2, 5000);
