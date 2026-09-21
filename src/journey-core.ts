@@ -36,9 +36,15 @@ export type ReviewedFieldValue =
   | { kind: 'checked'; checked: boolean };
 
 export type DraftFieldValue =
-  | { kind: 'text'; value: string; truncated: boolean }
-  | { kind: 'selection'; values: string[]; multiple: boolean; truncated: boolean }
-  | { kind: 'checked'; checked: boolean };
+  | { kind: 'text'; value: string; truncated: boolean; edited?: true }
+  | { kind: 'selection'; values: string[]; multiple: boolean; truncated: boolean; edited?: true }
+  | { kind: 'checked'; checked: boolean; edited?: true };
+
+export type JourneyUrlRedactions = {
+  steps: Record<string, { sourceUrl?: true; captureUrl?: true }>;
+};
+
+export const JOURNEY_REDACTED_URL = '[redacted]';
 
 export type ImageState =
   | { status: 'retained'; imageId: string; sharedNavigationResult?: true }
@@ -136,6 +142,7 @@ export interface JourneyDraftV1 {
   steps: JourneyDraftStep[];
   images: Record<string, JourneyDraftImage>;
   limitations: string[];
+  redactions?: JourneyUrlRedactions;
 }
 
 interface SessionOwner {
@@ -397,7 +404,8 @@ function validateTarget(value: unknown, path: string, errors: string[], reviewed
 function validateFieldValue(value: unknown, path: string, errors: string[], reviewed: boolean): number {
   if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be a field value`); return 0; }
   if (value.kind === 'text') {
-    exactKeys(value, ['kind', 'value', 'truncated'], [], path, errors);
+    exactKeys(value, ['kind', 'value', 'truncated'], ['edited'], path, errors);
+    if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
     if (typeof value.truncated !== 'boolean') errors.push(`${path}.truncated must be a boolean`);
     if (reviewed) {
       validateReviewedText(value.value, `${path}.value`, errors);
@@ -412,7 +420,8 @@ function validateFieldValue(value: unknown, path: string, errors: string[], revi
     return 0;
   }
   if (value.kind === 'selection') {
-    exactKeys(value, ['kind', 'values', 'multiple', 'truncated'], [], path, errors);
+    exactKeys(value, ['kind', 'values', 'multiple', 'truncated'], ['edited'], path, errors);
+    if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
     if (typeof value.multiple !== 'boolean') errors.push(`${path}.multiple must be a boolean`);
     if (typeof value.truncated !== 'boolean') errors.push(`${path}.truncated must be a boolean`);
     if (!Array.isArray(value.values) || value.values.length > 100) { errors.push(`${path}.values is invalid`); return 0; }
@@ -432,7 +441,8 @@ function validateFieldValue(value: unknown, path: string, errors: string[], revi
     return total;
   }
   if (value.kind === 'checked') {
-    exactKeys(value, ['kind', 'checked'], [], path, errors);
+    exactKeys(value, ['kind', 'checked'], ['edited'], path, errors);
+    if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
     if (typeof value.checked !== 'boolean') errors.push(`${path}.checked must be a boolean`);
     return 0;
   }
@@ -468,6 +478,8 @@ function validateImage(value: unknown, path: string, errors: string[], reviewed:
   if (reviewed) {
     validateReviewedText(value.captureUrl, `${path}.captureUrl`, errors, true);
     if (typeof value.redacted !== 'boolean') errors.push(`${path}.redacted must be a boolean`);
+  } else if (value.captureUrl === JOURNEY_REDACTED_URL) {
+    // Redacted during review; the redactions map records the marker.
   } else {
     const sanitized = validateUrl(value.captureUrl, `${path}.captureUrl`, errors);
     if (sanitized !== undefined) value.captureUrl = sanitized;
@@ -502,7 +514,9 @@ function validateStep(value: unknown, path: string, errors: string[], reviewed: 
   if (!validTimestamp(value.observedAt)) errors.push(`${path}.observedAt is invalid`);
   if (!Number.isInteger(value.elapsedMs) || (value.elapsedMs as number) < 0 || (value.elapsedMs as number) > JOURNEY_LIMITS.maxDurationMs) errors.push(`${path}.elapsedMs is invalid`);
   if (reviewed) validateReviewedText(value.sourceUrl, `${path}.sourceUrl`, errors, true);
-  else {
+  else if (value.sourceUrl === JOURNEY_REDACTED_URL) {
+    // Redacted during review; the redactions map records the marker.
+  } else {
     const sanitized = validateUrl(value.sourceUrl, `${path}.sourceUrl`, errors);
     if (sanitized !== undefined) value.sourceUrl = sanitized;
   }
@@ -533,8 +547,8 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
   if (!isJsonValue(value) || !isObject(value)) return { ok: false, errors: ['journey must be a JSON object'] };
   const copy = cloneJson(value) as Record<string, unknown>;
   const required = ['schemaVersion', 'id', 'revision', 'createdAt', 'updatedAt', 'startedAt', 'includeEnteredValues', 'expected', 'actual', 'steps', 'images', 'limitations'];
-  if (reviewed) exactKeys(copy, [...required, 'stoppedAt', 'stopReason'], [], 'journey', errors);
-  else exactKeys(copy, [...required, 'status'], ['stoppedAt', 'stopReason'], 'journey', errors);
+  if (reviewed) exactKeys(copy, [...required, 'stoppedAt', 'stopReason'], ['redactions'], 'journey', errors);
+  else exactKeys(copy, [...required, 'status'], ['stoppedAt', 'stopReason', 'redactions'], 'journey', errors);
   if (copy.schemaVersion !== 1) errors.push('journey.schemaVersion is unknown');
   if (reviewed) {
     if (Object.hasOwn(copy, 'status')) errors.push('journey.status is not allowed');
@@ -593,6 +607,38 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
     fieldBytes += result.fieldBytes;
   }
   if (fieldBytes > JOURNEY_LIMITS.maxJourneyFieldTextBytes) errors.push('journey field text exceeds its total limit');
+  if (copy.redactions !== undefined) {
+    if (!isObject(copy.redactions) || !isObject(copy.redactions.steps)) {
+      errors.push('journey.redactions must map step IDs to redacted URL flags');
+    } else {
+      const stepsById = new Map<string, Record<string, unknown>>();
+      if (Array.isArray(copy.steps)) for (const step of copy.steps) {
+        if (isObject(step) && typeof step.id === 'string') stepsById.set(step.id, step);
+      }
+      for (const [stepId, flags] of Object.entries(copy.redactions.steps)) {
+        const step = stepsById.get(stepId);
+        if (!validId(stepId) || !step) errors.push(`journey.redactions references unknown step ${stepId}`);
+        else if (!isObject(flags) || Object.keys(flags).some(key => key !== 'sourceUrl' && key !== 'captureUrl')
+          || (flags.sourceUrl !== undefined && flags.sourceUrl !== true)
+          || (flags.captureUrl !== undefined && flags.captureUrl !== true)
+          || (flags.sourceUrl === undefined && flags.captureUrl === undefined)) {
+          errors.push(`journey.redactions for step ${stepId} is invalid`);
+        } else {
+          if (flags.sourceUrl === true && step.sourceUrl !== JOURNEY_REDACTED_URL) {
+            errors.push(`journey.redactions for step ${stepId} marks a visible source URL`);
+          }
+          if (flags.captureUrl === true) {
+            const image = step.image;
+            const record = isObject(image) && image.status === 'retained' && typeof image.imageId === 'string'
+              ? (isObject(copy.images) ? copy.images[image.imageId] : undefined) : undefined;
+            if (!isObject(record) || record.captureUrl !== JOURNEY_REDACTED_URL) {
+              errors.push(`journey.redactions for step ${stepId} marks a visible capture URL`);
+            }
+          }
+        }
+      }
+    }
+  }
   for (const [imageId, references] of imageRefs) {
     if (references.length === 1) {
       if (references[0].image.sharedNavigationResult === true) errors.push(`retained image ${imageId} has an orphan shared-navigation marker`);
@@ -901,6 +947,111 @@ export function reviewSaveGating(state: JourneySession): { ready: boolean; reaso
   if (state.draft.steps.some(step => step.image.status === 'pending')) reasons.push('images-pending');
   if (reasons.length === 0 && validateJourneyDraft(state.draft).ok === false) reasons.push('invalid-draft');
   return { ready: reasons.length === 0, reasons };
+}
+
+export interface JourneyReviewEdit {
+  epoch: number;
+  journeyId: string;
+  revision: number;
+  updatedAt: string;
+}
+
+function reviewEditGuard(
+  state: JourneySession,
+  input: JourneyReviewEdit,
+): ReviewingJourneySession | undefined {
+  if (state.phase !== 'reviewing' || input.epoch !== state.epoch || input.journeyId !== state.journeyId
+    || input.journeyId !== state.draft.id || input.revision !== state.draft.revision
+    || !Number.isSafeInteger(state.draft.revision) || state.draft.revision >= Number.MAX_SAFE_INTEGER
+    || !validTimestamp(input.updatedAt)) return undefined;
+  const updateMs = Date.parse(input.updatedAt);
+  if (updateMs < Date.parse(state.draft.updatedAt) || updateMs >= Date.parse(state.expiresAt)) return undefined;
+  return state;
+}
+
+function sanitizeFieldValue(value: unknown): DraftFieldValue | undefined {
+  if (!isObject(value) || typeof value.kind !== 'string') return undefined;
+  if (value.kind === 'text') {
+    if (typeof value.value !== 'string' || typeof value.truncated !== 'boolean'
+      || characters(value.value) > JOURNEY_LIMITS.maxFieldValueCharacters) return undefined;
+    return { kind: 'text', value: value.value, truncated: value.truncated, edited: true };
+  }
+  if (value.kind === 'selection') {
+    if (!Array.isArray(value.values) || value.values.length > 100 || typeof value.multiple !== 'boolean'
+      || typeof value.truncated !== 'boolean'
+      || value.values.some(item => typeof item !== 'string' || characters(item) > JOURNEY_LIMITS.maxFieldValueCharacters)) {
+      return undefined;
+    }
+    return { kind: 'selection', values: [...value.values], multiple: value.multiple, truncated: value.truncated, edited: true };
+  }
+  if (value.kind === 'checked') {
+    if (typeof value.checked !== 'boolean') return undefined;
+    return { kind: 'checked', checked: value.checked, edited: true };
+  }
+  return undefined;
+}
+
+export interface JourneyEditValueInput extends JourneyReviewEdit {
+  stepId: string;
+  value: unknown;
+}
+
+export function editJourneyValue(state: JourneySession, input: JourneyEditValueInput): JourneySession {
+  const reviewing = reviewEditGuard(state, input);
+  if (!reviewing || !validId(input.stepId)) return state;
+  const step = reviewing.draft.steps.find(candidate => candidate.id === input.stepId);
+  if (!step || step.kind !== 'field-change') return state;
+  const enteredValue = sanitizeFieldValue(input.value);
+  if (!enteredValue) return state;
+  const steps = reviewing.draft.steps.map(candidate => candidate.id === input.stepId
+    ? { ...candidate, target: candidate.target, enteredValue } as JourneyDraftStep
+    : candidate);
+  const draft = {
+    ...reviewing.draft, steps, revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
+  };
+  if (validateJourneyDraft(draft).ok === false) return state;
+  return { ...reviewing, draft };
+}
+
+export interface JourneyRedactUrlInput extends JourneyReviewEdit {
+  stepId: string;
+  url: 'source' | 'capture';
+}
+
+export function redactJourneyUrl(state: JourneySession, input: JourneyRedactUrlInput): JourneySession {
+  const reviewing = reviewEditGuard(state, input);
+  if (!reviewing || !validId(input.stepId) || (input.url !== 'source' && input.url !== 'capture')) return state;
+  const step = reviewing.draft.steps.find(candidate => candidate.id === input.stepId);
+  if (!step) return state;
+  const redactions = reviewing.draft.redactions ?? { steps: {} };
+  const stepFlags = redactions.steps[input.stepId] ?? {};
+  if (input.url === 'source') {
+    if (step.sourceUrl === JOURNEY_REDACTED_URL) return state;
+    const steps = reviewing.draft.steps.map(candidate => candidate.id === input.stepId
+      ? { ...candidate, sourceUrl: JOURNEY_REDACTED_URL }
+      : candidate) as JourneyDraftStep[];
+    const draft = {
+      ...reviewing.draft, steps,
+      redactions: { steps: { ...redactions.steps, [input.stepId]: { ...stepFlags, sourceUrl: true as const } } },
+      revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
+    };
+    if (validateJourneyDraft(draft).ok === false) return state;
+    return { ...reviewing, draft };
+  }
+  if (step.image.status !== 'retained') return state;
+  const record = reviewing.draft.images[step.image.imageId];
+  if (!record || record.captureUrl === JOURNEY_REDACTED_URL) return state;
+  const images = {
+    ...reviewing.draft.images,
+    [step.image.imageId]: { ...record, captureUrl: JOURNEY_REDACTED_URL },
+  };
+  const draft = {
+    ...reviewing.draft, images,
+    redactions: { steps: { ...redactions.steps, [input.stepId]: { ...stepFlags, captureUrl: true as const } } },
+    revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
+  };
+  if (validateJourneyDraft(draft).ok === false) return state;
+  return { ...reviewing, draft };
 }
 
 export function commitJourneyNavigation(state: JourneySession, input: NavigationInput): JourneySession {

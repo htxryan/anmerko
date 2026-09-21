@@ -4,6 +4,8 @@ import {
   acceptJourneyEventBatch,
   commitJourneyNavigation,
   createJourneySession,
+  editJourneyValue,
+  redactJourneyUrl,
   resolveJourneyCapture,
   recordingSessionFits,
   removeJourneyStep,
@@ -558,6 +560,92 @@ test('save gating requires summaries, a retained step, and a valid draft', () =>
     },
   };
   expect(reviewSaveGating(imageless)).toEqual({ ready: false, reasons: ['retained-step-required'] });
+});
+
+function reviewingWithField() {
+  const recording = recordingSession();
+  if (recording.phase !== 'recording') throw new Error('expected recording fixture');
+  const withField = acceptJourneyEventBatch(recording, fieldBatch(1, 'capture-field', ['First']));
+  if (withField.phase !== 'recording') throw new Error('expected recording state');
+  const stopped = stopJourney(withField, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  return stopped;
+}
+
+const reviewGuards = (state: { epoch: number; journeyId: string; draft: { revision: number } }) => ({
+  epoch: state.epoch, journeyId: state.journeyId, revision: state.draft.revision,
+  updatedAt: '2026-09-20T12:01:30.000Z',
+});
+
+test('review value edits replace text without retaining originals', () => {
+  const reviewing = reviewingWithField();
+  const stepId = reviewing.draft.steps[1].id;
+  const edited = editJourneyValue(reviewing, {
+    ...reviewGuards(reviewing),
+    stepId, value: { kind: 'text', value: 'edited search', truncated: false },
+  });
+  expect(edited).not.toBe(reviewing);
+  if (edited.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const step = edited.draft.steps[1];
+  if (step.kind !== 'field-change') throw new Error('expected field step');
+  expect(step.enteredValue).toEqual({ kind: 'text', value: 'edited search', truncated: false, edited: true });
+  expect(JSON.stringify(edited)).not.toContain('First');
+  expect(step.target.label).toBe('Options');
+  expect(edited.draft.revision).toBe(reviewing.draft.revision + 1);
+
+  const removed = editJourneyValue(edited, {
+    ...reviewGuards(edited),
+    stepId, value: { kind: 'text', value: '', truncated: false },
+  });
+  if (removed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const cleared = removed.draft.steps[1];
+  if (cleared.kind !== 'field-change') throw new Error('expected field step');
+  expect(cleared.enteredValue).toEqual({ kind: 'text', value: '', truncated: false, edited: true });
+
+  expect(editJourneyValue(reviewing, {
+    ...reviewGuards(reviewing),
+    stepId, value: { kind: 'text', value: 'x'.repeat(2001), truncated: false },
+  })).toBe(reviewing);
+  expect(editJourneyValue(reviewing, {
+    ...reviewGuards(reviewing), stepId: reviewing.draft.steps[0].id,
+    value: { kind: 'text', value: 'nope', truncated: false },
+  })).toBe(reviewing);
+  expect(editJourneyValue(reviewing, {
+    ...reviewGuards(reviewing), revision: 99,
+    stepId, value: { kind: 'text', value: 'stale', truncated: false },
+  })).toBe(reviewing);
+});
+
+test('review URL redaction keeps step and image association', () => {
+  const reviewing = reviewingSession();
+  const stepId = reviewing.draft.steps[0].id;
+  const imageId = 'image-initial';
+  const sourceRedacted = redactJourneyUrl(reviewing, {
+    ...reviewGuards(reviewing), stepId, url: 'source',
+  });
+  expect(sourceRedacted).not.toBe(reviewing);
+  if (sourceRedacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(sourceRedacted.draft.steps[0].sourceUrl).toBe('[redacted]');
+  expect(sourceRedacted.draft.redactions).toEqual({ steps: { [stepId]: { sourceUrl: true } } });
+  expect(sourceRedacted.draft.steps[0].image).toEqual({ status: 'retained', imageId });
+  expect(sourceRedacted.draft.images[imageId].dataUrl).toBe(MINIMAL_PNG_DATA_URL);
+
+  const captureRedacted = redactJourneyUrl(sourceRedacted, {
+    ...reviewGuards(sourceRedacted), stepId, url: 'capture',
+  });
+  if (captureRedacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(captureRedacted.draft.images[imageId].captureUrl).toBe('[redacted]');
+  expect(captureRedacted.draft.images[imageId].dataUrl).toBe(MINIMAL_PNG_DATA_URL);
+  expect(captureRedacted.draft.redactions).toEqual({
+    steps: { [stepId]: { sourceUrl: true, captureUrl: true } },
+  });
+
+  expect(redactJourneyUrl(captureRedacted, {
+    ...reviewGuards(captureRedacted), stepId, url: 'source',
+  })).toBe(captureRedacted);
+  expect(redactJourneyUrl(reviewing, {
+    ...reviewGuards(reviewing), stepId: 'missing-step', url: 'source',
+  })).toBe(reviewing);
 });
 
 test('batches cannot reuse pending capture IDs or cross the aggregate field-text budget', () => {

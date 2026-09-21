@@ -1045,6 +1045,33 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }));
       return;
     }
+    if (message.type === 'ANMERKO_JOURNEY_EDIT_VALUE') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      if (typeof message.epoch !== 'number' || typeof message.journeyId !== 'string'
+        || typeof message.revision !== 'number' || typeof message.updatedAt !== 'string'
+        || typeof message.stepId !== 'string' || !isRecord(message.value)) {
+        throw new Error(GENERIC_ERROR);
+      }
+      await withPersistedState(controller.editValue({
+        epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
+        updatedAt: message.updatedAt, stepId: message.stepId, value: message.value,
+      }));
+      return;
+    }
+    if (message.type === 'ANMERKO_JOURNEY_REDACT_URL') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      if (typeof message.epoch !== 'number' || typeof message.journeyId !== 'string'
+        || typeof message.revision !== 'number' || typeof message.updatedAt !== 'string'
+        || typeof message.stepId !== 'string'
+        || (message.url !== 'source' && message.url !== 'capture')) {
+        throw new Error(GENERIC_ERROR);
+      }
+      await withPersistedState(controller.redactUrl({
+        epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
+        updatedAt: message.updatedAt, stepId: message.stepId, url: message.url,
+      }));
+      return;
+    }
     throw new Error(GENERIC_ERROR);
   };
 
@@ -1130,7 +1157,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {

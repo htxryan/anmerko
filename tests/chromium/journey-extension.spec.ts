@@ -655,6 +655,32 @@ test('review summaries and step removal apply with revision guards', async ({ pa
   reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(reviewing.draft.steps.map((step: any) => step.seq)).toEqual([1]);
   expect(reviewing.draft.steps).toHaveLength(1);
+
+  const initialId = reviewing.draft.steps[0].id;
+  const redactGuards = {
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    updatedAt: new Date().toISOString(),
+  };
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REDACT_URL', ...redactGuards, stepId: initialId, url: 'source',
+  })).toEqual({ ok: true });
+  reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.draft.steps[0].sourceUrl).toBe('[redacted]');
+  expect(reviewing.draft.steps[0].image).toMatchObject({ status: 'retained' });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REDACT_URL', ...redactGuards, revision: redactGuards.revision + 1,
+    updatedAt: new Date().toISOString(), stepId: initialId, url: 'capture',
+  })).toEqual({ ok: true });
+  reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const imageId = reviewing.draft.steps[0].image.imageId;
+  expect(reviewing.draft.images[imageId].captureUrl).toBe('[redacted]');
+  expect(reviewing.draft.images[imageId].dataUrl).toMatch(/^data:image\/png;base64,/);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_EDIT_VALUE', ...redactGuards, stepId: initialId, value: { kind: 'text', value: 'x', truncated: false },
+  })).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'stale-review' });
+  reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.draft.steps[0].sourceUrl).toBe('[redacted]');
+  expect(reviewing.draft.revision).toBe(redactGuards.revision + 2);
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {

@@ -532,3 +532,47 @@ async function eventually(assertion: () => void): Promise<void> {
     catch { return false; }
   }).toBe(true);
 }
+
+test('review value edits and URL redaction apply through the controller', async () => {
+  const fixture = adapterFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+  const state = recording(controller.getState());
+  controller.acceptBatch({
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+    documentToken: state.documentToken, localCounter: 1,
+    events: [{
+      kind: 'field-change', id: 'field-1', observedAt: iso(startMs + 1000), elapsedMs: 1000,
+      sourceUrl: 'https://example.com/start?q=1#top',
+      target: {
+        tag: 'input', selectorPath: ['input'], label: 'text field', editable: true,
+        viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+      },
+      enteredValue: { kind: 'text', value: 'original search', truncated: false },
+      image: { status: 'pending', captureId: 'capture-field-1' },
+    }],
+  }, 42);
+  await controller.stop('user');
+  let reviewing = controller.getState();
+  if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const guards = {
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    updatedAt: iso(startMs + 2000),
+  };
+  const fieldId = reviewing.draft.steps[1].id;
+
+  await controller.editValue({ ...guards, stepId: fieldId, value: { kind: 'text', value: '', truncated: false } });
+  reviewing = controller.getState();
+  if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const cleared = reviewing.draft.steps[1];
+  if (cleared.kind !== 'field-change') throw new Error('expected field step');
+  expect(cleared.enteredValue).toEqual({ kind: 'text', value: '', truncated: false, edited: true });
+  expect(JSON.stringify(reviewing)).not.toContain('original search');
+
+  await expect(controller.editValue({ ...guards, stepId: fieldId, value: { kind: 'text', value: 'stale', truncated: false } }))
+    .rejects.toThrow('The review changed since this edit began');
+  await controller.redactUrl({ ...guards, revision: guards.revision + 1, stepId: fieldId, url: 'source' });
+  reviewing = controller.getState();
+  if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(reviewing.draft.steps[1].sourceUrl).toBe('[redacted]');
+});

@@ -11,6 +11,8 @@ export interface JourneyClient {
   discard(): Promise<void>;
   updateSummary(expected: string, actual: string): Promise<void>;
   removeStep(stepId: string): Promise<void>;
+  editValue(stepId: string, value: unknown): Promise<void>;
+  redactUrl(stepId: string, url: 'source' | 'capture'): Promise<void>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
 }

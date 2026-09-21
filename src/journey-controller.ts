@@ -5,13 +5,17 @@ import {
   acceptLateJourneyEventBatch,
   commitJourneyNavigation,
   createJourneySession,
+  editJourneyValue,
   failInitialImage,
+  redactJourneyUrl,
   removeJourneyStep,
   resolveJourneyCapture,
   stopJourney,
   supersedeJourneyImagesAfter,
   updateJourneySummary,
   type JourneyDraftImage,
+  type JourneyEditValueInput,
+  type JourneyRedactUrlInput,
   type JourneyRemoveStepInput,
   type JourneySession,
   type JourneySummaryInput,
@@ -60,6 +64,8 @@ export interface JourneyController {
   discard(): Promise<void>;
   updateSummary(input: JourneySummaryInput): Promise<void>;
   removeStep(input: JourneyRemoveStepInput): Promise<void>;
+  editValue(input: JourneyEditValueInput): Promise<void>;
+  redactUrl(input: JourneyRedactUrlInput): Promise<void>;
 }
 
 export type JourneyControllerErrorCode = 'busy' | 'invalid-start' | 'owner-unavailable' | 'initial-capture-failed' | 'stale-review';
@@ -579,6 +585,18 @@ export function createJourneyController(
     if (next !== previous) publish(next);
   }
 
+  async function editValue(input: JourneyEditValueInput): Promise<void> {
+    const previous = currentReview(state, input);
+    const next = editJourneyValue(previous, input);
+    if (next !== previous) publish(next);
+  }
+
+  async function redactUrl(input: JourneyRedactUrlInput): Promise<void> {
+    const previous = currentReview(state, input);
+    const next = redactJourneyUrl(previous, input);
+    if (next !== previous) publish(next);
+  }
+
   async function safeEnd(tabId: number, sessionId: string, epoch: number, documentToken?: string): Promise<void> {
     try { await adapter.end(tabId, { sessionId, epoch, ...(documentToken ? { documentToken } : {}) }); }
     catch { /* State is already inactive; teardown is best effort. */ }
@@ -610,7 +628,7 @@ export function createJourneyController(
     await safeEnd(tabId, sessionId, epoch, documentToken);
   }
 
-  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep };
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl };
 }
 
 function newId(prefix: string): string {

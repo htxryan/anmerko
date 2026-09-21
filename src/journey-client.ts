@@ -71,6 +71,22 @@ export function createJourneyClient(
         updatedAt: new Date().toISOString(), stepId,
       });
     },
+    editValue: async (stepId: string, value: unknown): Promise<void> => {
+      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+      await command('ANMERKO_JOURNEY_EDIT_VALUE', {
+        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+        updatedAt: new Date().toISOString(), stepId, value,
+      });
+    },
+    redactUrl: async (stepId: string, url: 'source' | 'capture'): Promise<void> => {
+      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+      await command('ANMERKO_JOURNEY_REDACT_URL', {
+        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+        updatedAt: new Date().toISOString(), stepId, url,
+      });
+    },
     start(_includeEnteredValues: boolean): Promise<void> {
       let currentOwner: JourneyOwner | undefined;
       try { currentOwner = owner?.(); }
