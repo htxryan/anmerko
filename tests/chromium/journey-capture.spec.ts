@@ -455,9 +455,8 @@ test('an action capture exactly 500 ms after the action is retained', async () =
 
 test('an action capture 4999 ms after the action is retained', async () => {
   const actionAt = startMs + 1000;
-  let capturedAt: string | undefined;
   const fixture = adapterFixture({
-    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+    capture: async (_tabId, identity) => image(identity.url, iso(fixture.nowMs)),
   });
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
@@ -473,9 +472,8 @@ test('an action capture 4999 ms after the action is retained', async () => {
 
 test('an action capture at the five-second window end is explicitly unavailable', async () => {
   const actionAt = startMs + 1000;
-  let capturedAt: string | undefined;
   const fixture = adapterFixture({
-    capture: async (_tabId, identity) => image(identity.url, capturedAt ?? iso(fixture.nowMs)),
+    capture: async (_tabId, identity) => image(identity.url, iso(fixture.nowMs)),
   });
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });

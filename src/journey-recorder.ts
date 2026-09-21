@@ -129,6 +129,16 @@ function eventTarget(event: MouseEvent): Element | null {
   return event.composedPath().find(candidate => candidate instanceof Element) as Element | undefined ?? null;
 }
 
+function visibleViewport(): { width: number; height: number } {
+  const visual = window.visualViewport;
+  return { width: Math.round(visual?.width ?? innerWidth), height: Math.round(visual?.height ?? innerHeight) };
+}
+
+function visibleScroll(): { x: number; y: number } {
+  const visual = window.visualViewport;
+  return { x: scrollX + (visual?.offsetLeft ?? 0), y: scrollY + (visual?.offsetTop ?? 0) };
+}
+
 function ignored(event: MouseEvent, target: Element, custom?: JourneyRecorderOptions['ignore']): boolean {
   if (event.composedPath().some(candidate => candidate instanceof Element && UI_HOSTS.has(candidate.localName))) return true;
   try { return custom?.(target, event) ?? false; } catch { return true; }
@@ -145,6 +155,8 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): () => vo
     if (!target || ignored(event, target, options.ignore)) return;
     const now = new Date();
     const role = roleFor(target);
+    const viewport = visibleViewport();
+    const scroll = visibleScroll();
     const input: JourneyClickEvent = {
       kind: 'click',
       id: createUuid(),
@@ -157,8 +169,8 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): () => vo
         selectorPath: structuralSelector(target),
         label: safeText(target),
         editable: !!editableAncestor(target),
-        viewport: { width: innerWidth, height: innerHeight },
-        scroll: { x: scrollX, y: scrollY },
+        viewport,
+        scroll,
         ...(event.detail === 0 ? {} : { point: { x: event.clientX, y: event.clientY } }),
       },
       image: { status: 'pending', captureId: createUuid() },

@@ -96,6 +96,24 @@ test('trusted mouse and keyboard clicks emit ordered raw batches without changin
   expect(await page.evaluate(() => (globalThis as RecorderWindow).normalActions)).toBe(3);
 });
 
+test('click context reports the visible viewport under zoom and pan', async ({ page }) => {
+  await page.setContent('<button type="button">Zoomed action</button>');
+  await page.evaluate(() => {
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: { width: 640, height: 360, offsetLeft: 120, offsetTop: 80, scale: 2 },
+    });
+  });
+  await attach(page);
+
+  await page.getByRole('button', { name: 'Zoomed action' }).click();
+  const recorded = await batches(page);
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0].events[0].target.viewport).toEqual({ width: 640, height: 360 });
+  expect(recorded[0].events[0].target.scroll).toEqual({ x: 120, y: 80 });
+  expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
+});
+
 test('open shadows expose their target while closed shadows degrade to the host', async ({ page }) => {
   await page.setContent('<main><section></section></main>');
   await page.evaluate(() => {

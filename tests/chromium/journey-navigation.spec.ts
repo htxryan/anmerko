@@ -44,7 +44,7 @@ test('document commits are ordered synchronously and only the newest handshake c
   expect(recording(controller.getState()).documentToken).toBe('document-c');
 
   fixture.nowMs = START_MS + 1_600;
-  fixture.resolveDelay(500, 1);
+  fixture.resolveDelay(0, 1);
   await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
   expect(fixture.calls.capture[1].identity.url).toBe('https://example.com/c');
 });
@@ -228,7 +228,7 @@ test('a document handshake timeout records the outcome and cannot start late', a
   fixture.nowMs = START_MS + 1_000;
   controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/slow-document', kind: 'document' });
   fixture.nowMs = START_MS + 6_000;
-  fixture.resolveDelay(5_000, 0);
+  fixture.resolveDelay(4_100, 0);
   await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
   const stopped = controller.getState();
   if (stopped.phase !== 'reviewing') throw new Error('Expected review after navigation timeout');
@@ -251,7 +251,7 @@ test('navigation capture uses the destination URL and times out within five seco
   controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
   expect(fixture.calls.capture).toHaveLength(1);
   fixture.nowMs = START_MS + 1_500;
-  fixture.resolveDelay(500, 0);
+  fixture.resolveDelay(0, 0);
   await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
   await eventually(() => {
     const step = recording(controller.getState()).draft.steps.at(-1)!;
@@ -265,7 +265,7 @@ test('navigation capture uses the destination URL and times out within five seco
   fixture.current = identity(token, 'https://example.com/slow', 3);
   controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
   fixture.nowMs = START_MS + 7_000;
-  fixture.resolveDelay(5_000, 1);
+  fixture.resolveDelay(3_100, 0);
   await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
     .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
 });
@@ -280,7 +280,7 @@ test('a later-arriving action invalidates an earlier navigation image captured a
   fixture.current = identity(token, 'https://example.com/result', 2);
   controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
   fixture.nowMs = START_MS + 1_500;
-  fixture.resolveDelay(500, 0);
+  fixture.resolveDelay(0, 0);
   await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
 
   let state = recording(controller.getState());
@@ -325,7 +325,7 @@ test('a terminal 30th action still invalidates an overlapping retained navigatio
   fixture.current = identity(state.documentToken, 'https://example.com/result', 2);
   controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
   fixture.nowMs = START_MS + 3_500;
-  fixture.resolveDelay(500, 0);
+  fixture.resolveDelay(200, 0);
   await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
   state = recording(controller.getState());
   const imageState = state.draft.steps.at(-1)!.image;
@@ -411,7 +411,9 @@ test('a navigation image-budget stop tears down the page recorder', async () => 
   const fixture = navigationFixture({
     capture: async (_tabId, pageIdentity) => ({
       ...image(pageIdentity.url, capturedMs),
+      width: 1, height: 1,
       byteLength: JOURNEY_LIMITS.maxImageBytes,
+      dataUrl: fixturePngDataUrl(JOURNEY_LIMITS.maxImageBytes),
     }),
   });
   const controller = createJourneyController(fixture.adapter);
@@ -419,18 +421,25 @@ test('a navigation image-budget stop tears down the page recorder', async () => 
 
   for (let counter = 1; counter <= 5; counter += 1) {
     const state = recording(controller.getState());
-    controller.acceptBatch(clickBatch(state, counter, START_URL, `budget-action-${counter}`), 42);
+    const actionAt = START_MS + counter * 1000;
+    const action = clickBatch(state, counter, START_URL, `budget-action-${counter}`);
+    action.events[0].observedAt = new Date(actionAt).toISOString();
+    action.events[0].elapsedMs = counter * 1000;
+    fixture.nowMs = actionAt;
+    controller.acceptBatch(action, 42);
+    capturedMs = actionAt + 500;
+    fixture.nowMs = actionAt + 500;
     fixture.resolveDelay(500, counter - 1);
     await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
   }
 
   const token = recording(controller.getState()).documentToken;
-  fixture.nowMs = START_MS + 1_000;
+  fixture.nowMs = START_MS + 6_500;
   fixture.current = identity(token, 'https://example.com/result', 2);
   controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
-  fixture.nowMs = START_MS + 1_500;
-  capturedMs = START_MS + 1_600;
-  fixture.resolveDelay(500, 5);
+  fixture.nowMs = START_MS + 7_000;
+  capturedMs = START_MS + 7_100;
+  fixture.resolveDelay(0, 0);
 
   await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
   const stopped = controller.getState();
@@ -456,7 +465,7 @@ test('navigation reaching the session deadline during capture stops for duration
   fixture.current = identity(token, 'https://example.com/result', 2);
   controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
   fixture.nowMs = START_MS + 1_500;
-  fixture.resolveDelay(500, 0);
+  fixture.resolveDelay(0, 0);
   await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
 
   fixture.nowMs = START_MS + JOURNEY_LIMITS.maxDurationMs;
@@ -532,10 +541,19 @@ function identity(documentToken: string, url: string, generation: number): Journ
   };
 }
 
+function fixturePngDataUrl(byteLength: number): string {
+  const png = new Uint8Array(byteLength);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png.set([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 8);
+  png.set([0, 0, 0, 1, 0, 0, 0, 1], 16);
+  return `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
+}
+
 function image(captureUrl: string, capturedMs: number): JourneyDraftImage {
   return {
     capturedAt: new Date(capturedMs).toISOString(), captureUrl,
-    width: 390, height: 844, byteLength: 10_000,
+    width: 1, height: 1, byteLength: 64,
+    dataUrl: fixturePngDataUrl(64),
     viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
   };
 }
