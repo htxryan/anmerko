@@ -13,6 +13,7 @@ export interface JourneyClient {
   removeStep(stepId: string): Promise<void>;
   editValue(stepId: string, value: unknown): Promise<void>;
   redactUrl(stepId: string, url: 'source' | 'capture'): Promise<void>;
+  save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
 }

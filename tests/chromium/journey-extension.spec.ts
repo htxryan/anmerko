@@ -627,6 +627,9 @@ test('review summaries and step removal apply with revision guards', async ({ pa
   let reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(reviewing.phase).toBe('reviewing');
 
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
+
   const guards = {
     epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
     updatedAt: new Date().toISOString(),
@@ -681,6 +684,20 @@ test('review summaries and step removal apply with revision guards', async ({ pa
   reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(reviewing.draft.steps[0].sourceUrl).toBe('[redacted]');
   expect(reviewing.draft.revision).toBe(redactGuards.revision + 2);
+
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY',
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    updatedAt: new Date().toISOString(), expected: 'The cart keeps its item.', actual: 'Checkout is empty.',
+  })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: false }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  expect(saved).toMatchObject({ ok: true });
+  expect(typeof (saved as any).value?.journeyId).toBe('string');
+  const done = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(done.phase).toBe('saved');
+  expect(done.epoch).toBe(reviewing.epoch + 1);
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {

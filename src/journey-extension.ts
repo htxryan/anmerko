@@ -10,6 +10,7 @@ import { stripUrlCredentials } from './journey-events';
 import { normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
+import { saveJourneySnapshot } from './journey-store';
 import { extensionApi } from './platform';
 
 export interface JourneyScreenshotService {
@@ -567,6 +568,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
       },
       changed,
+      async saveSnapshot(input) {
+        return saveJourneySnapshot(input);
+      },
     }, restored);
 
   controller = makeController();
@@ -1072,6 +1076,14 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }));
       return;
     }
+    if (message.type === 'ANMERKO_JOURNEY_SAVE') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      let saved: { journeyId: string; revision: number } | undefined;
+      await withPersistedState(controller.save(message.acknowledged).then(result => {
+        saved = result;
+      }));
+      return saved;
+    }
     throw new Error(GENERIC_ERROR);
   };
 
@@ -1157,7 +1169,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {

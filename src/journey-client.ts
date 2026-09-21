@@ -87,6 +87,14 @@ export function createJourneyClient(
         updatedAt: new Date().toISOString(), stepId, url,
       });
     },
+    save: async (acknowledged: boolean): Promise<{ journeyId: string; revision: number }> => {
+      const result = await command('ANMERKO_JOURNEY_SAVE', { acknowledged }) as unknown;
+      if (!result || typeof result !== 'object' || typeof (result as { journeyId?: unknown }).journeyId !== 'string'
+        || !Number.isSafeInteger((result as { revision?: unknown }).revision)) {
+        throw new Error(CLIENT_ERROR);
+      }
+      return result as { journeyId: string; revision: number };
+    },
     start(_includeEnteredValues: boolean): Promise<void> {
       let currentOwner: JourneyOwner | undefined;
       try { currentOwner = owner?.(); }

@@ -10,10 +10,12 @@ import {
   redactJourneyUrl,
   removeJourneyStep,
   resolveJourneyCapture,
+  reviewSaveGating,
   stopJourney,
   supersedeJourneyImagesAfter,
   updateJourneySummary,
   type JourneyDraftImage,
+  type JourneyDraftV1,
   type JourneyEditValueInput,
   type JourneyRedactUrlInput,
   type JourneyRemoveStepInput,
@@ -51,6 +53,7 @@ export interface JourneyControllerAdapter {
   }): Promise<void>;
   end(tabId: number, input: { sessionId: string; epoch: number; documentToken?: string }): Promise<void>;
   changed(state: JourneySession): void;
+  saveSnapshot?(input: { draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }): Promise<{ journeyId: string; revision: number }>;
   now?(): number;
   delay?(ms: number, signal?: AbortSignal): Promise<void>;
 }
@@ -66,6 +69,7 @@ export interface JourneyController {
   removeStep(input: JourneyRemoveStepInput): Promise<void>;
   editValue(input: JourneyEditValueInput): Promise<void>;
   redactUrl(input: JourneyRedactUrlInput): Promise<void>;
+  save(acknowledged: unknown): Promise<{ journeyId: string; revision: number }>;
 }
 
 export type JourneyControllerErrorCode = 'busy' | 'invalid-start' | 'owner-unavailable' | 'initial-capture-failed' | 'stale-review';
@@ -597,6 +601,24 @@ export function createJourneyController(
     if (next !== previous) publish(next);
   }
 
+  async function save(acknowledged: unknown): Promise<{ journeyId: string; revision: number }> {
+    const previous = state;
+    if (previous.phase !== 'reviewing') throw new Error('Journey review is not ready to save.');
+    const gating = reviewSaveGating(previous);
+    if (!gating.ready) {
+      throw new Error(`Journey review is not ready to save: ${gating.reasons.join(', ')}.`);
+    }
+    if (acknowledged !== true) throw new Error('Journey saving needs a review acknowledgement.');
+    if (!adapter.saveSnapshot) throw new Error('Journey saving is unavailable.');
+    const saved = await adapter.saveSnapshot({ draft: previous.draft, images: previous.draft.images });
+    const next: JourneySession = {
+      phase: 'saved', epoch: previous.epoch + 1,
+      journeyId: saved.journeyId, revision: saved.revision,
+    };
+    publish(next);
+    return saved;
+  }
+
   async function safeEnd(tabId: number, sessionId: string, epoch: number, documentToken?: string): Promise<void> {
     try { await adapter.end(tabId, { sessionId, epoch, ...(documentToken ? { documentToken } : {}) }); }
     catch { /* State is already inactive; teardown is best effort. */ }
@@ -628,7 +650,7 @@ export function createJourneyController(
     await safeEnd(tabId, sessionId, epoch, documentToken);
   }
 
-  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl };
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, save };
 }
 
 function newId(prefix: string): string {
