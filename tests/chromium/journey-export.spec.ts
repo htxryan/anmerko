@@ -1,6 +1,15 @@
 import { expect, test } from '@playwright/test';
 import type { JourneyDraftV1, JourneyManifestV1, ReviewedText, SafeTarget } from '../../src/journey-core';
-import { formatJourneyMarkdown, journeyImageFilename } from '../../src/journey-export';
+import { JOURNEY_LIMITS } from '../../src/journey-limits';
+import { feedbackArchive } from '../../src/export';
+import {
+  formatJourneyMarkdown,
+  journeyArchiveFiles,
+  journeyDraftToManifest,
+  journeyExportByteLength,
+  journeyImageFilename,
+  journeyPromptSection,
+} from '../../src/journey-export';
 
 const reviewed = (text: string, edited = false, redacted = false): ReviewedText => ({ text, edited, redacted });
 
@@ -173,4 +182,125 @@ test('emits immutable step IDs so shared navigation correlation is resolvable', 
   expect(click).toBeGreaterThan(-1);
   expect(navigation).toBeGreaterThan(click);
   expect(cause).toBeGreaterThan(navigation);
+});
+
+function reviewedDraft(): JourneyDraftV1 {
+  return {
+    schemaVersion: 1, status: 'draft', id: 'J1', revision: 4,
+    createdAt: '2026-09-20T12:00:00.000Z', updatedAt: '2026-09-20T12:00:04.000Z',
+    startedAt: '2026-09-20T12:00:00.000Z', stoppedAt: '2026-09-20T12:00:04.000Z',
+    includeEnteredValues: true, stopReason: 'user',
+    expected: 'The selected item remains in the cart.', actual: 'Checkout is empty after navigation.',
+    steps: [
+      {
+        kind: 'click', id: 'S2', seq: 2, observedAt: '2026-09-20T12:00:01.210Z', elapsedMs: 1210,
+        sourceUrl: 'https://shop.example/items?q=green',
+        target: {
+          tag: 'button', role: 'button', selectorPath: ['main', 'button:nth-of-type(2)'],
+          label: 'Checkout', editable: false, viewport: { width: 1280, height: 720 },
+          scroll: { x: 0, y: 300 }, point: { x: 1010, y: 650 },
+        },
+        image: { status: 'retained', imageId: 'I2' },
+      },
+      {
+        kind: 'field-change', id: 'S4', seq: 7, observedAt: '2026-09-20T12:00:02.000Z', elapsedMs: 2000,
+        sourceUrl: '[redacted]',
+        target: {
+          tag: 'input', selectorPath: ['input'], label: 'text field', editable: true,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+        },
+        enteredValue: { kind: 'text', value: 'edited query', truncated: false, edited: true },
+        image: { status: 'unavailable', reason: 'superseded' },
+      },
+    ],
+    images: {
+      I2: {
+        capturedAt: '2026-09-20T12:00:01.600Z', captureUrl: 'https://shop.example/pay?q=green',
+        width: 1, height: 1, byteLength: 69,
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC',
+        viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+      },
+    },
+    limitations: [],
+    redactions: { steps: { S4: { sourceUrl: true } } },
+  };
+}
+
+test('draft snapshots map to reviewed manifests with edit markers', () => {
+  const manifest = journeyDraftToManifest(reviewedDraft());
+
+  expect(manifest).toMatchObject({
+    schemaVersion: 1, id: 'J1', revision: 4, stopReason: 'user',
+    expected: 'The selected item remains in the cart.',
+  });
+  expect((manifest as unknown as Record<string, unknown>).status).toBeUndefined();
+  expect(manifest.steps[0].sourceUrl).toEqual({ text: 'https://shop.example/items?q=green', edited: false, redacted: false });
+  expect(manifest.steps[1].sourceUrl).toEqual({ text: '[redacted]', edited: true, redacted: true });
+  const field = manifest.steps[1];
+  if (field.kind !== 'field-change') throw new Error('missing field fixture');
+  expect(field.enteredValue).toEqual({
+    kind: 'text', value: { text: 'edited query', edited: true, redacted: false }, truncated: false,
+  });
+  expect(manifest.images.I2).toMatchObject({ width: 1, byteLength: 69, redacted: false });
+  expect((manifest.images.I2 as unknown as Record<string, unknown>).dataUrl).toBeUndefined();
+
+  const removed = journeyDraftToManifest({
+    ...reviewedDraft(),
+    steps: reviewedDraft().steps.map(step => step.kind === 'field-change' && step.enteredValue.kind === 'text'
+      ? { ...step, enteredValue: { kind: 'text', value: '', truncated: false, edited: true } as const }
+      : step),
+  });
+  const removedField = removed.steps[1];
+  if (removedField.kind !== 'field-change' || removedField.enteredValue.kind !== 'text') {
+    throw new Error('missing field fixture');
+  }
+  expect(removedField.enteredValue.value).toEqual({ text: '', edited: true, redacted: true });
+
+  expect(() => journeyDraftToManifest({ ...reviewedDraft(), expected: '' })).toThrow(TypeError);
+  expect(() => journeyDraftToManifest({ ...reviewedDraft(), stoppedAt: undefined })).toThrow(TypeError);
+
+  const markdown = formatJourneyMarkdown(manifest);
+  expect(markdown).toContain('Entered text review: Edited: Yes · Redacted: No');
+  expect(markdown).toContain('Source URL review: Edited: Yes · Redacted: Yes');
+});
+
+test('prompt section summarizes journeys with spans-pages scope', () => {
+  const section = journeyPromptSection([journeyDraftToManifest(reviewedDraft())]);
+  expect(section).toContain('## Recorded journeys');
+  expect(section).toContain('### Journey 1 · `J1`');
+  expect(section).toContain('- **Steps:** 2');
+  expect(section).toContain('Full sequence and screenshots');
+  expect(section).toContain('The selected item remains in the cart.');
+  expect(section).toContain('Spans pages');
+
+  const single: JourneyManifestV1 = {
+    ...journeyDraftToManifest(reviewedDraft()),
+    steps: [journeyDraftToManifest(reviewedDraft()).steps[0]],
+  };
+  expect(journeyPromptSection([single])).toContain('Single page');
+  expect(journeyPromptSection([single, single])).toContain('### Journey 2');
+  expect(() => journeyPromptSection([reviewedDraft() as unknown as JourneyManifestV1])).toThrow(TypeError);
+});
+
+test('archive files reference deterministic PNG identities', () => {
+  const files = journeyArchiveFiles([reviewedDraft()]);
+  expect(files.map(file => file.name)).toEqual(['journeys.md', 'journey-2-J1-image-2-I2.png']);
+  expect(new TextDecoder().decode(files[0].data)).toContain('## Journey 1');
+  expect(files[1].data.length).toBe(69);
+  expect(journeyExportByteLength([reviewedDraft()], 100)).toBe(100 + 69);
+
+  const empty = journeyArchiveFiles([]);
+  expect(empty).toEqual([]);
+  expect(journeyExportByteLength([], 100)).toBe(100);
+});
+
+test('archive preflight rejects oversized exports before allocating', () => {
+  const limit = JOURNEY_LIMITS.maxExportBytes;
+  (JOURNEY_LIMITS as unknown as Record<string, unknown>).maxExportBytes = 200;
+  try {
+    expect(() => feedbackArchive([], 'preamble', [reviewedDraft()])).toThrow('exceeds the export size limit');
+    expect(() => feedbackArchive([], 'preamble', [])).not.toThrow();
+  } finally {
+    (JOURNEY_LIMITS as unknown as Record<string, unknown>).maxExportBytes = limit;
+  }
 });
