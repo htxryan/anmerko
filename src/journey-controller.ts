@@ -2,6 +2,7 @@ import {
   adoptJourneyDocument,
   acceptInitialImage,
   acceptJourneyEventBatch,
+  acceptLateJourneyEventBatch,
   commitJourneyNavigation,
   createJourneySession,
   failInitialImage,
@@ -174,7 +175,12 @@ export function createJourneyController(
     const validated = validateJourneyEventBatch(input);
     if (!validated.ok) return;
     const expectedUrl = committedUrl(state);
-    if (!expectedUrl || validated.value.events.some(event => !sameUrl(event.sourceUrl, expectedUrl))) return;
+    if (!expectedUrl) return;
+    if (validated.value.events.some(event => !sameUrl(event.sourceUrl, expectedUrl))) {
+      const late = acceptLateJourneyEventBatch(state, validated.value);
+      if (late !== state) publish(late);
+      return;
+    }
     const previous = state;
     const candidate = acceptJourneyEventBatch(previous, validated.value);
     if (candidate === previous) return;

@@ -193,10 +193,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
   const wakeEventsWaiting = () => wakeQueueOverflowedTabs.size > 0 || pendingWakeEvents.length > 0;
 
-  const enqueueRoutedEvent = (operation: () => Promise<void> | void) => {
+  const enqueueRoutedEvent = (operation: () => Promise<void> | void, runAfterInitializationError = false) => {
     routedEvents = routedEvents.then(async () => {
       await ready;
-      if (!initializationError) {
+      if (!initializationError || runAfterInitializationError) {
         await operation();
         await latestStateWrite;
       }
@@ -432,9 +432,22 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
 
   const failClosedAfterStorageError = (failedState: JourneySession) => {
-    if (handlingStorageFailure || !activeState(failedState) || !controller) return;
+    if (!controller) return;
     const current = controller.getState();
-    if (!activeState(current) || current.sessionId !== failedState.sessionId || current.epoch !== failedState.epoch) return;
+    if ('sessionId' in failedState && (current.phase === 'reviewing' || current.phase === 'saving')
+      && current.sessionId === failedState.sessionId && current.epoch === failedState.epoch) {
+      const marked = {
+        ...current,
+        draft: { ...current.draft, stopReason: 'session-storage-limit' as const },
+      };
+      controller = makeController(marked);
+      void api.action.setBadgeText({ tabId: marked.ownerTabId, text: '!' }).catch(() => {});
+      void api.action.setTitle({ tabId: marked.ownerTabId, title: 'Journey storage failed — review draft now' }).catch(() => {});
+      void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
+      return;
+    }
+    if (handlingStorageFailure || !activeState(failedState) || !activeState(current)
+      || current.sessionId !== failedState.sessionId || current.epoch !== failedState.epoch) return;
     handlingStorageFailure = true;
     void controller.stop('session-storage-limit').finally(() => { handlingStorageFailure = false; });
   };
@@ -476,7 +489,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   const stopStalePageRecorder = async (tabId: number, windowId: number): Promise<void> => {
     const state = controller.getState();
-    if (state.phase !== 'idle' && state.phase !== 'saved') return;
+    if (activeState(state)) return;
     try {
       const tab = await api.tabs.get(tabId);
       if (tab.id !== tabId || tab.windowId !== windowId || !tab.url) return;
@@ -796,7 +809,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (state.phase === 'recording') {
       do { await recoverRecordingOwner(); }
       while (controller.getState().phase === 'recording' && wakeEventsWaiting());
-    } else discardPendingWakeEvents();
+    } else {
+      discardPendingWakeEvents();
+      if ('ownerTabId' in state) await stopStalePageRecorder(state.ownerTabId, state.ownerWindowId);
+    }
+    await latestStateWrite;
     const current = controller.getState();
     if (current.phase === 'reviewing' && Date.now() >= Date.parse(current.warningAt)) showReviewWarning(current);
     initialized = true;
@@ -1040,13 +1057,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     port.onDisconnect.addListener(disconnected);
     enqueueRoutedEvent(async () => {
       const current = controller.getState();
-      if (current.phase === 'idle' || current.phase === 'saved') {
+      if (!activeState(current)) {
         await stopStalePageRecorder(senderTabId, senderWindowId);
         disconnectPort(port);
-      } else if (!activeState(current) || current.ownerTabId !== senderTabId || current.ownerWindowId !== senderWindowId) {
+      } else if (current.ownerTabId !== senderTabId || current.ownerWindowId !== senderWindowId) {
         disconnectPort(port);
       }
-    });
+    }, true);
   });
 
   api.runtime.onMessage.addListener((rawMessage, sender, respond) => {
@@ -1114,7 +1131,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       await ready;
       if (initializationError) return false;
       if (activeState(controller.getState())) {
-        await withPersistedState(controller.stop('user'));
+        const stopping = controller.stop('user');
+        try { await withPersistedState(stopping); }
+        catch { await openReview(); }
         return true;
       }
       const state = controller.getState();
@@ -1127,7 +1146,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     stopIfRecording() {
       if (!initialized || initializationError) return false;
       if (!activeState(controller.getState())) return false;
-      void controller.stop('user');
+      const stopping = controller.stop('user');
+      void withPersistedState(stopping).catch(() => openReview().catch(() => {}));
       return true;
     },
     openReviewIfAvailable() {

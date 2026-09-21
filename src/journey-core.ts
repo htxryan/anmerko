@@ -774,6 +774,61 @@ export function acceptJourneyEventBatch(state: JourneySession, input: JourneyEve
     : next;
 }
 
+export function acceptLateJourneyEventBatch(state: JourneySession, input: JourneyEventBatchV1): JourneySession {
+  if (state.phase !== 'recording') return state;
+  const validated = validateJourneyEventBatch(input);
+  if (!validated.ok) return state;
+  const batch = validated.value;
+  if (batch.sessionId !== state.sessionId || batch.epoch !== state.epoch || batch.documentToken !== state.documentToken) return state;
+  if (batch.localCounter <= (state.documentCounters[batch.documentToken] ?? 0)) return state;
+  if (batch.events.length === 0) return state;
+  const batchUrl = safeUrl(batch.events[0].sourceUrl);
+  if (!batchUrl || batch.events.some(event => safeUrl(event.sourceUrl) !== batchUrl)) return state;
+  const trailing = state.draft.steps.at(-1);
+  if (!trailing || trailing.kind !== 'navigation' || safeUrl(trailing.sourceUrl) !== batchUrl) return state;
+  const navigatedAt = Date.parse(trailing.observedAt);
+  if (batch.events.some(event => Date.parse(event.observedAt) > navigatedAt)) return state;
+  const lastEvent = batch.events.at(-1)!;
+  if (Date.parse(lastEvent.observedAt) >= Date.parse(state.deadlineAt)) {
+    return stopJourney(state, { epoch: state.epoch, stoppedAt: lastEvent.observedAt, reason: 'duration-limit' });
+  }
+  if (!state.draft.includeEnteredValues && batch.events.some(event => event.kind === 'field-change')) return state;
+  const existingIds = new Set(state.draft.steps.map(step => step.id));
+  if (batch.events.some(event => existingIds.has(event.id))) return state;
+  const predecessor = state.draft.steps.at(-2);
+  let elapsed = predecessor?.elapsedMs ?? -1;
+  for (const event of batch.events) {
+    if (event.elapsedMs < elapsed || event.elapsedMs > trailing.elapsedMs) return state;
+    elapsed = event.elapsedMs;
+  }
+  const remaining = JOURNEY_LIMITS.maxSteps - state.draft.steps.length;
+  if (remaining <= 0) return stopJourney(state, { epoch: state.epoch, stoppedAt: state.draft.updatedAt, reason: 'step-limit' });
+  const accepted = batch.events.slice(0, remaining);
+  const baseSeq = predecessor?.seq ?? 0;
+  const steps = accepted.map((event, index) => ({
+    ...draftStep(event, baseSeq + index + 1),
+    image: { status: 'unavailable', reason: 'superseded' } as const,
+  }));
+  const next: RecordingJourneySession = {
+    ...state,
+    documentCounters: { ...state.documentCounters, [batch.documentToken]: batch.localCounter },
+    draft: {
+      ...state.draft,
+      steps: [...state.draft.steps.slice(0, -1), ...steps, { ...trailing, seq: baseSeq + steps.length + 1 }],
+    },
+  };
+  if (!recordingSessionFits(next)) {
+    return stopJourney(state, {
+      epoch: state.epoch,
+      stoppedAt: chronologicalTimestamp(state, lastEvent.observedAt),
+      reason: 'session-storage-limit',
+    });
+  }
+  return next.draft.steps.length >= JOURNEY_LIMITS.maxSteps
+    ? stopJourney(next, { epoch: next.epoch, stoppedAt: state.draft.updatedAt, reason: 'step-limit' })
+    : next;
+}
+
 export function commitJourneyNavigation(state: JourneySession, input: NavigationInput): JourneySession {
   if (state.phase !== 'recording' || input.epoch !== state.epoch || input.previousDocumentToken !== state.documentToken
     || !validId(input.documentToken) || !validId(input.id) || state.draft.steps.some(step => step.id === input.id)

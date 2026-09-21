@@ -24,6 +24,9 @@ type Harness = {
   failStorageRemove: boolean;
   failStorageGet: boolean;
   failAlarmCreate: boolean;
+  deferStorageSet: boolean;
+  releaseStorageSet?: () => void;
+  failPageStopCount: number;
   sequence: string[];
   tabs: Record<number, { id: number; windowId: number; active: boolean; url: string }>;
   identity: { documentToken: string; url: string; viewport: { width: number; height: number }; scroll: { x: number; y: number }; generation: number; visible: boolean;
@@ -121,7 +124,7 @@ test.beforeEach(async ({ page }) => {
       pageCommands: [], broadcasts: [], actions: [], createdTabs: [], removedTabs: [], ports: [],
       tabUpdates: [], windowUpdates: [], permissionChecks: [], scriptingCalls: [], sequence: [],
       sessionStorage: {}, alarmCreates: [], alarmClears: [], failStorageSet: false, failStorageRemove: false,
-      failStorageGet: false, failAlarmCreate: false,
+      failStorageGet: false, failAlarmCreate: false, deferStorageSet: false, failPageStopCount: 0,
       tabs: {
         1: { id: 1, windowId: 7, active: true, url: 'https://private:secret@example.test/path?item=1#top' },
         2: { id: 2, windowId: 7, active: false, url: 'https://other.test/' },
@@ -227,6 +230,10 @@ test.beforeEach(async ({ page }) => {
             harness.identity.recording = { sessionId: message.sessionId, epoch: message.epoch };
           }
           const recording = harness.identity.recording;
+          if (message.type === 'ANMERKO_JOURNEY_PAGE_STOP' && harness.failPageStopCount > 0) {
+            harness.failPageStopCount -= 1;
+            throw new Error('page stop failed');
+          }
           if (message.type === 'ANMERKO_JOURNEY_PAGE_STOP'
             && recording
             && recording.sessionId === message.sessionId
@@ -273,6 +280,7 @@ test.beforeEach(async ({ page }) => {
               .map(key => [key, structuredClone(harness.sessionStorage[key])]));
           },
           async set(items: Record<string, unknown>) {
+            if (harness.deferStorageSet) await new Promise<void>(resolve => { harness.releaseStorageSet = resolve; });
             if (harness.failStorageSet) throw new Error('session storage set failed');
             Object.assign(harness.sessionStorage, structuredClone(items));
           },
@@ -512,13 +520,22 @@ test('rejects a cold-wake click observed after its same-document navigation', as
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   const nextUrl = 'https://example.test/path?item=1#navigation-first';
-  await page.evaluate(({ owner, state, url }) => {
+  await page.evaluate(({ url }) => {
     const harness = (globalThis as HarnessWindow).harness;
     harness.deferPermission = true;
     harness.reboot();
     harness.tabs[1].url = url;
     harness.identity.url = url;
     harness.events.fragment.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+    harness.deferPermission = false;
+    harness.releasePermission?.();
+  }, { url: nextUrl });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
+    .toBe(before.draft.steps.length + 1);
+  // A click stamped with the old URL but observed after the navigation
+  // committed is stale page noise, not the initiating action.
+  await page.evaluate(({ owner, state }) => {
+    const harness = (globalThis as HarnessWindow).harness;
     const port = harness.connectPort('anmerko-journey-events-v1', owner);
     harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
       schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
@@ -531,7 +548,42 @@ test('rejects a cold-wake click observed after its same-document navigation', as
         image: { status: 'pending', captureId: 'late-old-url-capture' },
       }],
     } });
-  }, { owner: ownerPage, state: before, url: nextUrl });
+  }, { owner: ownerPage, state: before });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
+    .toBe(before.draft.steps.length + 1);
+  const recovered = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(recovered.draft.steps.at(-1)).toMatchObject({ kind: 'navigation', navigation: { toUrl: nextUrl } });
+  expect(recovered.draft.steps.some((step: any) => step.id === 'late-old-url-click')).toBe(false);
+});
+
+test('retains a cold-wake click observed before its same-document navigation', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const nextUrl = 'https://example.test/path?item=1#wake-target';
+  const clickElapsedMs = before.draft.steps.at(-1).elapsedMs;
+  await page.evaluate(({ owner, state, url, elapsedMs }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.deferPermission = true;
+    harness.reboot();
+    // The click was captured before the fragment change, but the navigation
+    // wins the cold-wake delivery race and commits first.
+    const observedAt = new Date().toISOString();
+    harness.tabs[1].url = url;
+    harness.identity.url = url;
+    harness.events.fragment.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+    const port = harness.connectPort('anmerko-journey-events-v1', owner);
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: 'early-wake-click', observedAt, elapsedMs,
+        sourceUrl: 'https://example.test/path?item=1#top',
+        target: { tag: 'button', selectorPath: ['button'], label: 'Early', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: 'early-wake-capture' },
+      }],
+    } });
+  }, { owner: ownerPage, state: before, url: nextUrl, elapsedMs: clickElapsedMs });
   await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releasePermission))).toBe(true);
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
@@ -539,10 +591,17 @@ test('rejects a cold-wake click observed after its same-document navigation', as
     harness.releasePermission?.();
   });
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
-    .toBe(before.draft.steps.length + 1);
+    .toBe(before.draft.steps.length + 2);
   const recovered = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(recovered.phase).toBe('recording');
+  expect(recovered.draft.steps.slice(-2).map((step: any) => step.kind)).toEqual(['click', 'navigation']);
+  expect(recovered.draft.steps.at(-2)).toMatchObject({
+    id: 'early-wake-click', sourceUrl: 'https://example.test/path?item=1#top',
+    image: { status: 'unavailable', reason: 'superseded' },
+  });
   expect(recovered.draft.steps.at(-1)).toMatchObject({ kind: 'navigation', navigation: { toUrl: nextUrl } });
-  expect(recovered.draft.steps.some((step: any) => step.id === 'late-old-url-click')).toBe(false);
+  const seqs = recovered.draft.steps.slice(-2).map((step: any) => step.seq);
+  expect(seqs[1]).toBe(seqs[0] + 1);
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
@@ -633,12 +692,15 @@ test('allows a trusted explicit reset after session initialization fails without
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands
     .filter(command => command.message.type === 'ANMERKO_JOURNEY_PAGE_START').length);
-  await page.evaluate(() => {
+  const stalePort = await page.evaluate(owner => {
     const harness = (globalThis as HarnessWindow).harness;
     harness.failStorageGet = true;
     harness.reboot();
-  });
+    return harness.connectPort('anmerko-journey-events-v1', owner);
+  }, ownerPage);
   await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.identity.recording)).toBeUndefined();
+  expect(await page.evaluate(index => (globalThis as HarnessWindow).harness.ports[index].disconnected, stalePort)).toBe(true);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }))
     .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
   await page.evaluate(() => { (globalThis as HarnessWindow).harness.failStorageGet = false; });
@@ -649,6 +711,74 @@ test('allows a trusted explicit reset after session initialization fails without
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 }))
     .toEqual({ ok: true });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+});
+
+test('reconciles a restored review recorder and retries a transient page stop failure on reconnect', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.failPageStopCount = 1; });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.identity.recording)).toEqual({
+    sessionId: recording.sessionId, epoch: recording.epoch,
+  });
+
+  const port = await page.evaluate(owner => (globalThis as HarnessWindow).harness
+    .connectPort('anmerko-journey-events-v1', owner), ownerPage);
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.identity.recording)).toBeUndefined();
+  expect(await page.evaluate(index => (globalThis as HarnessWindow).harness.ports[index].disconnected, port)).toBe(true);
+
+  await page.evaluate(({ sessionId, epoch }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.identity.recording = { sessionId, epoch };
+    harness.reboot();
+  }, { sessionId: recording.sessionId, epoch: recording.epoch });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.identity.recording)).toBeUndefined();
+});
+
+test('does not report recovery ready before a fail-closed stop is durably written', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.identity.documentToken = 'unexplained-recovery-document';
+    delete harness.identity.recording;
+    harness.deferStorageSet = true;
+    harness.reboot();
+  });
+  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releaseStorageSet))).toBe(true);
+  expect(await page.evaluate(async () => Promise.race([
+    (globalThis as HarnessWindow).harness.control.ready.then(() => true),
+    new Promise<false>(resolve => setTimeout(() => resolve(false), 25)),
+  ]))).toBe(false);
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.deferStorageSet = false;
+    harness.releaseStorageSet?.();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+    .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'capture-failed' } });
+});
+
+test('keeps toolbar Stop synchronous and opens a warned review when persistence fails', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const immediate = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.failStorageSet = true;
+    const handled = harness.control.stopIfRecording();
+    return { handled };
+  });
+  expect(immediate).toEqual({ handled: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.stopReason)
+    .toBe('session-storage-limit');
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs
+    .filter(tab => tab.url === 'chrome-extension://test-extension/journey.html').length)).toBe(1);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.actions)).toEqual(expect.arrayContaining([
+    { method: 'badge', details: { tabId: 1, text: '!' } },
+    { method: 'title', details: { tabId: 1, title: 'Journey storage failed — review draft now' } },
+  ]));
 });
 
 test('stops a stale page recorder when its event port reconnects to an idle background', async ({ page }) => {
