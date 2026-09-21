@@ -105,8 +105,16 @@ footer .support-icon { flex-shrink: 0; filter: grayscale(1); }
 @media (max-width: 600px) {
   .features { grid-template-columns: minmax(0, 1fr); gap: 28px; }
   .header { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; padding-block: 4px; }
-  .header nav { grid-column: 1 / -1; grid-row: 2; gap: 8px 12px; margin-left: 0; flex-wrap: wrap; }
+  .header nav { grid-column: 1 / -1; grid-row: 2; gap: 6px 10px; margin-left: 0; flex-wrap: wrap; font-size: 12px; }
+  .header nav a { white-space: nowrap; }
+  .header nav svg { width: 12px; height: 12px; }
   .theme-toggle { grid-column: 2; grid-row: 1; }
+  .intro p { margin-top: 10px; }
+  .demo-controls { margin-top: 8px; }
+  .install { padding: 18px; }
+  .browser-tabs { margin-top: 14px; }
+  .browser-panel { margin-top: 14px; }
+  .install-links { margin-top: 8px; }
 }
 @media (max-width: 480px) {
   .install { padding: 16px 20px; }
