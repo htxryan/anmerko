@@ -6,8 +6,11 @@ import {
   createJourneySession,
   resolveJourneyCapture,
   recordingSessionFits,
+  removeJourneyStep,
+  reviewSaveGating,
   stopJourney,
   supersedeJourneyImagesAfter,
+  updateJourneySummary,
   validateJourneyDraft,
   validateJourneyManifest,
   type JourneyDraftV1,
@@ -476,6 +479,87 @@ test('session fits reserves control space below the aggregate byte limit', () =>
   expect(recordingSessionFits(padTo(limit + 1))).toBe(false);
 });
 
+test('review summaries store trimmed text with revision guards', () => {
+  const reviewing = reviewingSession();
+  const input = {
+    epoch: 2, journeyId: 'journey-1', revision: reviewing.draft.revision,
+    updatedAt: '2026-09-20T12:01:30.000Z',
+    expected: '  The cart keeps its item.  ', actual: 'Checkout is empty.',
+  };
+  const updated = updateJourneySummary(reviewing, input);
+  expect(updated).not.toBe(reviewing);
+  if (updated.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(updated.draft.expected).toBe('The cart keeps its item.');
+  expect(updated.draft.actual).toBe('Checkout is empty.');
+  expect(updated.draft.revision).toBe(reviewing.draft.revision + 1);
+  expect(updated.draft.updatedAt).toBe('2026-09-20T12:01:30.000Z');
+
+  expect(updateJourneySummary(reviewing, { ...input, epoch: 3 })).toBe(reviewing);
+  expect(updateJourneySummary(reviewing, { ...input, revision: 99 })).toBe(reviewing);
+  expect(updateJourneySummary(reviewing, { ...input, expected: 'x'.repeat(4001) })).toBe(reviewing);
+  expect(updateJourneySummary(reviewing, { ...input, updatedAt: '2026-09-20T12:00:00.000Z' })).toBe(reviewing);
+  expect(updateJourneySummary(updated, input)).toBe(updated);
+});
+
+test('review step removal preserves order with stable gaps and prunes images', () => {
+  const recording = recordingSession();
+  if (recording.phase !== 'recording') throw new Error('expected recording fixture');
+  const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
+  if (withClick.phase !== 'recording') throw new Error('expected recording state');
+  const reviewing = stopJourney(withClick, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const stepId = reviewing.draft.steps[1].id;
+  const removed = removeJourneyStep(reviewing, {
+    epoch: 2, journeyId: 'journey-1', revision: reviewing.draft.revision,
+    updatedAt: '2026-09-20T12:01:30.000Z', stepId,
+  });
+  expect(removed).not.toBe(reviewing);
+  if (removed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(removed.draft.steps.map(step => [step.id, step.seq])).toEqual(
+    reviewing.draft.steps.filter(step => step.id !== stepId).map(step => [step.id, step.seq]));
+  expect(removed.draft.steps).toHaveLength(1);
+  expect(removed.draft.images).toEqual(
+    { 'image-initial': reviewing.draft.images['image-initial'] });
+  expect(removed.draft.revision).toBe(reviewing.draft.revision + 1);
+
+  expect(removeJourneyStep(reviewing, {
+    epoch: 2, journeyId: 'journey-1', revision: reviewing.draft.revision,
+    updatedAt: '2026-09-20T12:01:30.000Z', stepId: 'missing-step',
+  })).toBe(reviewing);
+  const lone = { ...reviewing, draft: { ...reviewing.draft, steps: [reviewing.draft.steps[0]] } };
+  const refused = removeJourneyStep(lone, {
+    epoch: 2, journeyId: 'journey-1', revision: reviewing.draft.revision,
+    updatedAt: '2026-09-20T12:01:30.000Z', stepId: reviewing.draft.steps[0].id,
+  });
+  expect(refused).toBe(lone);
+  if (refused.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(refused.draft.steps).toHaveLength(1);
+});
+
+test('save gating requires summaries, a retained step, and a valid draft', () => {
+  const reviewing = reviewingSession();
+  expect(reviewSaveGating(reviewing)).toEqual({ ready: false, reasons: ['summaries-required'] });
+
+  const summarized = updateJourneySummary(reviewing, {
+    epoch: 2, journeyId: 'journey-1', revision: reviewing.draft.revision,
+    updatedAt: '2026-09-20T12:01:30.000Z',
+    expected: 'The cart keeps its item.', actual: 'Checkout is empty.',
+  });
+  expect(reviewSaveGating(summarized)).toEqual({ ready: true, reasons: [] });
+  expect(reviewSaveGating(recordingSession())).toEqual({ ready: false, reasons: ['invalid-draft'] });
+  if (summarized.phase !== 'reviewing') throw new Error('expected reviewing state');
+
+  const imageless = {
+    ...summarized,
+    draft: {
+      ...summarized.draft,
+      steps: summarized.draft.steps.map(step => ({ ...step, image: { status: 'removed' as const } })),
+      images: {},
+    },
+  };
+  expect(reviewSaveGating(imageless)).toEqual({ ready: false, reasons: ['retained-step-required'] });
+});
+
 test('batches cannot reuse pending capture IDs or cross the aggregate field-text budget', () => {
   const recording = recordingSession();
   const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
@@ -542,6 +626,16 @@ function recordingSession() {
       viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
     },
   });
+}
+
+function reviewingSession() {
+  const recording = recordingSession();
+  if (recording.phase !== 'recording') throw new Error('expected recording fixture');
+  const stopped = stopJourney(recording, {
+    epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user',
+  });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing fixture');
+  return stopped;
 }
 
 function nearSessionLimitRecording() {

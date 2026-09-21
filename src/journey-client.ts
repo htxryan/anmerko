@@ -17,6 +17,7 @@ const BACKEND_GUIDANCE: Record<string, string> = {
   'launch-expired': 'This launch expired. Reopen anmerko from the original website.',
   'permission-required': 'Allow the requested permissions, then try again.',
   'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
+  'stale-review': 'Another review tab changed this journey. Reload the review and try again.',
 };
 
 function validOwner(value: JourneyOwner | undefined): value is { ownerTabId: number; ownerWindowId: number } {
@@ -43,9 +44,10 @@ export function createJourneyClient(
       throw new Error(CLIENT_ERROR);
     }
     if (!response || response.ok !== true) {
-      const guidance = response && typeof response.code === 'string' && Object.hasOwn(BACKEND_GUIDANCE, response.code)
-        ? BACKEND_GUIDANCE[response.code] : undefined;
-      throw new Error(guidance ?? CLIENT_ERROR);
+      const code = response && typeof response.code === 'string' ? response.code : undefined;
+      const guidance = code !== undefined && Object.hasOwn(BACKEND_GUIDANCE, code)
+        ? BACKEND_GUIDANCE[code] : undefined;
+      throw Object.assign(new Error(guidance ?? CLIENT_ERROR), code ? { code } : {});
     }
     return response.value;
   }
@@ -53,6 +55,22 @@ export function createJourneyClient(
   return {
     supportsEnteredValues: false,
     read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
+    updateSummary: async (expected: string, actual: string): Promise<void> => {
+      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+      await command('ANMERKO_JOURNEY_UPDATE_SUMMARY', {
+        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+        updatedAt: new Date().toISOString(), expected, actual,
+      });
+    },
+    removeStep: async (stepId: string): Promise<void> => {
+      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+      await command('ANMERKO_JOURNEY_REMOVE_STEP', {
+        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+        updatedAt: new Date().toISOString(), stepId,
+      });
+    },
     start(_includeEnteredValues: boolean): Promise<void> {
       let currentOwner: JourneyOwner | undefined;
       try { currentOwner = owner?.(); }

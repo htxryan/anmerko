@@ -829,6 +829,80 @@ export function acceptLateJourneyEventBatch(state: JourneySession, input: Journe
     : next;
 }
 
+export interface JourneySummaryInput {
+  epoch: number;
+  journeyId: string;
+  revision: number;
+  updatedAt: string;
+  expected: string;
+  actual: string;
+}
+
+export function updateJourneySummary(state: JourneySession, input: JourneySummaryInput): JourneySession {
+  if (state.phase !== 'reviewing' || input.epoch !== state.epoch || input.journeyId !== state.journeyId
+    || input.journeyId !== state.draft.id || input.revision !== state.draft.revision
+    || typeof input.expected !== 'string' || typeof input.actual !== 'string'
+    || characters(input.expected) > JOURNEY_LIMITS.maxSummaryCharacters
+    || characters(input.actual) > JOURNEY_LIMITS.maxSummaryCharacters
+    || !Number.isSafeInteger(state.draft.revision) || state.draft.revision >= Number.MAX_SAFE_INTEGER
+    || !validTimestamp(input.updatedAt)) return state;
+  const updateMs = Date.parse(input.updatedAt);
+  if (updateMs < Date.parse(state.draft.updatedAt) || updateMs >= Date.parse(state.expiresAt)) return state;
+  const expected = input.expected.trim();
+  const actual = input.actual.trim();
+  const draft = {
+    ...state.draft, expected, actual, revision: state.draft.revision + 1, updatedAt: input.updatedAt,
+  };
+  if (validateJourneyDraft(draft).ok === false) return state;
+  return { ...state, draft };
+}
+
+export interface JourneyRemoveStepInput {
+  epoch: number;
+  journeyId: string;
+  revision: number;
+  updatedAt: string;
+  stepId: string;
+}
+
+export function removeJourneyStep(state: JourneySession, input: JourneyRemoveStepInput): JourneySession {
+  if (state.phase !== 'reviewing' || input.epoch !== state.epoch || input.journeyId !== state.journeyId
+    || input.journeyId !== state.draft.id || input.revision !== state.draft.revision
+    || !validId(input.stepId)
+    || !Number.isSafeInteger(state.draft.revision) || state.draft.revision >= Number.MAX_SAFE_INTEGER
+    || !validTimestamp(input.updatedAt)) return state;
+  const updateMs = Date.parse(input.updatedAt);
+  if (updateMs < Date.parse(state.draft.updatedAt) || updateMs >= Date.parse(state.expiresAt)) return state;
+  const index = state.draft.steps.findIndex(step => step.id === input.stepId);
+  if (index < 0 || state.draft.steps.length <= 1) return state;
+  const steps = state.draft.steps.filter(step => step.id !== input.stepId);
+  const referencedImageIds = new Set(steps.flatMap(step => step.image.status === 'retained' ? [step.image.imageId] : []));
+  const images = Object.fromEntries(Object.entries(state.draft.images)
+    .filter(([imageId]) => referencedImageIds.has(imageId)));
+  const draft = {
+    ...state.draft, steps, images, revision: state.draft.revision + 1, updatedAt: input.updatedAt,
+  };
+  if (validateJourneyDraft(draft).ok === false) return state;
+  return { ...state, draft };
+}
+
+export type ReviewBlockReason = 'summaries-required' | 'retained-step-required' | 'images-pending' | 'invalid-draft';
+
+export function reviewSaveGating(state: JourneySession): { ready: boolean; reasons: ReviewBlockReason[] } {
+  if (state.phase !== 'reviewing') return { ready: false, reasons: ['invalid-draft'] };
+  const reasons: ReviewBlockReason[] = [];
+  const summary = (value: string) => value.trim();
+  if (!summary(state.draft.expected) || !summary(state.draft.actual)
+    || characters(state.draft.expected) > JOURNEY_LIMITS.maxSummaryCharacters
+    || characters(state.draft.actual) > JOURNEY_LIMITS.maxSummaryCharacters) {
+    reasons.push('summaries-required');
+  }
+  if (!state.draft.steps.some(step => step.image.status === 'retained')) reasons.push('retained-step-required');
+  if (state.draft.steps.some(step => step.image.status === 'pending')) reasons.push('images-pending');
+  if (reasons.length === 0 && validateJourneyDraft(state.draft).ok === false) reasons.push('invalid-draft');
+  return { ready: reasons.length === 0, reasons };
+}
+
 export function commitJourneyNavigation(state: JourneySession, input: NavigationInput): JourneySession {
   if (state.phase !== 'recording' || input.epoch !== state.epoch || input.previousDocumentToken !== state.documentToken
     || !validId(input.documentToken) || !validId(input.id) || state.draft.steps.some(step => step.id === input.id)

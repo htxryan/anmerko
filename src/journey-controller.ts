@@ -6,13 +6,18 @@ import {
   commitJourneyNavigation,
   createJourneySession,
   failInitialImage,
+  removeJourneyStep,
   resolveJourneyCapture,
   stopJourney,
   supersedeJourneyImagesAfter,
+  updateJourneySummary,
   type JourneyDraftImage,
+  type JourneyRemoveStepInput,
   type JourneySession,
+  type JourneySummaryInput,
   type Point,
   type RecordingJourneySession,
+  type ReviewingJourneySession,
   type Viewport,
 } from './journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch } from './journey-events';
@@ -53,9 +58,11 @@ export interface JourneyController {
   acceptBatch(batch: unknown, senderTabId: number): void;
   stop(reason?: StopReason): Promise<void>;
   discard(): Promise<void>;
+  updateSummary(input: JourneySummaryInput): Promise<void>;
+  removeStep(input: JourneyRemoveStepInput): Promise<void>;
 }
 
-export type JourneyControllerErrorCode = 'busy' | 'invalid-start' | 'owner-unavailable' | 'initial-capture-failed';
+export type JourneyControllerErrorCode = 'busy' | 'invalid-start' | 'owner-unavailable' | 'initial-capture-failed' | 'stale-review';
 
 interface PendingDocumentHandshake {
   previousDocumentToken: string;
@@ -552,6 +559,26 @@ export function createJourneyController(
     if ('ownerTabId' in previous && 'sessionId' in previous) await safeEnd(previous.ownerTabId, previous.sessionId, next.epoch);
   }
 
+  function currentReview(previous: JourneySession, input: { epoch: unknown; journeyId: unknown; revision: unknown }): ReviewingJourneySession {
+    if (previous.phase !== 'reviewing' || input.epoch !== previous.epoch
+      || input.journeyId !== previous.journeyId || input.revision !== previous.draft.revision) {
+      throw new JourneyControllerError('stale-review', 'The review changed since this edit began. Reload and try again.');
+    }
+    return previous;
+  }
+
+  async function updateSummary(input: JourneySummaryInput): Promise<void> {
+    const previous = currentReview(state, input);
+    const next = updateJourneySummary(previous, input);
+    if (next !== previous) publish(next);
+  }
+
+  async function removeStep(input: JourneyRemoveStepInput): Promise<void> {
+    const previous = currentReview(state, input);
+    const next = removeJourneyStep(previous, input);
+    if (next !== previous) publish(next);
+  }
+
   async function safeEnd(tabId: number, sessionId: string, epoch: number, documentToken?: string): Promise<void> {
     try { await adapter.end(tabId, { sessionId, epoch, ...(documentToken ? { documentToken } : {}) }); }
     catch { /* State is already inactive; teardown is best effort. */ }
@@ -583,7 +610,7 @@ export function createJourneyController(
     await safeEnd(tabId, sessionId, epoch, documentToken);
   }
 
-  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard };
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep };
 }
 
 function newId(prefix: string): string {

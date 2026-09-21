@@ -604,6 +604,59 @@ test('retains a cold-wake click observed before its same-document navigation', a
   expect(seqs[1]).toBe(seqs[0] + 1);
 });
 
+test('review summaries and step removal apply with revision guards', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  await page.evaluate(({ owner, state }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const port = harness.connectPort('anmerko-journey-events-v1', owner);
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: 'review-click', observedAt: new Date().toISOString(), elapsedMs: 20,
+        sourceUrl: 'https://example.test/path?item=1#top',
+        target: { tag: 'button', selectorPath: ['button'], label: 'Go', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: 'review-click-capture' },
+      }],
+    } });
+  }, { owner: ownerPage, state: before });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length).toBe(2);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  let reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.phase).toBe('reviewing');
+
+  const guards = {
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    updatedAt: new Date().toISOString(),
+  };
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards,
+    expected: '  The cart keeps its item.  ', actual: 'Checkout is empty.',
+  })).toEqual({ ok: true });
+  reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.draft.expected).toBe('The cart keeps its item.');
+  expect(reviewing.draft.actual).toBe('Checkout is empty.');
+  expect(reviewing.draft.revision).toBe(guards.revision + 1);
+
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards,
+    expected: 'Stale write.', actual: 'Stale write.',
+  })).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'stale-review' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REMOVE_STEP' }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
+
+  const clickId = reviewing.draft.steps[1].id;
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards, revision: guards.revision + 1,
+    updatedAt: new Date().toISOString(), stepId: clickId,
+  })).toEqual({ ok: true });
+  reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.draft.steps.map((step: any) => step.seq)).toEqual([1]);
+  expect(reviewing.draft.steps).toHaveLength(1);
+});
+
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands

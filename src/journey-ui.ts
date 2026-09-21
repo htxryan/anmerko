@@ -9,6 +9,8 @@ export interface JourneyClient {
   start(includeEnteredValues: boolean): Promise<void>;
   stop(): Promise<void>;
   discard(): Promise<void>;
+  updateSummary(expected: string, actual: string): Promise<void>;
+  removeStep(stepId: string): Promise<void>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
 }

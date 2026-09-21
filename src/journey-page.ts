@@ -23,5 +23,29 @@ if (!journeysEnabled) {
   const style = document.createElement('style');
   style.textContent = journeyStyles;
   document.head.append(style);
-  mountJourneyUI(root, createJourneyClient(undefined, launchIntent(location.hash)));
+  const base = createJourneyClient(undefined, launchIntent(location.hash));
+  const client = {
+    ...base,
+    start: async (includeEnteredValues: boolean): Promise<void> => {
+      try {
+        await base.start(includeEnteredValues);
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === 'launch-expired') showLaunchExpired();
+        throw error;
+      }
+    },
+  };
+  const unmount = mountJourneyUI(root, client);
+  function showLaunchExpired(): void {
+    unmount();
+    if (!root) return;
+    root.replaceChildren();
+    const section = document.createElement('section');
+    const heading = document.createElement('h1');
+    const explanation = document.createElement('p');
+    heading.textContent = 'This journey link already opened';
+    explanation.textContent = 'Each journey link works once. Return to the website tab and choose Record journey to start a fresh journey.';
+    section.append(heading, explanation);
+    root.append(section);
+  }
 }
