@@ -28,6 +28,16 @@ Its local test page is maintained at `tests/fixtures/demo/index.html`.
 
 Native Chrome tests need a headed session (Xvfb on Linux). Their experimental CDP commands are unavailable in Chrome 142, so minimum-version support needs separate native checks. Use `--executable /absolute/path/to/chrome` for a nonstandard binary. Runs save source, browser/OS, hashes, and results under `artifacts/desktop-*/`; `--manual` waits for Ctrl+C and does not mark scenarios passed automatically. Release requirements are in [the release guide](release-process.md).
 
+### Live journey verification
+
+The native side panel is a separate CDP target, not a Playwright tab: attach with `tests/shared/chromium-sidebar.ts`. A raw `sidebar.html` tab has no owner, so owner-gated UI such as the journey menu never appears there. Journey controls live behind **More Comment Options → Record journey**; menu gates require trusted clicks, so drive them with CDP `Input.dispatchMouseEvent`, never `Runtime.evaluate` clicks (those are untrusted and rejected).
+
+The native optional-permission prompt cannot be clicked by automation. Verify permission UX manually; automation may promote optional permissions to required in a scratch copy of `dist/` with the deviation recorded in the run evidence, never in the shipped manifest.
+
+Cold-wake harness tests must derive synthetic event timestamps from observed state (for example, the predecessor step's `elapsedMs`). Fixed constants flip with browser warmup timing: a fast recovery can commit a navigation with a smaller `elapsedMs` than the constant, silently changing which branch the test exercises.
+
+Background or headless windows can fail action captures closed through the focus and viewport guards, and killing the worker inside the post-action capture window marks the pending image `capture-error` by design. Assert order, recovery, and review in automation; let live captures settle before terminating, and leave image-retention proof to focused headed runs.
+
 ## Update a local Chrome installation
 
 On macOS, `npm run chrome:install` builds this checkout, reloads its existing installation, and verifies the new background worker. Refresh the website afterward. Save drafts first.
