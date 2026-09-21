@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { readFile } from 'node:fs/promises';
 
 const bundle = () => buildSync({ stdin: { contents: `
   import { mountJourneyUI } from './src/journey-ui';
+  import { JOURNEY_LIMITS as journeyLimits } from './src/journey-limits';
   import styles from './src/journey.css';
   const style = document.createElement('style');
   style.textContent = styles;
@@ -20,6 +22,11 @@ const bundle = () => buildSync({ stdin: { contents: `
   let saveError = null;
   let listResult = [];
   let listShouldFail = false;
+  let openSnapshotError = null;
+  let reopenError = null;
+  let stayInReview = false;
+  const openSnapshotCalls = [];
+  const reopenCalls = [];
   const client = {
     supportsEnteredValues: true,
     read: async () => state,
@@ -61,10 +68,26 @@ const bundle = () => buildSync({ stdin: { contents: `
       saveCalls.push(acknowledged);
       if (saveError) throw saveError;
       const draft = state.draft;
-      const result = { journeyId: draft.id, revision: draft.revision + 1 };
-      state = { phase: 'saved', epoch: state.epoch + 1, journeyId: draft.id, revision: draft.revision + 1 };
+      const result = stayInReview
+        ? { journeyId: draft.id, revision: draft.revision }
+        : { journeyId: draft.id, revision: draft.revision + 1 };
+      if (!stayInReview) {
+        state = { phase: 'saved', epoch: state.epoch + 1, journeyId: draft.id, revision: draft.revision + 1 };
+      }
       changed();
       return result;
+    },
+    openSnapshot: async journeyId => {
+      openSnapshotCalls.push(journeyId);
+      if (openSnapshotError) throw openSnapshotError;
+      const base = exportableDraft();
+      const live = state.draft ?? base;
+      const draft = { ...base, id: live.id, revision: live.revision, expected: live.expected, actual: live.actual };
+      return { draft: structuredClone(draft), images: structuredClone(draft.images) };
+    },
+    reopen: async journeyId => {
+      reopenCalls.push(journeyId);
+      if (reopenError) throw reopenError;
     },
     list: async () => {
       if (listShouldFail) throw new Error('Could not load saved journeys.');
@@ -98,6 +121,45 @@ const bundle = () => buildSync({ stdin: { contents: `
     step('S2', 2, 'click', { status: 'retained', imageId: 'I2' }, { target: { label: 'Buy now' } }),
     step('S3', 3, 'navigation', { status: 'unavailable', reason: 'superseded' }, { navigation: { toUrl: 'https://example.test/checkout' } }),
   ];
+  const MINIMAL_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC';
+  const exportableDraft = () => ({
+    schemaVersion: 1, status: 'draft', id: 'J1', revision: 4,
+    createdAt: '2026-09-20T12:00:00.000Z', updatedAt: '2026-09-20T12:00:04.000Z',
+    startedAt: '2026-09-20T12:00:00.000Z', stoppedAt: '2026-09-20T12:00:04.000Z',
+    includeEnteredValues: true, stopReason: 'user',
+    expected: 'The selected item remains in the cart.', actual: 'Checkout is empty after navigation.',
+    steps: [
+      {
+        kind: 'click', id: 'S2', seq: 2, observedAt: '2026-09-20T12:00:01.210Z', elapsedMs: 1210,
+        sourceUrl: 'https://shop.example/items?q=green',
+        target: {
+          tag: 'button', role: 'button', selectorPath: ['main', 'button:nth-of-type(2)'],
+          label: 'Checkout', editable: false, viewport: { width: 1280, height: 720 },
+          scroll: { x: 0, y: 300 }, point: { x: 1010, y: 650 },
+        },
+        image: { status: 'retained', imageId: 'I2' },
+      },
+      {
+        kind: 'field-change', id: 'S4', seq: 7, observedAt: '2026-09-20T12:00:02.000Z', elapsedMs: 2000,
+        sourceUrl: 'https://other.example/pay?q=green',
+        target: {
+          tag: 'input', selectorPath: ['input'], label: 'text field', editable: true,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+        },
+        enteredValue: { kind: 'text', value: 'edited query', truncated: false, edited: true },
+        image: { status: 'unavailable', reason: 'superseded' },
+      },
+    ],
+    images: {
+      I2: {
+        capturedAt: '2026-09-20T12:00:01.600Z', captureUrl: 'https://shop.example/pay?q=green',
+        width: 1, height: 1, byteLength: 69,
+        dataUrl: MINIMAL_PNG,
+        viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+      },
+    },
+    limitations: [],
+  });
   const reviewingStepsWithField = () => [
     step('S1', 1, 'initial', { status: 'retained', imageId: 'I1' }),
     step('S2', 2, 'click', { status: 'retained', imageId: 'I2' }, { target: { label: 'Buy now' } }),
@@ -117,31 +179,38 @@ const bundle = () => buildSync({ stdin: { contents: `
     editCalls: () => editCalls,
     redactCalls: () => redactCalls,
     saveCalls: () => saveCalls,
+    openSnapshotCalls: () => openSnapshotCalls,
+    reopenCalls: () => reopenCalls,
     setIdle: () => {
       summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
       state = { phase: 'idle', epoch: 9 };
       changed();
     },
     setReviewing: () => {
       summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(reviewingSteps()) };
       changed();
     },
     setReviewingWithField: () => {
       summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(reviewingStepsWithField()) };
       changed();
     },
     setReviewingWithAllValues: () => {
       summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(reviewingStepsWithAllValues()) };
       changed();
     },
     setReviewingValuesOn: () => {
       summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
       const draft = reviewingDraft(reviewingSteps());
       draft.includeEnteredValues = true;
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
@@ -150,6 +219,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     },
     setUnreviewable: () => {
       summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft([
           step('S1', 1, 'initial', { status: 'pending', captureId: 'C1' }),
@@ -165,6 +235,12 @@ const bundle = () => buildSync({ stdin: { contents: `
     failSaveStale: () => {
       saveError = Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
     },
+    saveWithoutLeaving: () => { stayInReview = true; },
+    failReopenBusy: () => {
+      reopenError = Object.assign(new Error('Finish or discard the current journey before reopening a saved one.'), { code: 'busy' });
+    },
+    failOpenSnapshot: message => { openSnapshotError = new Error(message); },
+    shrinkExportLimit: () => { journeyLimits.maxExportBytes = 10; },
   };
 `, resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
 
@@ -372,19 +448,40 @@ test('save enables when ready, saves with acknowledgement, and shows confirmatio
   await expect(page.getByRole('button', { name: 'Back to comments', exact: true })).toBeVisible();
 });
 
-test('saved list renders summaries read-only with reopening note', async ({ page }) => {
+test('saved journeys list once each with spans scope and a reopen action', async ({ page }) => {
   await page.goto('http://127.0.0.1:4173');
   await page.setContent('<!doctype html><html><body></body></html>');
   await page.addScriptTag({ content: bundle() });
   await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
   await page.evaluate(`journeyReviewHarness.setList([
-    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3 },
-    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1 },
+    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true },
+    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
   ])`);
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await expect(saved).toBeVisible();
+  await expect(saved.getByText('Journey J1 · revision 2 · 3 steps · updated 2026-09-21T01:00:00.000Z', { exact: false })).toBeVisible();
+  await expect(saved.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: false })).toBeVisible();
+  await expect(saved.getByText('Spans pages', { exact: true })).toHaveCount(1);
+  await expect(saved.locator('li')).toHaveCount(2);
+  await expect(page.getByText('Reopening a saved journey for editing arrives next.', { exact: true })).toHaveCount(0);
+  await saved.getByRole('button', { name: 'Reopen journey J1', exact: true }).click();
+  await expect
+    .poll(async () => page.evaluate('journeyReviewHarness.reopenCalls()'), { timeout: 10_000 })
+    .toEqual(['J1']);
+});
+
+test('reopen surfaces busy errors without leaving the saved list', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await page.evaluate(`journeyReviewHarness.setList([
+    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false },
+  ])`);
+  await page.evaluate('journeyReviewHarness.failReopenBusy()');
+  await page.getByRole('button', { name: 'Reopen journey J1', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('Finish or discard the current journey before reopening a saved one.');
   await expect(page.getByRole('heading', { name: 'Saved journeys' })).toBeVisible();
-  await expect(page.getByText('Journey J1 · revision 2 · 3 steps · updated 2026-09-21T01:00:00.000Z', { exact: true })).toBeVisible();
-  await expect(page.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: true })).toBeVisible();
-  await expect(page.getByText('Reopening a saved journey for editing arrives next.', { exact: true })).toBeVisible();
 });
 
 test('saved list hides when loading fails without an error wall', async ({ page }) => {
@@ -414,4 +511,114 @@ test('stale save keeps typed summaries', async ({ page }) => {
   await expect(page.getByRole('alert')).toHaveText('Another review tab changed this journey. Reload the review and try again.');
   await expect(page.getByLabel('Expected result')).toHaveValue('Typed before stale save');
   await expect(page.getByLabel('Actual result')).toHaveValue('Actual stays');
+});
+
+function centralDirectoryNames(bytes: Buffer): string[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = -1;
+  for (let offset = bytes.length - 22; offset >= 0; offset--) {
+    if (view.getUint32(offset, true) === 0x06054b50) { end = offset; break; }
+  }
+  if (end < 0) throw new Error('ZIP end of central directory not found');
+  const count = view.getUint16(end + 8, true);
+  let offset = view.getUint32(end + 16, true);
+  const names: string[] = [];
+  for (let index = 0; index < count; index++) {
+    if (view.getUint32(offset, true) !== 0x02014b50) throw new Error('ZIP central directory entry not found');
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    names.push(Buffer.from(bytes.subarray(offset + 46, offset + 46 + nameLength)).toString('utf8'));
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return names;
+}
+
+async function saveReviewWithoutLeaving(page: Page) {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.saveWithoutLeaving()');
+  await page.getByLabel('Expected result').fill('Keeps the item in the cart.');
+  await expect
+    .poll(async () => Number(await page.evaluate('journeyReviewHarness.summaryCalls().length')), { timeout: 10_000 })
+    .toBe(1);
+  await page.getByLabel('Actual result').fill('Checkout is empty.');
+  await expect
+    .poll(async () => Number(await page.evaluate('journeyReviewHarness.summaryCalls().length')), { timeout: 10_000 })
+    .toBe(2);
+  await page.getByLabel('I understand this journey retains full URLs and any entered values.').check();
+  const save = page.getByRole('button', { name: 'Save journey', exact: true });
+  await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
+  await save.click();
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeEnabled({ timeout: 10_000 });
+}
+
+test('export buttons stay disabled with a save-first note until the review is saved', async ({ page }) => {
+  await openReview(page);
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeDisabled();
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toBeVisible();
+});
+
+test('a successful save enables export until the next edit', async ({ page }) => {
+  await saveReviewWithoutLeaving(page);
+  const copy = page.getByRole('button', { name: 'Copy Prompt', exact: true });
+  const download = page.getByRole('button', { name: 'Download Markdown + Images', exact: true });
+  await expect(copy).toBeEnabled();
+  await expect(download).toBeEnabled();
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Remove step 3', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm remove step 3', exact: true }).click();
+  await expect(copy).toBeDisabled();
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toBeVisible();
+});
+
+test('copy writes the saved journey prompt with its id and summaries', async ({ page, context }) => {
+  await saveReviewWithoutLeaving(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:4173' });
+  await page.getByRole('button', { name: 'Copy Prompt', exact: true }).click();
+  await expect(page.getByText('Journey prompt copied. Download the images to attach them with the prompt.', { exact: true })).toBeVisible();
+  const text = await page.evaluate(() => navigator.clipboard.readText());
+  expect(text).toContain('## Recorded journeys');
+  expect(text).toContain('J1');
+  expect(text).toContain('Keeps the item in the cart.');
+  expect(await page.evaluate('journeyReviewHarness.openSnapshotCalls()')).toEqual(['J1']);
+});
+
+test('copy failure offers download without throwing', async ({ page }) => {
+  await saveReviewWithoutLeaving(page);
+  await page.evaluate(`Object.defineProperty(navigator.clipboard, 'writeText', {
+    value: () => Promise.reject(new Error('Simulated clipboard denial')), configurable: true })`);
+  await page.getByRole('button', { name: 'Copy Prompt', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('Could not copy the journey prompt. Use Download Markdown + Images to export this journey.');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+});
+
+test('download produces a ZIP with journeys.md and the PNG', async ({ page }) => {
+  await saveReviewWithoutLeaving(page);
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
+  const archive = await downloading;
+  expect(archive.suggestedFilename()).toBe('journey-J1.zip');
+  const bytes = await readFile((await archive.path())!);
+  expect(centralDirectoryNames(bytes)).toEqual(['comments.md', 'journeys.md', 'journey-2-J1-image-2-I2.png']);
+  expect(bytes.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
+  await expect(page.getByText('Journey download started. Extract the ZIP and attach its images with the prompt.', { exact: true })).toBeVisible();
+});
+
+test('download surfaces the export size limit and keeps the review', async ({ page }) => {
+  await saveReviewWithoutLeaving(page);
+  await page.evaluate('journeyReviewHarness.shrinkExportLimit()');
+  await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('Journey export exceeds the export size limit.');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeEnabled();
+});
+
+test('export controls stay usable at 320 CSS px width', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await saveReviewWithoutLeaving(page);
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
 });

@@ -1,5 +1,7 @@
 import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
 import type { CaptureFailure } from './journey-limits';
+import { downloadFile, feedbackArchive } from './export';
+import { journeyDraftToManifest, journeyPromptSection } from './journey-export';
 import { privateImage } from './screenshot';
 
 export interface JourneyClient {
@@ -22,6 +24,11 @@ export interface JourneyClient {
 }
 
 const JOURNEY_STORAGE_ERROR = 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.';
+const EXPORT_SIZE_ERROR = 'Journey export exceeds the export size limit.';
+
+// Preamble for journey-only archives. Static notes keep their own product
+// preamble in core.ts; journeys export without static notes here.
+export const JOURNEY_EXPORT_PREAMBLE = 'Recorded journey brief.';
 
 const failures: Record<CaptureFailure, string> = {
   superseded: 'superseded by a later action',
@@ -77,6 +84,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let valueBusy: string | null = null;
   let redactBusy: string | null = null;
   let saveBusy = false;
+  let copyBusy = false;
+  let downloadBusy = false;
+  let exportStatus = '';
+  let exportStatusFor: string | null = null;
+  let lastSaved: { journeyId: string; revision: number } | null = null;
 
   async function refresh() {
     const current = ++version;
@@ -89,6 +101,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (next.phase === 'reviewing') {
         if (acknowledgedFor !== '' && acknowledgedFor !== next.draft.id) acknowledged = false;
         acknowledgedFor = next.draft.id;
+        const draftKey = `${next.draft.id}@${next.draft.revision}`;
+        if (exportStatusFor !== draftKey) { exportStatus = ''; exportStatusFor = null; }
         if (confirmingRemove !== null && !next.draft.steps.some(step => step.id === confirmingRemove)) confirmingRemove = null;
         if (editingStepId !== null && !next.draft.steps.some(step => step.id === editingStepId)) {
           editingStepId = null;
@@ -102,6 +116,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         valueBusy = null;
         redactBusy = null;
         saveBusy = false;
+        copyBusy = false;
+        downloadBusy = false;
+        exportStatus = '';
+        exportStatusFor = null;
       }
       if (next.phase === 'idle') {
         try {
@@ -538,7 +556,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       saveBusy = true;
       error = '';
       render();
-      void client.save(acknowledged).then(() => { error = ''; }).catch(caught => {
+      void client.save(acknowledged).then(result => {
+        lastSaved = { journeyId: result.journeyId, revision: result.revision };
+        error = '';
+      }).catch(caught => {
         error = caught instanceof Error ? caught.message : 'Could not save this journey. Try again.';
       }).finally(() => {
         saveBusy = false;
@@ -552,6 +573,91 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
+  function renderExport(draft: JourneyDraftV1): HTMLElement | null {
+    if (typeof (client as Partial<JourneyClient>).openSnapshot !== 'function') return null;
+    const section = node('section', undefined, 'journey-export');
+    section.setAttribute('aria-label', 'Share journey');
+    section.append(node('h2', 'Share journey'));
+    const saved = lastSaved !== null
+      && lastSaved.journeyId === draft.id
+      && lastSaved.revision === draft.revision;
+    if (!saved) {
+      const note = node('p', 'Save first to copy or download this journey.', 'journey-help');
+      note.id = 'journey-export-note';
+      section.append(note);
+    }
+    const actions = node('div', undefined, 'journey-export-actions');
+    const copy = node('button', 'Copy Prompt', 'journey-secondary');
+    copy.type = 'button';
+    copy.disabled = !saved || copyBusy || downloadBusy;
+    copy.setAttribute('data-focus-id', 'journey-copy');
+    if (!saved) copy.setAttribute('aria-describedby', 'journey-export-note');
+    copy.addEventListener('click', () => { void copyJourney(draft); });
+    const download = node('button', 'Download Markdown + Images', 'journey-secondary');
+    download.type = 'button';
+    download.disabled = !saved || copyBusy || downloadBusy;
+    download.setAttribute('data-focus-id', 'journey-download');
+    if (!saved) download.setAttribute('aria-describedby', 'journey-export-note');
+    download.addEventListener('click', () => { void downloadJourney(draft); });
+    actions.append(copy, download);
+    section.append(actions);
+    if (exportStatus) {
+      const status = node('p', exportStatus, 'journey-status');
+      status.setAttribute('role', 'status');
+      section.append(status);
+    }
+    return section;
+  }
+
+  async function copyJourney(draft: JourneyDraftV1): Promise<void> {
+    if (copyBusy || downloadBusy) return;
+    copyBusy = true;
+    exportStatus = '';
+    exportStatusFor = null;
+    error = '';
+    render();
+    try {
+      const snapshot = await client.openSnapshot(draft.id);
+      lastSaved = { journeyId: snapshot.draft.id, revision: snapshot.draft.revision };
+      const text = journeyPromptSection([journeyDraftToManifest(snapshot.draft)]);
+      await navigator.clipboard.writeText(text);
+      exportStatus = 'Journey prompt copied. Download the images to attach them with the prompt.';
+      exportStatusFor = `${draft.id}@${draft.revision}`;
+      error = '';
+    } catch {
+      error = 'Could not copy the journey prompt. Use Download Markdown + Images to export this journey.';
+    } finally {
+      copyBusy = false;
+    }
+    if (alive) render();
+  }
+
+  async function downloadJourney(draft: JourneyDraftV1): Promise<void> {
+    if (copyBusy || downloadBusy) return;
+    downloadBusy = true;
+    exportStatus = '';
+    exportStatusFor = null;
+    error = '';
+    render();
+    try {
+      const snapshot = await client.openSnapshot(draft.id);
+      lastSaved = { journeyId: snapshot.draft.id, revision: snapshot.draft.revision };
+      const archive = feedbackArchive([], JOURNEY_EXPORT_PREAMBLE, [snapshot.draft]);
+      downloadFile(new Blob([archive], { type: 'application/zip' }), `journey-${snapshot.draft.id}.zip`);
+      exportStatus = 'Journey download started. Extract the ZIP and attach its images with the prompt.';
+      exportStatusFor = `${draft.id}@${draft.revision}`;
+      error = '';
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : '';
+      error = message === EXPORT_SIZE_ERROR
+        ? EXPORT_SIZE_ERROR
+        : 'Could not download the journey. Try again.';
+    } finally {
+      downloadBusy = false;
+    }
+    if (alive) render();
+  }
+
   function renderSavedList(): HTMLElement | null {
     if (savedJourneys === null) return null;
     const section = node('section', undefined, 'journey-saved-list');
@@ -562,11 +668,21 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } else {
       const list = node('ul', undefined, 'journey-saved-items');
       for (const item of savedJourneys) {
-        const label = `Journey ${item.journeyId} · revision ${item.revision} · ${item.stepCount} ${item.stepCount === 1 ? 'step' : 'steps'} · updated ${item.updatedAt}`;
-        list.append(node('li', label, 'journey-saved-item'));
+        const row = node('li', undefined, 'journey-saved-item');
+        const steps = `${item.stepCount} ${item.stepCount === 1 ? 'step' : 'steps'}`;
+        row.append(node('span', `Journey ${item.journeyId} · revision ${item.revision} · ${steps} · updated ${item.updatedAt}`, 'journey-saved-label'));
+        if (item.spansPages === true) {
+          const spans = node('span', 'Spans pages', 'journey-saved-spans');
+          row.append(' · ', spans);
+        }
+        if (typeof (client as Partial<JourneyClient>).reopen === 'function') {
+          const reopen = action(`Reopen journey ${item.journeyId}`, () => client.reopen(item.journeyId));
+          reopen.setAttribute('data-focus-id', `reopen-${item.journeyId}`);
+          row.append(reopen);
+        }
+        list.append(row);
       }
       section.append(list);
-      section.append(node('p', 'Reopening a saved journey for editing arrives next.', 'journey-help'));
     }
     return section;
   }
@@ -659,7 +775,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         item.append(renderRemove(step));
         list.append(item);
       }
-      view.append(list, renderSave(state.draft), action('Discard journey', () => client.discard()));
+      view.append(list, renderSave(state.draft));
+      const sharing = renderExport(state.draft);
+      if (sharing) view.append(sharing);
+      view.append(action('Discard journey', () => client.discard()));
     } else {
       view.append(node('h1', 'Saving journey'));
       const saving = node('p', 'Saving your reviewed journey…', 'journey-help');

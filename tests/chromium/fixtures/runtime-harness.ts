@@ -1,5 +1,6 @@
 import { mount } from '../../../src/content';
 import styles from '../../../src/panel.css';
+import type { JourneyClient } from '../../../src/journey-ui';
 import type { Store, StoreChanges } from '../../../src/runtime';
 
 const records: Record<string, unknown> = {};
@@ -22,11 +23,20 @@ const store: Store = {
 };
 let controller: ReturnType<typeof mount>;
 let disposed = 0;
+let journeyItems: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }> = [];
+let journeyListFails = false;
+const journeys = {
+  async list() {
+    if (journeyListFails) throw new Error('Injected journeys failure');
+    return structuredClone(journeyItems);
+  },
+} as unknown as JourneyClient;
 function open() {
   controller = mount({ store, settingsLabel: 'Feedback settings',
     storageError: 'Could not save or load comments. Keep your draft and try again.',
     attachStyles(shadow) { const sheet = document.createElement('style'); sheet.textContent = styles; shadow.prepend(sheet); },
     onDispose() { ++disposed; },
+    journeys,
   });
 }
 const harness = { open, dispose: () => controller.dispose(), close: () => controller.close(),
@@ -35,5 +45,7 @@ const harness = { open, dispose: () => controller.dispose(), close: () => contro
   delay() { delayWrites = true; },
   release() { delayWrites = false; releaseWrite?.(); },
   stats: () => ({ subscribers: listeners.size, disposed }),
+  setJourneys(items: typeof journeyItems) { journeyItems = structuredClone(items); },
+  failJourneys(fails: boolean) { journeyListFails = fails; },
 };
 (globalThis as typeof globalThis & { harness: typeof harness }).harness = harness;

@@ -319,3 +319,27 @@ test('failed deletion-preference writes keep confirmation on and a retry persist
   await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
   await expect(preference).not.toBeChecked();
 });
+
+test('saved journeys list once each with spans scope and stay read-only', async ({ page }) => {
+  await run(page, `harness.setJourneys([
+    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true },
+    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+  ]); harness.open()`);
+  const section = panel(page).getByRole('region', { name: 'Saved journeys' });
+  await expect(section).toBeVisible();
+  await expect(section.getByText('Journey J1 · revision 2 · 3 steps', { exact: false })).toBeVisible();
+  await expect(section.getByText('Journey J2 · revision 1 · 1 step', { exact: false })).toBeVisible();
+  await expect(section.getByText('Spans pages', { exact: true })).toHaveCount(1);
+  await expect(section.locator('li')).toHaveCount(2);
+  await expect(section.locator('button')).toHaveCount(0);
+  await panel(page).getByLabel('Comment scope').selectOption('all');
+  await expect(section.locator('li')).toHaveCount(2);
+});
+
+test('saved journeys hide when the list is empty or fails without an error wall', async ({ page }) => {
+  await run(page, 'harness.open()');
+  await expect(panel(page).getByRole('region', { name: 'Saved journeys' })).toHaveCount(0);
+  await run(page, 'harness.dispose(); harness.failJourneys(true); harness.open()');
+  await expect(panel(page).getByRole('region', { name: 'Saved journeys' })).toHaveCount(0);
+  await expect(panel(page).locator('.status')).toHaveText('');
+});
