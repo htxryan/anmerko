@@ -342,8 +342,7 @@ test('starts only after a valid command, forwards one trusted click, updates sta
   expect(await page.evaluate(() => (globalThis as BridgeWindow).normalActions)).toBe(2);
 
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: 'other', epoch: 1, count: 99 }))
-    .toEqual({ ok: false, error: 'Journey command unavailable.' });
-  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: 'session-1', epoch: 1, count: 4 })).toMatchObject({ ok: true });
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: 'session-1', epoch: 1, count: 4 })).toMatchObject({ ok: true });
   expect((await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))?.text).toMatch(/4 steps/);
 
   await page.evaluate(() => { (globalThis as BridgeWindow).bridgeHarness.response = { ok: false, error: 'private failure' }; });
@@ -365,6 +364,38 @@ test('starts only after a valid command, forwards one trusted click, updates sta
   await page.getByRole('button', { name: 'Normal action' }).click();
   expect(await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages)).toHaveLength(1);
   expect(await page.evaluate(() => (globalThis as BridgeWindow).normalActions)).toBe(3);
+});
+
+test('entered values collect only with an explicit flag and merge before the click', async ({ page }) => {
+  await page.evaluate(() => {
+    document.body.innerHTML = '<input type="text" name="nickname" aria-label="Nickname"><button type="button">Send</button>';
+  });
+  const identity = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  const startedAt = new Date().toISOString();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt, includeEnteredValues: 'yes' }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt }))
+    .toMatchObject({ ok: true });
+
+  await page.getByLabel('Nickname').fill('green');
+  await page.getByRole('button', { name: 'Send' }).click();
+  let portMessages = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages);
+  expect(portMessages).toHaveLength(1);
+  expect(portMessages[0].batch.events.map((event: any) => event.kind)).toEqual(['click']);
+  expect(portMessages[0].batch.events.every((event: any) => !('enteredValue' in event))).toBe(true);
+
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'session-1', epoch: 1 });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 2,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt, includeEnteredValues: true }))
+    .toMatchObject({ ok: true });
+  await page.getByLabel('Nickname').fill('blue');
+  await page.getByRole('button', { name: 'Send' }).click();
+  portMessages = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages);
+  expect(portMessages).toHaveLength(2);
+  expect(portMessages[1].batch.events.map((event: any) => event.kind)).toEqual(['field-change', 'click']);
+  expect(portMessages[1].batch.events[0].enteredValue).toEqual({ kind: 'text', value: 'blue', truncated: false });
 });
 
 test('retries one failed post, reconnects on a later batch, and disposes the active port', async ({ page }) => {

@@ -604,6 +604,16 @@ test('retains a cold-wake click observed before its same-document navigation', a
   expect(seqs[1]).toBe(seqs[0] + 1);
 });
 
+test('entered values stay off unless the start request opts in, and saved journeys list', async ({ page }) => {
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).toEqual({ ok: true, value: [] });
+  const started = await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7, includeEnteredValues: true,
+  });
+  expect(started).toMatchObject({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.includeEnteredValues).toBe(true);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+});
+
 test('review summaries and step removal apply with revision guards', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;

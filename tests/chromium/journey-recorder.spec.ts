@@ -10,11 +10,12 @@ type RecorderWindow = typeof globalThis & {
       documentToken: string;
       startedAt: string;
       onBatch(batch: unknown): void;
+      drainFieldCommits?: () => unknown[];
       ignore?: (target: Element) => boolean;
-    }): () => void;
+    }): { dispose(): void; flushFieldCommits(): void };
   };
   journeyBatches: any[];
-  disposeJourneyRecorder: () => void;
+  disposeJourneyRecorder: { dispose(): void; flushFieldCommits(): void };
   normalActions: number;
   valueReads: number;
 };
@@ -90,7 +91,7 @@ test('trusted mouse and keyboard clicks emit ordered raw batches without changin
   expect(recorded[0].events[0].target.point.y).toBeGreaterThanOrEqual(0);
   expect(recorded[2].events[0].target.point).toBeUndefined();
 
-  await page.evaluate(() => (globalThis as RecorderWindow).disposeJourneyRecorder());
+  await page.evaluate(() => (globalThis as RecorderWindow).disposeJourneyRecorder.dispose());
   await page.getByRole('button', { name: 'Normal button' }).click();
   expect(await batches(page)).toHaveLength(3);
   expect(await page.evaluate(() => (globalThis as RecorderWindow).normalActions)).toBe(3);
@@ -111,6 +112,78 @@ test('click context reports the visible viewport under zoom and pan', async ({ p
   expect(recorded).toHaveLength(1);
   expect(recorded[0].events[0].target.viewport).toEqual({ width: 640, height: 360 });
   expect(recorded[0].events[0].target.scroll).toEqual({ x: 120, y: 80 });
+  expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
+});
+
+test('drained field commits merge ahead of the click and stale URLs are dropped', async ({ page }) => {
+  await page.setContent('<button type="button">Buy now</button>');
+  await page.addScriptTag({ content: bundle });
+  await page.evaluate(() => {
+    const state = globalThis as RecorderWindow;
+    state.journeyBatches = [];
+    const fieldCommit = {
+      kind: 'field-change', id: '00000000-0000-4000-8000-000000000001',
+      observedAt: new Date(Date.now() - 50).toISOString(), elapsedMs: 50,
+      sourceUrl: location.href,
+      target: {
+        tag: 'input', selectorPath: ['input'], label: 'text field', editable: true,
+        viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+      },
+      enteredValue: { kind: 'text', value: 'green', truncated: false },
+      image: { status: 'pending', captureId: '00000000-0000-4000-8000-000000000002' },
+    };
+    const staleCommit = { ...fieldCommit, id: '00000000-0000-4000-8000-000000000003', sourceUrl: 'https://other.example/' };
+    let drained = false;
+    state.disposeJourneyRecorder = state.anmerkoJourneyRecorder.attachJourneyRecorder({
+      sessionId: 'session-1', epoch: 3, documentToken: 'document-1',
+      startedAt: new Date(Date.now() - 100).toISOString(),
+      onBatch: batch => { state.journeyBatches.push(batch); },
+      drainFieldCommits: () => {
+        if (drained) return [];
+        drained = true;
+        return [fieldCommit, staleCommit];
+      },
+    });
+  });
+
+  await page.getByRole('button', { name: 'Buy now' }).click();
+  const recorded = await batches(page);
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0].events.map((event: any) => event.kind)).toEqual(['field-change', 'click']);
+  expect(recorded[0].events[0].id).toBe('00000000-0000-4000-8000-000000000001');
+  expect(recorded[0].events[0].enteredValue).toEqual({ kind: 'text', value: 'green', truncated: false });
+  expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
+});
+
+test('dispose flushes orphaned field commits without a click', async ({ page }) => {
+  await page.setContent('<button type="button">Later</button>');
+  await page.addScriptTag({ content: bundle });
+  await page.evaluate(() => {
+    const state = globalThis as RecorderWindow;
+    state.journeyBatches = [];
+    state.disposeJourneyRecorder = state.anmerkoJourneyRecorder.attachJourneyRecorder({
+      sessionId: 'session-1', epoch: 3, documentToken: 'document-1',
+      startedAt: new Date(Date.now() - 100).toISOString(),
+      onBatch: batch => { state.journeyBatches.push(batch); },
+      drainFieldCommits: () => [{
+        kind: 'field-change', id: '00000000-0000-4000-8000-000000000004',
+        observedAt: new Date().toISOString(), elapsedMs: 90,
+        sourceUrl: location.href,
+        target: {
+          tag: 'input', selectorPath: ['input'], label: 'text field', editable: true,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+        },
+        enteredValue: { kind: 'checked', checked: true },
+        image: { status: 'pending', captureId: '00000000-0000-4000-8000-000000000005' },
+      }],
+    });
+  });
+
+  await page.evaluate(() => (globalThis as RecorderWindow).disposeJourneyRecorder.flushFieldCommits());
+  const recorded = await batches(page);
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0].events).toHaveLength(1);
+  expect(recorded[0].events[0].kind).toBe('field-change');
   expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
 });
 

@@ -10,7 +10,7 @@ import { stripUrlCredentials } from './journey-events';
 import { normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
-import { saveJourneySnapshot } from './journey-store';
+import { listJourneySnapshots, saveJourneySnapshot } from './journey-store';
 import { extensionApi } from './platform';
 
 export interface JourneyScreenshotService {
@@ -825,6 +825,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
           type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: current.sessionId, epoch: current.epoch,
           documentToken: current.documentToken, startedAt: current.draft.startedAt,
           count: current.draft.steps.length, expectedUrl,
+          includeEnteredValues: current.draft.includeEnteredValues,
         });
       } catch {
         if (wakeEventsWaiting()) continue;
@@ -962,7 +963,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return true;
   };
 
-  const startFallback = async (intent: LaunchIntent, generation: number): Promise<void> => {
+  const startFallback = async (intent: LaunchIntent, generation: number, includeEnteredValues: boolean): Promise<void> => {
     await ensureJourneyGrant();
     if (generation !== launchGeneration) return;
     let identity: JourneyPageIdentity;
@@ -981,7 +982,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     } catch {
       throw new JourneyCommandError('owner-unavailable');
     }
-    await controller.start({ ownerTabId: intent.ownerTabId, ownerWindowId: intent.ownerWindowId, includeEnteredValues: false });
+    await controller.start({ ownerTabId: intent.ownerTabId, ownerWindowId: intent.ownerWindowId, includeEnteredValues });
   };
 
   const trustedCommand = async (message: Message, surface: TrustedSurface): Promise<unknown> => {
@@ -993,7 +994,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         const generation = launchGeneration;
         const intent = consumeLaunchIntent(surface, message.intent);
         if (!intent) throw new JourneyCommandError('launch-expired');
-        await withPersistedState(startFallback(intent, generation));
+        if (message.includeEnteredValues !== undefined && typeof message.includeEnteredValues !== 'boolean') {
+          throw new JourneyCommandError('owner-unavailable');
+        }
+        await withPersistedState(startFallback(intent, generation, message.includeEnteredValues === true));
         return;
       }
       if (surface.kind !== 'sidebar' || !validInteger(message.ownerTabId) || !validInteger(message.ownerWindowId)) {
@@ -1008,7 +1012,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         if (generation !== launchGeneration) return;
         await ensureJourneyGrant();
         if (generation !== launchGeneration) return;
-        await controller.start({ ownerTabId, ownerWindowId, includeEnteredValues: false });
+        if (message.includeEnteredValues !== undefined && typeof message.includeEnteredValues !== 'boolean') {
+          throw new JourneyCommandError('owner-unavailable');
+        }
+        await controller.start({ ownerTabId, ownerWindowId, includeEnteredValues: message.includeEnteredValues === true });
       })());
       return;
     }
@@ -1075,6 +1082,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         updatedAt: message.updatedAt, stepId: message.stepId, url: message.url,
       }));
       return;
+    }
+    if (message.type === 'ANMERKO_JOURNEY_LIST') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      return listJourneySnapshots();
     }
     if (message.type === 'ANMERKO_JOURNEY_SAVE') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
@@ -1169,7 +1180,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {

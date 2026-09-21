@@ -14,6 +14,7 @@ export interface JourneyClient {
   editValue(stepId: string, value: unknown): Promise<void>;
   redactUrl(stepId: string, url: 'source' | 'capture'): Promise<void>;
   save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
+  list(): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
 }

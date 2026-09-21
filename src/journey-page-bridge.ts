@@ -1,6 +1,7 @@
 import { stripUrlCredentials, type JourneyEventBatchV1 } from './journey-events';
 import { isJourneyBackgroundSender, JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { attachJourneyRecorder } from './journey-recorder';
+import { attachJourneyFields, type JourneyFieldCommit } from './journey-fields';
 import { extensionApi } from './platform';
 import { createUuid } from './uuid';
 
@@ -18,6 +19,8 @@ type Recording = {
   sessionId: string;
   epoch: number;
   disposeRecorder: () => void;
+  flushRecorder: () => void;
+  disposeFields: () => void;
   strip: JourneyStrip;
   eventPort?: chrome.runtime.Port;
   portDisconnected?: () => void;
@@ -254,8 +257,10 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
 
   const stopRecording = () => {
     const active = recording;
+    active?.flushRecorder();
     recording = undefined;
     active?.disposeRecorder();
+    active?.disposeFields();
     if (active) disconnectEventPort(active);
     active?.strip.host.remove();
     restoreUi();
@@ -286,6 +291,9 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
           || message.expectedUrl !== stripUrlCredentials(location.href)) return failure();
       } catch { return failure(); }
     }
+    if (message.includeEnteredValues !== undefined && typeof message.includeEnteredValues !== 'boolean') {
+      return failure();
+    }
     if (recording) {
       return recording.sessionId === message.sessionId && recording.epoch === message.epoch
         ? success(identity()) : failure();
@@ -294,24 +302,46 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
     let active: Recording | undefined;
     try {
       strip = mountJourneyStrip(message.sessionId, message.epoch, (message.count as number | undefined) ?? 0, sendStop);
+      const collectValues = message.includeEnteredValues === true;
+      let fieldCommits: JourneyFieldCommit[] = [];
       const nextActive: Recording = {
         sessionId: message.sessionId,
         epoch: message.epoch,
         strip,
         disposeRecorder: () => {},
+        flushRecorder: () => {},
+        disposeFields: () => {},
       };
       active = nextActive;
       if (!connectEventPort(nextActive)) throw new Error(GENERIC_ERROR);
-      const disposeRecorder = attachJourneyRecorder({
+      if (collectValues) {
+        const disposeFields = attachJourneyFields({
+          sessionId: message.sessionId,
+          epoch: message.epoch,
+          documentToken,
+          startedAt: message.startedAt,
+          onFieldCommit(commit) {
+            if (recording === nextActive) fieldCommits.push(commit);
+          },
+        });
+        nextActive.disposeFields = disposeFields;
+      }
+      const recorder = attachJourneyRecorder({
         sessionId: message.sessionId,
         epoch: message.epoch,
         documentToken,
         startedAt: message.startedAt,
+        drainFieldCommits: collectValues ? () => {
+          const pending = fieldCommits;
+          fieldCommits = [];
+          return pending;
+        } : undefined,
         onBatch(batch: JourneyEventBatchV1) {
           if (recording === nextActive) postEventBatch(nextActive, batch);
         },
       });
-      nextActive.disposeRecorder = disposeRecorder;
+      nextActive.disposeRecorder = () => recorder.dispose();
+      nextActive.flushRecorder = () => recorder.flushFieldCommits();
       recording = nextActive;
       return success(identity());
     } catch {

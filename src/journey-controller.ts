@@ -50,6 +50,7 @@ export interface JourneyControllerAdapter {
     startedAt: string;
     count: number;
     expectedUrl: string;
+    includeEnteredValues: boolean;
   }): Promise<void>;
   end(tabId: number, input: { sessionId: string; epoch: number; documentToken?: string }): Promise<void>;
   changed(state: JourneySession): void;
@@ -154,6 +155,7 @@ export function createJourneyController(
         documentToken: accepted.documentToken,
         startedAt: accepted.draft.startedAt, count: accepted.draft.steps.length,
         expectedUrl: stripUrlCredentials(after.url),
+        includeEnteredValues: accepted.draft.includeEnteredValues,
       });
       if (!isCurrentStart(generation, starting)) {
         await safeEnd(input.ownerTabId, accepted.sessionId, state.epoch);
@@ -386,6 +388,7 @@ export function createJourneyController(
         startedAt: adopted.draft.startedAt,
         count: adopted.draft.steps.length,
         expectedUrl: input.toUrl,
+        includeEnteredValues: adopted.draft.includeEnteredValues,
       });
       if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
         await cleanupStaleBegin(adopted.ownerTabId, adopted.sessionId, adopted.epoch, adopted.documentToken);

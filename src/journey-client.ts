@@ -95,7 +95,12 @@ export function createJourneyClient(
       }
       return result as { journeyId: string; revision: number };
     },
-    start(_includeEnteredValues: boolean): Promise<void> {
+    list: async (): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>> => {
+      const result = await command('ANMERKO_JOURNEY_LIST') as unknown;
+      if (!Array.isArray(result)) throw new Error(CLIENT_ERROR);
+      return result as Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number }>;
+    },
+    start(includeEnteredValues: boolean): Promise<void> {
       let currentOwner: JourneyOwner | undefined;
       try { currentOwner = owner?.(); }
       catch { throw new Error(LAUNCH_ERROR); }

@@ -1,5 +1,5 @@
 import { createUuid } from './uuid';
-import { stripUrlCredentials, type JourneyClickEvent, type JourneyEventBatchV1 } from './journey-events';
+import { stripUrlCredentials, type JourneyClickEvent, type JourneyEventBatchV1, type JourneyFieldChangeEvent } from './journey-events';
 
 export type JourneyRecorderOptions = {
   sessionId: string;
@@ -7,6 +7,7 @@ export type JourneyRecorderOptions = {
   documentToken: string;
   startedAt: string;
   onBatch(batch: JourneyEventBatchV1): void | Promise<void>;
+  drainFieldCommits?: () => JourneyFieldChangeEvent[];
   ignore?: (target: Element, event: MouseEvent) => boolean;
 };
 
@@ -144,11 +145,51 @@ function ignored(event: MouseEvent, target: Element, custom?: JourneyRecorderOpt
   try { return custom?.(target, event) ?? false; } catch { return true; }
 }
 
-export function attachJourneyRecorder(options: JourneyRecorderOptions): () => void {
-  if (window.top !== window) return () => {};
+export interface JourneyRecorder {
+  dispose(): void;
+  flushFieldCommits(): void;
+}
+
+export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyRecorder {
+  if (window.top !== window) return { dispose: () => {}, flushFieldCommits: () => {} };
   const startedAt = Date.parse(options.startedAt);
   let localCounter = 0;
   let disposed = false;
+  const postBatch = (batch: JourneyEventBatchV1) => {
+    try {
+      const delivered = options.onBatch(batch);
+      if (delivered && typeof delivered.catch === 'function') void delivered.catch(() => {});
+    } catch { /* Recording must remain passive when its consumer rejects a batch. */ }
+  };
+  const currentUrl = (): string | undefined => {
+    try { return stripUrlCredentials(location.href); }
+    catch { return undefined; }
+  };
+  const drainFieldCommits = (): JourneyFieldChangeEvent[] => {
+    const here = currentUrl();
+    if (here === undefined) return [];
+    let pending: JourneyFieldChangeEvent[] = [];
+    try {
+      pending = options.drainFieldCommits?.() ?? [];
+    } catch { return []; }
+    return pending.filter(commit => {
+      try { return stripUrlCredentials(commit.sourceUrl) === here; }
+      catch { return false; }
+    });
+  };
+  const flushFieldCommits = () => {
+    if (disposed) return;
+    const pending = drainFieldCommits();
+    if (pending.length === 0) return;
+    postBatch({
+      schemaVersion: 1,
+      sessionId: options.sessionId,
+      epoch: options.epoch,
+      documentToken: options.documentToken,
+      localCounter: ++localCounter,
+      events: pending,
+    });
+  };
   const click = (event: MouseEvent) => {
     if (disposed || !event.isTrusted || event.button !== 0) return;
     const target = eventTarget(event);
@@ -181,17 +222,15 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): () => vo
       epoch: options.epoch,
       documentToken: options.documentToken,
       localCounter: ++localCounter,
-      events: [input],
+      events: [...drainFieldCommits(), input],
     };
-    try {
-      const delivered = options.onBatch(batch);
-      if (delivered && typeof delivered.catch === 'function') void delivered.catch(() => {});
-    } catch { /* Recording must remain passive when its consumer rejects a batch. */ }
+    postBatch(batch);
   };
   document.addEventListener('click', click, { capture: true, passive: true });
-  return () => {
+  const dispose = () => {
     if (disposed) return;
     disposed = true;
     document.removeEventListener('click', click, true);
   };
+  return { dispose, flushFieldCommits };
 }
