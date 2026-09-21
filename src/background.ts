@@ -9,9 +9,33 @@ export { activateTab } from './activate';
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
+const CAPTURE_SPACING_KEY = 'anmerko:capture-spacing:v1';
 const sidebarOwners = new Map<number, object>();
 const sidebarPorts = new Map<number, { port: chrome.runtime.Port; version: number }>();
-const screenshotService = createCaptureService(windowId => api.tabs.captureVisibleTab(windowId, { format: 'png' }));
+const screenshotService = createCaptureService(
+  windowId => api.tabs.captureVisibleTab(windowId, { format: 'png' }),
+  () => Date.now(),
+  {
+    // Session-only API-start spacing: a worker wake restores the shared
+    // 600 ms budget without persisting image bytes or ordering steps.
+    loadLastStart: async () => {
+      try {
+        const stored = await api.storage.session.get([CAPTURE_SPACING_KEY]);
+        const value = stored[CAPTURE_SPACING_KEY];
+        return typeof value === 'number' ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    saveLastStart: async lastStart => {
+      try {
+        await api.storage.session.set({ [CAPTURE_SPACING_KEY]: lastStart });
+      } catch {
+        // Spacing persistence is best-effort; the in-memory budget still applies.
+      }
+    },
+  },
+);
 const journeys = journeysEnabled ? bindJourneyExtension(screenshotService) : undefined;
 type LayoutMode = 'dock' | 'overlay' | 'minimized' | 'closed';
 const layoutModes = new Set<LayoutMode>(['dock', 'overlay', 'minimized', 'closed']);

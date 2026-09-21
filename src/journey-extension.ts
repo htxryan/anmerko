@@ -7,7 +7,7 @@ import {
 } from './journey-controller';
 import type { JourneyDraftImage, JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
-import { normalizeJourneyPng } from './journey-image';
+import { normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
 import { extensionApi } from './platform';
@@ -54,6 +54,8 @@ const REVIEW_WARNING_ALARM = 'anmerko-journey-review-warning';
 const REVIEW_EXPIRY_ALARM = 'anmerko-journey-review-expiry';
 const JOURNEY_ALARMS = [RECORDING_DEADLINE_ALARM, REVIEW_WARNING_ALARM, REVIEW_EXPIRY_ALARM] as const;
 const MAX_PENDING_WAKE_EVENTS = 16;
+const MAX_CONCURRENT_NORMALIZATIONS = 1;
+const MAX_QUEUED_NORMALIZATIONS = 1;
 const REQUIRED_JOURNEY_PERMISSIONS: chrome.permissions.Permissions = {
   origins: ['<all_urls>'], permissions: ['webNavigation'],
 };
@@ -165,6 +167,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let handlingStorageFailure = false;
   const wakeQueueOverflowedTabs = new Set<number>();
   const connectedEventPorts = new Map<chrome.runtime.Port, { tabId: number; windowId: number }>();
+  let latestCaptureId: string | undefined;
+  let activeNormalizations = 0;
+  let queuedNormalizations = 0;
+  let normalizationTurn: Promise<void> = Promise.resolve();
+  let releaseNormalizationTurn: () => void = () => {};
   type PendingWakeEvent = {
     type: 'navigation';
     details: { tabId: number; frameId: number; url: string; documentLifecycle?: string };
@@ -329,6 +336,30 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     throw new Error(GENERIC_ERROR);
   };
 
+  const normalizeBounded = async (rawPng: string, isCurrent: () => boolean): Promise<NormalizedJourneyPng> => {
+    if (activeNormalizations >= MAX_CONCURRENT_NORMALIZATIONS) {
+      if (queuedNormalizations >= MAX_QUEUED_NORMALIZATIONS) throw new Error(GENERIC_ERROR);
+      queuedNormalizations += 1;
+      try {
+        while (activeNormalizations >= MAX_CONCURRENT_NORMALIZATIONS) {
+          await normalizationTurn;
+        }
+      } finally {
+        queuedNormalizations -= 1;
+      }
+    }
+    activeNormalizations += 1;
+    try {
+      if (!isCurrent()) throw new Error(GENERIC_ERROR);
+      return await normalizeJourneyPng(rawPng);
+    } finally {
+      activeNormalizations -= 1;
+      const release = releaseNormalizationTurn;
+      normalizationTurn = new Promise<void>(resolve => { releaseNormalizationTurn = resolve; });
+      release();
+    }
+  };
+
   const capture = async (
     tabId: number,
     expected: JourneyPageIdentity,
@@ -338,6 +369,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (!activeState(snapshot) || snapshot.ownerTabId !== tabId || snapshot.documentToken !== expected.documentToken) {
       throw new Error(GENERIC_ERROR);
     }
+    latestCaptureId = captureId;
+    const isLatest = () => latestCaptureId === captureId;
     const stillCurrent = () => {
       const current = controller.getState();
       return activeState(current) && current.sessionId === snapshot.sessionId && current.epoch === snapshot.epoch
@@ -366,12 +399,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     let operationError: unknown;
     try {
       await delay(waitMs);
-      if (!stillCurrent()) throw new Error(GENERIC_ERROR);
+      if (!stillCurrent() || !isLatest()) throw new Error(GENERIC_ERROR);
       await focusedOwnerTab(tabId, windowId, expected.url);
       const prepared = pageIdentity(await pageCommand(tabId, {
         type: 'ANMERKO_JOURNEY_PAGE_PREPARE', captureId, documentToken: expected.documentToken,
       }));
-      if (!prepared.visible || !sameIdentity(expected, prepared) || dirty || !stillCurrent()) throw new Error(GENERIC_ERROR);
+      if (!prepared.visible || !sameIdentity(expected, prepared) || dirty || !stillCurrent() || !isLatest()) throw new Error(GENERIC_ERROR);
       rawPng = await screenshotService.capture(windowId);
       capturedAt = new Date().toISOString();
       capturedUrl = prepared.url;
@@ -391,9 +424,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }
     }
     if (operationError) throw operationError;
-    if (dirty || !stillCurrent() || !rawPng || !capturedAt || !capturedUrl || !finishedIdentity
+    if (dirty || !stillCurrent() || !isLatest() || !rawPng || !capturedAt || !capturedUrl || !finishedIdentity
       || !finishedIdentity.visible || !sameIdentity(expected, finishedIdentity)) throw new Error(GENERIC_ERROR);
-    const image = await normalizeJourneyPng(rawPng);
+    const image = await normalizeBounded(rawPng, () => stillCurrent() && isLatest());
+    if (!stillCurrent() || !isLatest()) throw new Error(GENERIC_ERROR);
     return {
       ...image,
       capturedAt,

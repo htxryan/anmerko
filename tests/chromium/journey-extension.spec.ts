@@ -1541,3 +1541,84 @@ test('reopens a disconnected review in one reusable trusted fallback tab', async
   await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.tabUpdates.length)).toBeGreaterThan(0);
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
 });
+
+test.describe('T07 slice 2 shared capture scheduling and bounded normalization', () => {
+  const clickEvent = (id: string, captureId: string, elapsedMs: number) => ({
+    kind: 'click', id, observedAt: new Date().toISOString(), elapsedMs,
+    sourceUrl: 'https://example.test/path?item=1#top',
+    target: {
+      tag: 'button', selectorPath: ['button'], label: 'Continue', editable: false,
+      viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 },
+    },
+    image: { status: 'pending', captureId },
+  });
+
+  const postBatch = (page: Page, port: number, batch: unknown) => page.evaluate(({ port, batch }) => (globalThis as HarnessWindow)
+    .harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch }), { port, batch });
+
+  const batchFor = (recording: any, localCounter: number, event: unknown) => ({
+    schemaVersion: 1, sessionId: recording.sessionId, epoch: recording.epoch,
+    documentToken: recording.documentToken, localCounter, events: [event],
+  });
+
+  test('a capture superseded while waiting never consumes the shared screenshot API slot', async ({ page }) => {
+    await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+    const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    await page.evaluate(() => {
+      const harness = (globalThis as HarnessWindow).harness;
+      harness.wait = 1_500;
+      harness.sequence.length = 0;
+    });
+    const port = await page.evaluate(owner => (globalThis as HarnessWindow).harness
+      .connectPort('anmerko-journey-events-v1', owner), ownerPage);
+    await postBatch(page, port, batchFor(recording, 1, clickEvent('event-a', 'capture-a', 5_000)));
+    // The first action capture has entered the adapter and is waiting on spacing.
+    await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.sequence.includes('wait'))).toBe(true);
+    await postBatch(page, port, batchFor(recording, 2, clickEvent('event-b', 'capture-b', 10_000)));
+
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length).toBe(3);
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+      .every((step: any) => step.image.status !== 'pending')).toBe(true);
+    const state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    const captures = await page.evaluate(() => (globalThis as HarnessWindow).harness.sequence
+      .filter(item => item === 'capture'));
+    expect(captures).toHaveLength(1);
+    expect(state.draft.steps.map((step: any) => step.id))
+      .toEqual([state.draft.steps[0].id, 'event-a', 'event-b']);
+    expect(state.draft.steps[1].image).toEqual({ status: 'unavailable', reason: 'superseded' });
+    expect(state.draft.steps[1]).not.toHaveProperty('dataUrl');
+    expect(state.draft.steps[2].image.status).toBe('retained');
+    expect(state.draft.images[state.draft.steps[2].image.imageId].dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  test('a burst of rapid actions keeps every step with an explicit image outcome', async ({ page }) => {
+    await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+    const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    await page.evaluate(() => { (globalThis as HarnessWindow).harness.sequence.length = 0; });
+    await page.evaluate(({ owner, batches }) => {
+      const harness = (globalThis as HarnessWindow).harness;
+      const port = harness.connectPort('anmerko-journey-events-v1', owner);
+      for (const batch of batches) harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch });
+    }, {
+      owner: ownerPage,
+      batches: [
+        batchFor(recording, 1, clickEvent('event-a', 'capture-a', 5_000)),
+        batchFor(recording, 2, clickEvent('event-b', 'capture-b', 6_000)),
+        batchFor(recording, 3, clickEvent('event-c', 'capture-c', 7_000)),
+      ],
+    });
+
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length).toBe(4);
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+      .every((step: any) => step.image.status !== 'pending')).toBe(true);
+    const state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    expect(state.draft.steps.map((step: any) => step.id))
+      .toEqual([state.draft.steps[0].id, 'event-a', 'event-b', 'event-c']);
+    expect(state.draft.steps[1].image).toEqual({ status: 'unavailable', reason: 'superseded' });
+    expect(state.draft.steps[2].image).toEqual({ status: 'unavailable', reason: 'superseded' });
+    expect(state.draft.steps[3].image.status).toBe('retained');
+    expect(state.draft.images[state.draft.steps[3].image.imageId].dataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sequence
+      .filter(item => item === 'capture'))).toHaveLength(1);
+  });
+});
