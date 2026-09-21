@@ -84,7 +84,7 @@ export function mount(runtime: Runtime): Controller {
       $('.panel').inert = true;
       const unmount = mountJourneyUI(container, client);
       disposeJourney = () => { unmount(); container.remove(); $('.panel').inert = false; disposeJourney = undefined; };
-      back.addEventListener('click', () => { disposeJourney?.(); $('.comment-options').focus(); });
+      back.addEventListener('click', () => { disposeJourney?.(); $('.comment-options').focus(); void refresh(); });
       back.focus();
     }, { signal: abort.signal });
     abort.signal.addEventListener('abort', () => disposeJourney?.(), { once: true });
@@ -102,6 +102,7 @@ export function mount(runtime: Runtime): Controller {
   const preferencesStatus = statusMessage($('.preferences-status'), abort.signal);
   let notes: Note[] = [];
   let noteViews: Array<() => void> = [];
+  let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }> | null = null;
   let disposeEditor: (() => void) | undefined;
   let url = native ? '' : pageUrl();
   let title = native ? '' : document.title;
@@ -412,12 +413,33 @@ export function mount(runtime: Runtime): Controller {
     console.error('anmerko:', error);
     if (alive) status(runtime.storageError, true);
   }
+  async function loadSavedJourneys(): Promise<typeof savedJourneys> {
+    const client = runtime.journeys;
+    if (!client || typeof client.list !== 'function') return null;
+    try {
+      const items = await client.list();
+      if (!Array.isArray(items)) return null;
+      const seen = new Set<string>();
+      const unique: NonNullable<typeof savedJourneys> = [];
+      for (const item of items) {
+        if (!item || typeof item.journeyId !== 'string' || seen.has(item.journeyId)) continue;
+        seen.add(item.journeyId);
+        unique.push(item);
+      }
+      return unique;
+    } catch {
+      // A missing or unreadable journey list never blocks the comments list.
+      return null;
+    }
+  }
   async function refresh() {
     const version = ++readVersion;
     try {
       const loaded = await readNotes(store);
       if (!alive || version !== readVersion) return;
       notes = loaded;
+      savedJourneys = await loadSavedJourneys();
+      if (!alive || version !== readVersion) return;
       renderNotes();
     } catch (error) { showError(error); }
   }
@@ -574,6 +596,32 @@ export function mount(runtime: Runtime): Controller {
       }
       list.append(card);
     });
+    if (savedJourneys && savedJourneys.length > 0) {
+      const journeysSection = document.createElement('section');
+      journeysSection.className = 'saved-journeys';
+      journeysSection.setAttribute('aria-label', 'Saved journeys');
+      const journeysTitle = document.createElement('h2');
+      journeysTitle.className = 'saved-journeys-title';
+      journeysTitle.textContent = 'Saved journeys';
+      journeysSection.append(journeysTitle);
+      const journeysList = document.createElement('ul');
+      journeysList.className = 'saved-journeys-list';
+      for (const journey of savedJourneys) {
+        const row = document.createElement('li');
+        row.className = 'saved-journey';
+        const steps = `${journey.stepCount} ${journey.stepCount === 1 ? 'step' : 'steps'}`;
+        row.textContent = `Journey ${journey.journeyId} · revision ${journey.revision} · ${steps}`;
+        if (journey.spansPages === true) {
+          const spans = document.createElement('span');
+          spans.className = 'saved-journey-spans';
+          spans.textContent = 'Spans pages';
+          row.append(' · ', spans);
+        }
+        journeysList.append(row);
+      }
+      journeysSection.append(journeysList);
+      list.append(journeysSection);
+    }
     drawPins();
   }
   function editNote(note: Note) {
