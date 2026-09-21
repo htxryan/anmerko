@@ -30,7 +30,7 @@ Native Chrome tests need a headed session (Xvfb on Linux). Their experimental CD
 
 ### Live journey verification
 
-The native side panel is a separate CDP target, not a Playwright tab: attach with `tests/shared/chromium-sidebar.ts`. A raw `sidebar.html` tab has no owner, so owner-gated UI such as the journey menu never appears there. Journey controls live behind **More Comment Options → Record journey**; menu gates require trusted clicks, so drive them with CDP `Input.dispatchMouseEvent`, never `Runtime.evaluate` clicks (those are untrusted and rejected). Scroll the target into view first; synthetic input does not scroll. Re-read coordinates after scrolling settles — smooth scrolling races the click point for below-fold controls.
+The native side panel is a separate CDP target, not a Playwright tab: attach with `tests/shared/chromium-sidebar.ts`. A raw `sidebar.html` tab has no owner, so owner-gated UI such as the journey menu never appears there. Journey controls live behind **More Comment Options → Record journey**; menu gates require trusted clicks, so drive them with CDP `Input.dispatchMouseEvent`, never `Runtime.evaluate` clicks (those are untrusted and rejected). Scroll the target into view first; synthetic input does not scroll. Re-read coordinates after scrolling settles — smooth scrolling races the click point for below-fold controls. Match enabled controls when static and journey buttons share text, for both scrolling and clicking.
 
 The native optional-permission prompt cannot be clicked by automation. Verify permission UX manually; automation may promote optional permissions to required in a scratch copy of `dist/` with the deviation recorded in the run evidence, never in the shipped manifest.
 
