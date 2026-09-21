@@ -106,6 +106,9 @@ export function createJourneyClient(
     reopen: async (journeyId: string): Promise<void> => {
       await command('ANMERKO_JOURNEY_REOPEN', { journeyId });
     },
+    deleteSnapshot: async (journeyId: string, revision?: number): Promise<void> => {
+      await command('ANMERKO_JOURNEY_DELETE_SNAPSHOT', revision === undefined ? { journeyId } : { journeyId, revision });
+    },
     list: async (): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>> => {
       const result = await command('ANMERKO_JOURNEY_LIST') as unknown;
       if (!Array.isArray(result)) throw new Error(CLIENT_ERROR);

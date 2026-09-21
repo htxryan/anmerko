@@ -740,6 +740,21 @@ test('review summaries and step removal apply with revision guards', async ({ pa
     updatedAt: new Date().toISOString(), expected: 'Edited after reopen.', actual: 'Checkout is empty.',
   })).toEqual({ ok: true });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.expected).toBe('Edited after reopen.');
+
+  const resaved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  expect(resaved).toMatchObject({ ok: true });
+  const savedRevision = (resaved as any).value.revision;
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', journeyId: again.journeyId, revision: savedRevision + 1,
+  })).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'stale-review' });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', journeyId: again.journeyId, revision: savedRevision,
+  })).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).value).toEqual([]);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', journeyId: again.journeyId }))
+    .toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', journeyId: 42 }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {

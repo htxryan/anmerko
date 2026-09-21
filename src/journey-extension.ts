@@ -10,7 +10,7 @@ import { stripUrlCredentials } from './journey-events';
 import { normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
-import { listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
+import { deleteJourneySnapshot, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
 import { extensionApi } from './platform';
 
 export interface JourneyScreenshotService {
@@ -1094,6 +1094,21 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (!snapshot) throw new Error(GENERIC_ERROR);
       return snapshot;
     }
+    if (message.type === 'ANMERKO_JOURNEY_DELETE_SNAPSHOT') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      if (typeof message.journeyId !== 'string'
+        || (message.revision !== undefined && typeof message.revision !== 'number')) {
+        throw new Error(GENERIC_ERROR);
+      }
+      if (typeof message.revision === 'number') {
+        const current = await openJourneySnapshot(message.journeyId).catch(() => undefined);
+        if (current && current.draft.revision !== message.revision) {
+          throw new JourneyCommandError('stale-review');
+        }
+      }
+      await deleteJourneySnapshot(message.journeyId);
+      return;
+    }
     if (message.type === 'ANMERKO_JOURNEY_REOPEN') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       if (typeof message.journeyId !== 'string') throw new Error(GENERIC_ERROR);
@@ -1116,7 +1131,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }
       await withPersistedState(controller.reopen({
         ownerTabId, ownerWindowId, draft: snapshot.draft, images: snapshot.images,
-      }));
+      }).then(() => {}));
       return controller.getState();
     }
     if (message.type === 'ANMERKO_JOURNEY_SAVE') {
@@ -1212,7 +1227,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {

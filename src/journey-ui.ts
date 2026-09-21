@@ -18,6 +18,7 @@ export interface JourneyClient {
   save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
   openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
   reopen(journeyId: string): Promise<void>;
+  deleteSnapshot(journeyId: string, revision?: number): Promise<void>;
   list(): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
