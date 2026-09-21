@@ -143,16 +143,37 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
   const api = extensionApi();
   const documentToken = createUuid();
   let generation = 0;
-  let viewportWidth = innerWidth;
-  let viewportHeight = innerHeight;
+  let layoutWidth = innerWidth;
+  let layoutHeight = innerHeight;
+  let visibleWidth = Math.round(window.visualViewport?.width ?? innerWidth);
+  let visibleHeight = Math.round(window.visualViewport?.height ?? innerHeight);
+  let visibleOffsetX = window.visualViewport?.offsetLeft ?? 0;
+  let visibleOffsetY = window.visualViewport?.offsetTop ?? 0;
+  let visibleScale = window.visualViewport?.scale ?? 1;
   let recording: Recording | undefined;
   let preparedCapture: PreparedCapture | undefined;
   let disposed = false;
 
+  // The visible viewport follows the static capture path: visualViewport size
+  // with window scroll plus visual offsets, so pinch zoom and panning change
+  // the recorded identity even when the layout viewport is untouched.
   const recordViewportChange = () => {
-    if (innerWidth === viewportWidth && innerHeight === viewportHeight) return;
-    viewportWidth = innerWidth;
-    viewportHeight = innerHeight;
+    const visual = window.visualViewport;
+    const width = Math.round(visual?.width ?? innerWidth);
+    const height = Math.round(visual?.height ?? innerHeight);
+    const offsetX = visual?.offsetLeft ?? 0;
+    const offsetY = visual?.offsetTop ?? 0;
+    const scale = visual?.scale ?? 1;
+    if (innerWidth === layoutWidth && innerHeight === layoutHeight
+      && width === visibleWidth && height === visibleHeight
+      && offsetX === visibleOffsetX && offsetY === visibleOffsetY && scale === visibleScale) return;
+    layoutWidth = innerWidth;
+    layoutHeight = innerHeight;
+    visibleWidth = width;
+    visibleHeight = height;
+    visibleOffsetX = offsetX;
+    visibleOffsetY = offsetY;
+    visibleScale = scale;
     generation += 1;
   };
 
@@ -161,8 +182,8 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
     return {
       documentToken,
       url: stripUrlCredentials(location.href),
-      viewport: { width: innerWidth, height: innerHeight },
-      scroll: { x: scrollX, y: scrollY },
+      viewport: { width: visibleWidth, height: visibleHeight },
+      scroll: { x: scrollX + visibleOffsetX, y: scrollY + visibleOffsetY },
       generation,
       visible: !document.hidden,
       ...(recording ? { recording: { sessionId: recording.sessionId, epoch: recording.epoch } } : {}),
@@ -240,9 +261,10 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
     restoreUi();
   };
 
-  const resize = () => { recordViewportChange(); };
-  window.addEventListener('resize', resize, { passive: true });
-  window.visualViewport?.addEventListener('resize', resize, { passive: true });
+  const viewportChanged = () => { recordViewportChange(); };
+  window.addEventListener('resize', viewportChanged, { passive: true });
+  window.visualViewport?.addEventListener('resize', viewportChanged, { passive: true });
+  window.visualViewport?.addEventListener('scroll', viewportChanged, { passive: true });
 
   const sendStop = async (sessionId: string, epoch: number): Promise<boolean> => {
     try {
@@ -382,8 +404,9 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
     try {
       stopRecording();
       api.runtime.onMessage.removeListener(listener);
-      window.removeEventListener('resize', resize);
-      window.visualViewport?.removeEventListener('resize', resize);
+      window.removeEventListener('resize', viewportChanged);
+      window.visualViewport?.removeEventListener('resize', viewportChanged);
+      window.visualViewport?.removeEventListener('scroll', viewportChanged);
       window.removeEventListener('pagehide', dispose);
     } finally { onDispose?.(); }
   };

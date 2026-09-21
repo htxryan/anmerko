@@ -236,6 +236,46 @@ test('identifies one document, advances resize generation, and rejects non-backg
   expect(await page.locator('anmerko-journey-strip').count()).toBe(0);
 });
 
+test('visual-viewport-only changes advance generation and update the visible viewport', async ({ page }) => {
+  const first = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(first.generation).toBe(0);
+
+  await page.evaluate(() => {
+    const viewing = globalThis as BridgeWindow;
+    viewing.disposeJourneyPage();
+    const fake = Object.assign(new EventTarget(), {
+      width: 1280, height: 720, offsetLeft: 0, offsetTop: 0, scale: 1,
+    });
+    Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+    (window as any).anmerkoVisualViewportFake = fake;
+    viewing.disposeJourneyPage = viewing.anmerkoJourneyPageBridge.bindJourneyPage();
+  });
+
+  const baseline = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(baseline.generation).toBe(0);
+  expect(baseline.viewport).toEqual({ width: 1280, height: 720 });
+  expect(baseline.scroll).toEqual({ x: 0, y: 0 });
+
+  await page.evaluate(() => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.width = 640; fake.height = 360; fake.scale = 2;
+    fake.dispatchEvent(new Event('resize'));
+  });
+  const zoomed = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(zoomed.viewport).toEqual({ width: 640, height: 360 });
+  expect(zoomed.generation).toBeGreaterThan(baseline.generation);
+
+  await page.evaluate(() => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.offsetLeft = 120; fake.offsetTop = 80;
+    fake.dispatchEvent(new Event('scroll'));
+  });
+  const panned = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(panned.scroll).toEqual({ x: 120, y: 80 });
+  expect(panned.viewport).toEqual({ width: 640, height: 360 });
+  expect(panned.generation).toBeGreaterThan(zoomed.generation);
+});
+
 test('each binding owns a fresh document token after explicit disposal and pagehide', async ({ page }) => {
   const first = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value.documentToken;
   await page.evaluate(() => (globalThis as BridgeWindow).disposeJourneyPage());
