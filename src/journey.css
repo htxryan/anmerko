@@ -43,6 +43,7 @@
 .journey-saved-item { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:7px 0; overflow-wrap:anywhere; word-break:break-word; }
 .journey-saved-label { flex:1 1 160px; }
 .journey-saved-spans { font-weight:650; }
+.journey-saved-delete-all { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
 .journey-export { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
 .journey-export-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
 .journey-status { margin-top:12px!important; color:var(--success,#2f6b4f); }

@@ -27,6 +27,10 @@ const bundle = () => buildSync({ stdin: { contents: `
   let stayInReview = false;
   const openSnapshotCalls = [];
   const reopenCalls = [];
+  const deleteCalls = [];
+  let staleDeleteIds = [];
+  let staleListResult = [];
+  let failingDeleteIds = [];
   const client = {
     supportsEnteredValues: true,
     read: async () => state,
@@ -88,6 +92,16 @@ const bundle = () => buildSync({ stdin: { contents: `
     reopen: async journeyId => {
       reopenCalls.push(journeyId);
       if (reopenError) throw reopenError;
+    },
+    deleteSnapshot: async (journeyId, revision) => {
+      deleteCalls.push([journeyId, revision]);
+      if (staleDeleteIds.includes(journeyId)) {
+        listResult = structuredClone(staleListResult);
+        throw Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
+      }
+      if (failingDeleteIds.includes(journeyId)) throw new Error('boom-' + journeyId);
+      listResult = listResult.filter(item => item.journeyId !== journeyId);
+      changed();
     },
     list: async () => {
       if (listShouldFail) throw new Error('Could not load saved journeys.');
@@ -181,6 +195,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     saveCalls: () => saveCalls,
     openSnapshotCalls: () => openSnapshotCalls,
     reopenCalls: () => reopenCalls,
+    deleteCalls: () => deleteCalls,
     setIdle: () => {
       summaryError = null; removeError = null; saveError = null;
       openSnapshotError = null; reopenError = null; stayInReview = false;
@@ -240,6 +255,9 @@ const bundle = () => buildSync({ stdin: { contents: `
       reopenError = Object.assign(new Error('Finish or discard the current journey before reopening a saved one.'), { code: 'busy' });
     },
     failOpenSnapshot: message => { openSnapshotError = new Error(message); },
+    failDeleteStale: (journeyId, refreshed) => { staleDeleteIds = [journeyId]; staleListResult = refreshed; },
+    failDeleteIds: ids => { failingDeleteIds = ids; },
+    clearDeleteFailures: () => { staleDeleteIds = []; failingDeleteIds = []; },
     shrinkExportLimit: () => { journeyLimits.maxExportBytes = 10; },
   };
 `, resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
@@ -621,4 +639,143 @@ test('export controls stay usable at 320 CSS px width', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+const savedItems = () => ([
+  { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true },
+  { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+]);
+
+async function openIdleWithSaved(page: Page, items: unknown[]) {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await page.evaluate(`journeyReviewHarness.setList(${JSON.stringify(items)})`);
+  await expect(page.getByRole('region', { name: 'Saved journeys' })).toBeVisible();
+}
+
+test('saved journey delete confirms inline and removes the row with id and revision', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
+  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toBeVisible();
+  expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
+  await saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true }).click();
+  await expect
+    .poll(async () => page.evaluate('journeyReviewHarness.deleteCalls()'), { timeout: 10_000 })
+    .toEqual([['J1', 2]]);
+  await expect(saved.locator('li')).toHaveCount(1);
+  await expect(saved.getByText('Journey J1 ·', { exact: false })).toHaveCount(0);
+  await expect(saved.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: false })).toBeVisible();
+});
+
+test('delete confirm disarms with keep or Escape without calling delete', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
+  await saved.getByRole('button', { name: 'Keep journey J1', exact: true }).click();
+  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toHaveCount(0);
+  expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
+  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
+  const confirm = saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true });
+  await expect(confirm).toBeVisible();
+  await confirm.focus();
+  await page.keyboard.press('Escape');
+  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toHaveCount(0);
+  await expect(saved.getByRole('button', { name: 'Delete journey J1', exact: true })).toBeFocused();
+  expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
+  await expect(saved.locator('li')).toHaveCount(2);
+});
+
+test('stale delete reloads the list and explains the change', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
+  const refreshed = [
+    { journeyId: 'J1', revision: 3, updatedAt: '2026-09-21T03:00:00.000Z', stepCount: 4, spansPages: true },
+    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+  ];
+  await page.evaluate(`journeyReviewHarness.failDeleteStale('J1', ${JSON.stringify(refreshed)})`);
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
+  await saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true }).click();
+  await expect
+    .poll(async () => page.evaluate('journeyReviewHarness.deleteCalls()'), { timeout: 10_000 })
+    .toEqual([['J1', 2]]);
+  await expect(page.getByRole('alert')).toHaveText('A saved journey changed. The list was reloaded; try again.');
+  await expect(saved.getByText('revision 3', { exact: false })).toBeVisible();
+  await expect(saved.locator('li')).toHaveCount(2);
+});
+
+test('delete all confirms scope and count, then deletes every journey', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete all journeys', exact: true }).click();
+  await expect(saved.getByText('Delete 2 saved journeys? This cannot be undone.', { exact: true })).toBeVisible();
+  expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
+  await saved.getByRole('button', { name: 'Confirm delete all journeys', exact: true }).click();
+  await expect
+    .poll(async () => page.evaluate('journeyReviewHarness.deleteCalls()'), { timeout: 10_000 })
+    .toEqual([['J1', 2], ['J2', 1]]);
+  await expect(saved.getByText('Deleted 2 of 2 journeys.', { exact: true })).toBeVisible();
+  await expect(page.getByText('No saved journeys yet.', { exact: true })).toBeVisible();
+});
+
+test('delete all reports partial failures by id without raw errors', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
+  await page.evaluate(`journeyReviewHarness.failDeleteIds(['J2'])`);
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete all journeys', exact: true }).click();
+  await saved.getByRole('button', { name: 'Confirm delete all journeys', exact: true }).click();
+  await expect
+    .poll(async () => page.evaluate('journeyReviewHarness.deleteCalls()'), { timeout: 10_000 })
+    .toEqual([['J1', 2], ['J2', 1]]);
+  await expect(saved.getByText('Deleted 1 of 2 journeys.', { exact: true })).toBeVisible();
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText('Could not delete journey J2.');
+  await expect(alert).not.toContainText('boom');
+  await expect(saved.locator('li')).toHaveCount(1);
+  await expect(saved.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: false })).toBeVisible();
+});
+
+test('delete all cancel leaves every journey alone', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete all journeys', exact: true }).click();
+  await expect(saved.getByText('Delete 2 saved journeys? This cannot be undone.', { exact: true })).toBeVisible();
+  await saved.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
+  await expect(saved.getByText('Delete 2 saved journeys? This cannot be undone.', { exact: true })).toHaveCount(0);
+  await expect(saved.locator('li')).toHaveCount(2);
+});
+
+test('delete controls stay usable at 320 CSS px width', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await openIdleWithSaved(page, savedItems());
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
+  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toBeVisible();
+  await saved.getByRole('button', { name: 'Keep journey J1', exact: true }).click();
+  await saved.getByRole('button', { name: 'Delete all journeys', exact: true }).click();
+  await expect(saved.getByText('Delete 2 saved journeys? This cannot be undone.', { exact: true })).toBeVisible();
+  await expect(saved.getByRole('button', { name: 'Confirm delete all journeys', exact: true })).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test('expired review returns to launch with no stale actions', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyReviewHarness.setReviewing()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+  await page.evaluate(`journeyReviewHarness.setList(${JSON.stringify(savedItems())})`);
+  // The session store purges an expired review without readback, so the next
+  // read reports idle and the open surface must fall back to launch.
+  await page.evaluate('journeyReviewHarness.setIdle()');
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save journey', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Discard journey', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Remove step 1', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Saved journeys' })).toBeVisible();
 });
