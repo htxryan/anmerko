@@ -44,10 +44,8 @@ test('native controls wait for a page snapshot and disconnected settings cannot 
   const select = panel.getByRole('button', { name: 'Select Element', exact: true });
   await expect(prompt).toBeVisible();
   await expect(select).toBeDisabled();
-  const options = panel.getByRole('button', { name: 'More Comment Options', exact: true });
-  const capture = panel.getByRole('menuitem', { name: 'Take Screenshot', exact: true, includeHidden: true });
-  const globalComment = panel.getByRole('menuitem', { name: 'New Global Comment', exact: true, includeHidden: true });
-  await expect(options).toBeDisabled();
+  const capture = panel.getByRole('button', { name: 'Take Screenshot', exact: true });
+  const globalComment = panel.getByRole('button', { name: 'New Global Comment', exact: true });
   await expect(capture).toBeDisabled();
   await expect(globalComment).toBeDisabled();
   await expect(panel.getByLabel('Comment scope')).toBeDisabled();
@@ -60,14 +58,13 @@ test('native controls wait for a page snapshot and disconnected settings cannot 
   await run(page, 'nativeHarness.fail()');
   await expect(prompt).toBeVisible();
   await expect(select).toBeDisabled();
-  await expect(options).toBeDisabled();
+  await expect(capture).toBeDisabled();
   await expect(globalComment).toBeDisabled();
   await run(page, 'nativeHarness.reconnect()');
   await expect.poll(() => run(page, 'nativeHarness.requests.length')).toBe(2);
   await run(page, 'nativeHarness.reply()');
   await expect(prompt).toBeHidden();
   await expect(select).toBeEnabled();
-  await expect(options).toBeEnabled();
   await expect(capture).toBeEnabled();
   await expect(globalComment).toBeEnabled();
   await run(page, 'nativeHarness.disconnect()');

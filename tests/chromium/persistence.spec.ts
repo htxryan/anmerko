@@ -50,8 +50,7 @@ test('saved element, screenshot and global comments survive changing refresh URL
     // Wait for Chrome's sidebar-width animation before capturing the viewport.
     let width = 0;
     await expect.poll(async () => { const next = await page.evaluate(() => innerWidth); const stable = next === width; width = next; return stable; }).toBe(true);
-    await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-    await panel(page).getByRole('menuitem', { name: 'Take Screenshot', exact: true }).click();
+    await panel(page).getByRole('button', { name: 'Take Screenshot', exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'Select screenshot region' })).toBeVisible();
     await page.mouse.move(110, 110); await page.mouse.down(); await page.mouse.move(290, 210); await page.mouse.up();
     await page.getByRole('button', { name: 'Use Screenshot', exact: true }).click();
@@ -64,7 +63,6 @@ test('saved element, screenshot and global comments survive changing refresh URL
     // Refresh an open native sidebar, with no extra toolbar activation.
     await panel(page).getByRole('button', { name: 'Dock sidebar', exact: true }).click();
     dock = await sidebar(context!, page);
-    await dock.click('.comment-options');
     await dock.click('.global-comment');
     await expect.poll(() => dock.evaluate("return root.activeElement?.id")).toBe('comment');
     await dock.command('Input.insertText', { text: 'Keep this overall page comment tomorrow.' });

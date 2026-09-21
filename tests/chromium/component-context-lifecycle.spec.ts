@@ -250,8 +250,7 @@ test('default-off capture and global comments never request component data', asy
   await select(page);
   await panel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
   await run(page, 'harness.write("anmerko:capture-component-context", true)');
-  await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-  await panel(page).getByRole('menuitem', { name: 'New Global Comment' }).click();
+  await panel(page).getByRole('button', { name: 'New Global Comment' }).click();
   expect(await run(page, 'harness.contextRequests().length')).toBe(0);
 });
 
