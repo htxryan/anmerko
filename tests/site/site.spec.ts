@@ -4,23 +4,23 @@ import { mkdir, writeFile } from 'node:fs/promises';
 test('homepage overview video starts on the illustration and is keyboard playable', async ({ page, request }) => {
   const mediaRequests: string[] = [];
   page.on('request', req => {
-    if (req.url().endsWith('/media/anmerko-overview.mp4')) mediaRequests.push(req.url());
+    if (req.url().split('?')[0].endsWith('/media/anmerko-homepage.mp4')) mediaRequests.push(req.url());
   });
   await page.goto('/');
-  const video = page.getByLabel('anmerko product overview');
+  const video = page.getByLabel('anmerko demo');
 
   await expect(video).toHaveAttribute('poster', '/product-illustration.svg');
   await expect(video).toHaveAttribute('preload', 'none');
   await expect(video).toHaveJSProperty('autoplay', false);
   await expect(video).toHaveJSProperty('paused', true);
   await expect(video).toHaveAttribute('playsinline', '');
-  await expect(video.locator('track[kind="captions"]')).toHaveAttribute('src', '/media/anmerko-overview.en.vtt');
+  await expect(video.locator('track[kind="captions"]')).toHaveAttribute('src', '/media/anmerko-homepage.en.vtt');
   await expect(video.locator('track[kind="captions"]')).toHaveAttribute('srclang', 'en');
   expect(mediaRequests).toEqual([]);
 
   const [mediaResponse, captionsResponse] = await Promise.all([
-    request.get('/media/anmerko-overview.mp4'),
-    request.get('/media/anmerko-overview.en.vtt'),
+    request.get('/media/anmerko-homepage.mp4'),
+    request.get('/media/anmerko-homepage.en.vtt'),
   ]);
   expect(mediaResponse.ok()).toBe(true);
   expect(mediaResponse.headers()['content-type']).toContain('video/mp4');
