@@ -31,4 +31,14 @@
 .journey-danger { color:#fff; background:var(--danger,#b1443f); border:1px solid var(--danger,#b1443f); }
 .journey-save { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
 .journey-reasons { margin:0 0 12px; padding-left:20px; color:var(--danger,#b1443f); }
+.journey-entered-value { margin-top:12px; padding:12px; border:1px solid var(--border,#dce1ec); border-radius:8px; overflow-wrap:anywhere; }
+.journey-value { font:13px/1.5 ui-monospace,monospace; white-space:pre-wrap; word-break:break-word; margin:0 0 8px!important; }
+.journey-edited { font-size:12px; font-weight:650; color:var(--accent,#345ee9); margin:0 0 8px!important; }
+.journey-value-editor { margin-top:8px; }
+.journey-input { width:100%; font:inherit; color:inherit; background:var(--surface,#fff); padding:10px 12px; border:1px solid var(--border,#dce1ec); border-radius:8px; }
+.journey-input:disabled { opacity:.55; }
+.journey-url-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.journey-saved-list { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
+.journey-saved-items { margin:0 0 12px; padding-left:20px; overflow-wrap:anywhere; }
+.journey-saved-item { margin:7px 0; overflow-wrap:anywhere; word-break:break-word; }
 @media(max-width:420px) { .journey-view { padding:16px; } .journey-view h1 { font-size:22px; } }
