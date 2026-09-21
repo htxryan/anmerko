@@ -25,3 +25,14 @@ Extract the ZIP, give `comments.md` to your agent, and attach the PNG files alon
 The prompt groups comments by page and includes the saved page title and URL. Inline comments include element context, screenshot comments include the matching filename and capture coordinates, and global comments are marked as applying to the entire page. See the [example prompt](/docs/example-prompt/).
 
 You can customize the text before the comments under [**Prompt Preamble** in Settings](/docs/settings/#prompt-preamble). Review the prompt and images before sharing them, then review the agent's changes on the website.
+
+## Share a recorded journey
+
+A saved journey appears in the prompt as one summary item with its expected and actual summaries, then in full under **Recorded journeys**. Journeys that cross websites carry a **Spans pages** label; the full ordered sequence always exports whole.
+
+In a saved review, **Copy Prompt** copies the journey brief; attach screenshots separately. **Download Markdown + Images** saves a journey ZIP containing:
+
+- `journeys.md`, with the ordered steps, full URLs, and review markers
+- one matching PNG per retained screenshot, referenced by deterministic filenames
+
+Saving comes first: copy and download stay disabled until the review is saved, and raw drafts are never exported. Large exports are refused before anything is written when they pass the size limit.

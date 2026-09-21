@@ -2,6 +2,13 @@ import { copyPrompt } from '../shared/clipboard';
 import { test, expect } from '@playwright/test';
 const panel = (page: import('@playwright/test').Page) => page.getByRole('complementary', { name: 'anmerko feedback panel' });
 
+test('the demo offers no journey launch without the extension', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Try the Demo' }).click();
+  await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
+  await expect(panel(page).getByRole('menuitem', { name: 'Record journey' })).toHaveCount(0);
+});
+
 test('the built demo exposes the current shared settings and comment actions', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Try the Demo' }).click();

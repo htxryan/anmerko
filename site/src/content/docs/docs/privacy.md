@@ -11,6 +11,8 @@ anmerko stores comments, page titles/full URLs, selected element context and sel
 
 Element capture excludes form values and editable text. Other captured text and URLs may still be private; screenshots include all visible pixels within the crop, including form contents. Review exports before sharing.
 
+A journey records only after explicit start and stop. It stores clicks with target context, page URLs, per-step screenshots, your summaries, and — only when you opt in per launch — committed field changes, never keystrokes. Password, payment, and suspected secret fields are always skipped. Screenshots and full URLs can still show visible values, so every image and URL stays reviewable, maskable, and removable before export. Solid masks flatten pixels irreversibly; redacted text leaves the draft entirely. Saved snapshots and temporary session state stay in the browser profile; deleting a journey removes its snapshot.
+
 You can edit, delete, and export feedback. Deleting comments does not delete exported files. There is no sync, import, or automatic transfer between profiles/installations. Simultaneous edits use the last saved change.
 
 anmerko’s use of information received from Google APIs follows the [Chrome Web Store User Data Policy](https://developer.chrome.com/docs/webstore/program-policies/policies) and [Limited Use requirements](https://developer.chrome.com/docs/webstore/program-policies/limited-use).
@@ -24,8 +26,10 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 | `storage` | Save feedback and settings locally |
 | `clipboardWrite` | Copy the requested prompt |
 | `sidePanel` | Open the Chrome or Edge sidebar |
+| `webNavigation` (optional) | Observe page changes for journey capture |
+| host access (optional) | Record journeys across websites after approval |
 
-There is no persistent all-sites permission.
+There is no persistent all-sites permission by default. Starting a journey requests optional access once; you can keep it for future journeys or remove it in browser settings. Removing it stops an active recording.
 
 ## Limits
 
