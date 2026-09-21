@@ -102,8 +102,7 @@ test('production action, native docking, comments, capture, export and restart',
     swatch.style.cssText = 'position:fixed;left:100px;top:100px;width:200px;height:120px;background:rgb(11,132,77);z-index:10';
     document.body.append(swatch);
   });
-  await panel().getByRole('button', { name: 'More Comment Options' }).click();
-  await panel().getByRole('menuitem', { name: 'Take Screenshot' }).click();
+  await panel().getByRole('button', { name: 'Take Screenshot' }).click();
   await expect(page.getByRole('dialog', { name: 'Select screenshot region' })).toBeVisible();
   // Keep input evidence when a native desktop event interrupts the CDP drag.
   await page.evaluate(() => {

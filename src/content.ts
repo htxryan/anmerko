@@ -40,7 +40,7 @@ export function mount(runtime: Runtime): Controller {
       <section class="settings" id="settings" aria-label="Extension settings" hidden><div class="settings-heading"><button class="settings-back"><span data-icon="back"></span>Back</button><h1>Settings</h1></div><h2 id="theme-label">Appearance</h2><div class="theme-options" role="group" aria-labelledby="theme-label"><button class="theme-option" data-theme="light" aria-pressed="true"><span data-icon="sun"></span>Light</button><button class="theme-option" data-theme="dark" aria-pressed="false"><span data-icon="moon"></span>Dark</button></div><p class="settings-status" role="status" aria-live="polite"></p><section class="preferences" aria-labelledby="preferences-title"><h2 id="preferences-title">Preferences</h2><div class="preference-row"><span id="confirm-delete-label">Show individual comment deletion confirmation</span><button class="confirm-delete-toggle" role="switch" aria-checked="true" aria-labelledby="confirm-delete-label" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">On</span></button></div><p class="preferences-status" role="status" aria-live="polite"></p><div class="preference-row component-context-preference"><span id="component-context-label">Capture component context</span><button class="component-context-toggle" role="switch" aria-checked="false" aria-labelledby="component-context-label" aria-describedby="component-context-help" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">Off</span></button></div><p class="preference-help" id="component-context-help">Add React, Vue or Angular component names to new element comments when debug metadata is available, including deployments that retain Vue or Angular debug tools. Names can reveal application structure; Vue names may match source filename basenames. Source paths and files are not read. Review names before sharing. Turning this off leaves saved hints unchanged.</p><p class="component-context-status" role="status" aria-live="polite"></p></section><div class="preamble-settings"><label for="preamble">Prompt Preamble</label><p id="preamble-help">Text before the comments. Markdown supported.</p><textarea id="preamble" rows="7" aria-describedby="preamble-help" spellcheck="false" disabled></textarea><div class="preamble-actions"><button class="primary save-preamble" disabled><span data-icon="save"></span>Save Preamble</button><button class="secondary reset-preamble" disabled><span data-icon="restore"></span>Restore Default</button></div><p class="preamble-status" role="status" aria-live="polite"></p></div></section>
       <p class="status" role="status" aria-live="polite"></p>
       <button class="danger-button clear-copied" hidden><span data-icon="trash"></span>Delete All Comments</button>
-      <footer><section class="intro split-button" role="group" aria-label="Comment Actions"><button class="primary select split-main"><span data-icon="select"></span><span class="button-label">Select Element</span></button><button class="primary comment-options split-options" aria-label="More Comment Options" title="More Comment Options" aria-haspopup="menu" aria-expanded="false" aria-controls="comment-menu"><span data-icon="chevron"></span></button><div class="comment-menu split-menu" id="comment-menu" role="menu" aria-label="Comment Options" hidden><button class="menu-action capture" role="menuitem" tabindex="-1"><span data-icon="camera"></span><span class="button-label">Take Screenshot</span></button><button class="menu-action global-comment" role="menuitem" tabindex="-1"><span data-icon="comment"></span>New Global Comment</button></div></section><div class="footer-buttons split-button" role="group" aria-label="Prompt Actions"><button class="primary copy split-main" disabled><span data-icon="copy"></span>Copy Prompt</button><button class="primary copy-options split-options" aria-label="More Prompt Options" title="More Prompt Options" aria-haspopup="menu" aria-expanded="false" aria-controls="copy-menu" disabled><span data-icon="chevron"></span></button><div class="copy-menu split-menu" id="copy-menu" role="menu" aria-label="Prompt Options" hidden><button class="danger-button delete-all" role="menuitem" tabindex="-1" aria-disabled="true"><span data-icon="trash"></span>Delete All Comments</button></div></div><button class="text-button download" hidden><span data-icon="download"></span>Download Markdown + Images</button><a class="support-link" href="https://buymeacoffee.com/htxryan" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee (opens in new tab)" hidden>Buy me a coffee</a></footer>
+      <footer><section class="intro" role="group" aria-label="Comment Actions"><button class="primary comment-action select" aria-label="Select Element" title="Select Element"><span data-icon="select"></span></button><button class="primary comment-action capture" aria-label="Take Screenshot" title="Take Screenshot"><span data-icon="camera"></span></button><button class="primary comment-action global-comment" aria-label="New Global Comment" title="New Global Comment"><span data-icon="comment-add"></span></button></section><div class="footer-buttons split-button" role="group" aria-label="Prompt Actions"><button class="primary copy split-main" disabled><span data-icon="copy"></span>Copy Prompt</button><button class="primary copy-options split-options" aria-label="More Prompt Options" title="More Prompt Options" aria-haspopup="menu" aria-expanded="false" aria-controls="copy-menu" disabled><span data-icon="chevron"></span></button><div class="copy-menu split-menu" id="copy-menu" role="menu" aria-label="Prompt Options" hidden><button class="danger-button delete-all" role="menuitem" tabindex="-1" aria-disabled="true"><span data-icon="trash"></span>Delete All Comments</button></div></div><button class="text-button download" hidden><span data-icon="download"></span>Download Markdown + Images</button><a class="support-link" href="https://buymeacoffee.com/htxryan" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee (opens in new tab)" hidden>Buy me a coffee</a></footer>
       <div class="connection-shade" aria-hidden="true" hidden></div>
       <div class="connection-prompt" role="status" tabindex="-1" hidden><span data-icon="connect"></span><p class="connection-instruction">Click anmerko in the browser toolbar to connect this page.</p><p>Browser settings and protected pages cannot be annotated.</p></div>
       <dialog class="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description"><form method="dialog"><h2 id="delete-title">Delete All Comments?</h2><p id="delete-description"></p><div class="dialog-actions"><button class="secondary" value="cancel" autofocus><span data-icon="close"></span>Cancel</button><button class="danger-button" value="delete"><span data-icon="trash"></span><span class="button-label">Delete All Comments</span></button></div></form></dialog>
@@ -126,7 +126,6 @@ export function mount(runtime: Runtime): Controller {
   let suppressMouseUntil = 0;
   const scope = $('select') as HTMLSelectElement;
   const setCopyMenu = splitMenu($('.footer-buttons'), $<HTMLButtonElement>('.copy-options'), $('#copy-menu'), abort.signal);
-  const setCommentMenu = splitMenu($('.intro'), $<HTMLButtonElement>('.comment-options'), $('#comment-menu'), abort.signal);
 
   function viewState(componentContextUpdate?: ComponentContextUpdate): ViewState {
     return { url, pageTitle: native ? title : document.title, draft, scope: scope.value, picking, settings, preambleDraft,
@@ -345,7 +344,6 @@ export function mount(runtime: Runtime): Controller {
     $('.content').hidden = settings;
     $('.footer-buttons').hidden = settings;
     $('.support-link').hidden = !settings;
-    if (settings) setCommentMenu(false);
     renderPrompt();
     scheduleDraw();
   }
@@ -417,7 +415,7 @@ export function mount(runtime: Runtime): Controller {
     const changed = connectionWarning !== value;
     const restoreFocus = shadow.activeElement === prompt;
     connectionWarning = value;
-    if (value) { setCopyMenu(false); setCommentMenu(false); }
+    if (value) { setCopyMenu(false); }
     prompt.hidden = !value || settings;
     $('.connection-shade').hidden = prompt.hidden;
     if (value && changed && !settings) prompt.focus({ preventScroll: true });
@@ -458,7 +456,6 @@ export function mount(runtime: Runtime): Controller {
   }
   function setMinimized(value: boolean) {
     setCopyMenu(false);
-    setCommentMenu(false);
     $('.panel').hidden = !native && ((presentation === 'remote' && !composeOnPage) || value || picking);
     $('.resume').hidden = native || presentation === 'remote' || !value || picking;
     $('.minimized-actions').hidden = $('.resume').hidden;
@@ -521,7 +518,9 @@ export function mount(runtime: Runtime): Controller {
     if (value) locatedId = null;
     setMinimized(false);
     $('.picker-bar').hidden = !value || native;
-    $('.select .button-label').textContent = value ? 'Cancel Selection' : 'Select Element';
+    const selectLabel = value ? 'Cancel Selection' : 'Select Element';
+    $<HTMLButtonElement>('.select').setAttribute('aria-label', selectLabel);
+    $<HTMLButtonElement>('.select').title = selectLabel;
     touch = null;
     touchPointers.clear();
     highlighted = null;
@@ -736,9 +735,7 @@ export function mount(runtime: Runtime): Controller {
     slot.replaceChildren();
     $<HTMLButtonElement>('.select').disabled = !!draft || captureBusy || (native && !url);
     $<HTMLButtonElement>('.capture').disabled = !runtime.capture || !!draft || captureBusy || (native && !url);
-    $<HTMLButtonElement>('.comment-options').disabled = !!draft || captureBusy || !url;
     $<HTMLButtonElement>('.global-comment').disabled = !!draft || captureBusy || !url;
-    if ($<HTMLButtonElement>('.comment-options').disabled) setCommentMenu(false);
     for (const selector of ['.dock', '.minimize', '.settings-button', '.close']) $<HTMLButtonElement>(selector).disabled = captureBusy;
     scope.disabled = captureBusy || (native && !url);
     if (!draft) {
@@ -874,12 +871,11 @@ export function mount(runtime: Runtime): Controller {
       if (presentation === 'remote') integration?.captureError(message);
     } finally {
       captureBusy = false; captureAbort = null;
-      if (alive) { renderEditor(); if (!draft && $('.minimized-actions').hidden) $('.comment-options').focus(); }
+      if (alive) { renderEditor(); if (!draft && $('.minimized-actions').hidden) $('.select').focus(); }
     }
   }
   function startGlobalComment() {
     if (!alive || draft || captureBusy || !url || connectionWarning) return;
-    setCommentMenu(false);
     const time = new Date().toISOString();
     draft = { id: createUuid(), kind: 'page', pageUrl: native ? url : pageUrl(), pageTitle: native ? title : document.title,
       comment: '', createdAt: time, updatedAt: time };
@@ -995,7 +991,7 @@ export function mount(runtime: Runtime): Controller {
   window.visualViewport?.addEventListener('resize', updateViewport, { signal: abort.signal });
   window.visualViewport?.addEventListener('scroll', updateViewport, { signal: abort.signal });
   $('.select').addEventListener('click', () => { if (!draft) { status(); setPicking(!picking); if (!native) $('.picker-bar button').focus(); } });
-  $('.capture').addEventListener('click', event => { if (event.isTrusted) { setCommentMenu(false); void startCapture(); } });
+  $('.capture').addEventListener('click', event => { if (event.isTrusted) { void startCapture(); } });
   $('.global-comment').addEventListener('click', startGlobalComment);
   function cancelSelection() {
     setPicking(false);
@@ -1254,7 +1250,6 @@ export function mount(runtime: Runtime): Controller {
       // The native panel has no page identity until its startup snapshot arrives.
       $<HTMLButtonElement>('.select').disabled = true;
       $<HTMLButtonElement>('.capture').disabled = true;
-      $<HTMLButtonElement>('.comment-options').disabled = true;
       $<HTMLButtonElement>('.global-comment').disabled = true;
       scope.disabled = true;
       setConnectionWarning(true);
