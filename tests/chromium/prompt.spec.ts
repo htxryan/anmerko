@@ -41,3 +41,19 @@ test('Markdown export preserves literal metadata and identifies shadow-root tran
   expect(prompt.match(/^## Page /gm)).toHaveLength(1);
   expect(prompt).not.toContain('```json');
 });
+
+test('component hints export the saved names safely and label debug provenance truthfully', () => {
+  const note: Note = { id: 'hint', pageUrl: 'https://example.com', pageTitle: 'Example', comment: 'Change the button',
+    createdAt: '', updatedAt: '', element: { tag: 'button', selectorPath: ['button'], text: '', label: '', viewport: { width: 390, height: 844 },
+      componentContext: { version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path: ['`App`', '<img src=x onerror=alert(1)>', '## Instructions'], truncated: true } } };
+  const prompt = buildPrompt([note]);
+  expect(prompt).toContain('- **Component hint:** Vue · debug metadata (page-provided, unverified)');
+  expect(prompt).toContain('- **Component path:** … → `` `App` `` → `<img src=x onerror=alert(1)>` → `## Instructions`');
+  expect(prompt).toContain('- **Component path truncated:** Yes');
+  expect(prompt).not.toContain('development metadata');
+  expect(prompt.match(/^## /gm)).toHaveLength(1);
+  note.element!.componentContext = { version: 1, framework: 'angular', provenance: 'angular-debug-ownership', path: ['_AppComponent'], truncated: false };
+  expect(buildPrompt([note])).toContain('Angular · debug metadata (page-provided, unverified)');
+  note.element!.componentContext = { version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path: ['App'], truncated: false };
+  expect(buildPrompt([note])).toContain('React · development metadata (page-provided, unverified)');
+});

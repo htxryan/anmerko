@@ -7,6 +7,30 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createDesktopSession } from '../shared/desktop-session.mjs';
 import { sidebar } from '../shared/chromium-sidebar.ts';
+import {
+  componentContextFallbackScenarios,
+  componentContextMixedScenarios,
+  componentContextPositiveScenarios,
+  componentFixtureUrl,
+} from '../shared/component-context-scenarios.mjs';
+
+const extensionPanel = page => page.getByRole('complementary', { name: 'anmerko feedback panel' });
+
+function componentTarget(page, scenario) {
+  let locator = page.locator(scenario.target.selectorPath[0]);
+  for (const selector of scenario.target.selectorPath.slice(1)) locator = locator.locator(selector);
+  return locator;
+}
+
+async function waitForComponentFixture(page) {
+  await page.waitForFunction(() => globalThis.__ANMERKO_FIXTURE__?.ready === true
+    || globalThis.__BRIEFMARK_ANGULAR_FIXTURE__?.ready === true);
+}
+
+async function fixturePrivacyReads(page) {
+  return page.evaluate(() => globalThis.__BRIEFMARK_ANGULAR_FIXTURE__?.sentinels.reads
+    || globalThis.__ANMERKO_FIXTURE__?.privacyReads);
+}
 
 test('production permissions deny injection before activation and explain protected pages', { timeout: 60000 }, async t => {
   const session = await createDesktopSession({ scenario: 'activation' });
@@ -78,8 +102,7 @@ test('production action, native docking, comments, capture, export and restart',
     swatch.style.cssText = 'position:fixed;left:100px;top:100px;width:200px;height:120px;background:rgb(11,132,77);z-index:10';
     document.body.append(swatch);
   });
-  await panel().getByRole('button', { name: 'More Comment Options' }).click();
-  await panel().getByRole('menuitem', { name: 'Take Screenshot' }).click();
+  await panel().getByRole('button', { name: 'Take Screenshot' }).click();
   await expect(page.getByRole('dialog', { name: 'Select screenshot region' })).toBeVisible();
   // Keep input evidence when a native desktop event interrupts the CDP drag.
   await page.evaluate(() => {
@@ -164,5 +187,87 @@ test('production action, native docking, comments, capture, export and restart',
   assert.deepEqual(session.evidence.console, []);
   assert.ok(session.evidence.requests.every(request => request.url.startsWith(session.origin + '/')));
   session.evidence.scenarios.P7 = 'partial: unchanged permissions, no page errors or nonlocal page requests; security regressions covered separately';
+  session.evidence.result = 'passed';
+});
+
+test('production component context covers the native Chrome and Edge fixture matrix', { timeout: 180000 }, async t => {
+  const session = await createDesktopSession({ scenario: 'component-context' });
+  t.after(() => session.close());
+  let page = session.page;
+  const first = componentContextPositiveScenarios[0];
+  await page.goto(componentFixtureUrl(session.componentOrigin, first));
+  await waitForComponentFixture(page);
+  await session.activate();
+  let dock = await sidebar(session.context, page);
+  await dock.click('.dock');
+  await expect(extensionPanel(page)).toBeVisible();
+  await extensionPanel(page).getByRole('button', { name: 'Extension settings' }).click();
+  const preference = extensionPanel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(preference).toHaveAttribute('aria-checked', 'false');
+  await extensionPanel(page).getByRole('button', { name: 'Back', exact: false }).click();
+  await extensionPanel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
+  await componentTarget(page, first).click();
+  await expect(extensionPanel(page).locator('.component-context')).toHaveCount(0);
+  assert.deepEqual(await fixturePrivacyReads(page), { props: 0, state: 0, source: 0, stack: 0 });
+  await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await extensionPanel(page).getByRole('button', { name: 'Extension settings' }).click();
+  await preference.click();
+  await expect(preference).toHaveAttribute('aria-checked', 'true');
+  await extensionPanel(page).getByRole('button', { name: 'Back', exact: false }).click();
+
+  const results = [];
+  const matrix = [...componentContextPositiveScenarios, ...componentContextFallbackScenarios, ...componentContextMixedScenarios];
+  for (const scenario of matrix) {
+    const response = await page.goto(componentFixtureUrl(session.componentOrigin, scenario));
+    assert.match(response.headers()['content-security-policy'], /connect-src 'none'/);
+    await waitForComponentFixture(page);
+    await session.activate();
+    dock = await sidebar(session.context, page);
+    await dock.click('.dock');
+    await expect(extensionPanel(page)).toBeVisible();
+    await expect(extensionPanel(page).locator('.component-context-toggle')).toHaveAttribute('aria-checked', 'true');
+    await extensionPanel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
+    const target = componentTarget(page, scenario);
+    if (scenario.target.dispatchTarget) await target.dispatchEvent('click');
+    else await target.click({ position: scenario.target.clickPosition });
+    const row = extensionPanel(page).locator('.component-context');
+    if (scenario.expectedPath) {
+      await expect(row.locator('.component-context-path')).toHaveText(scenario.expectedPath.join(' → '));
+      if (scenario === first) {
+        await extensionPanel(page).getByRole('button', { name: 'Dock sidebar', exact: true }).click();
+        dock = await sidebar(session.context, page);
+        await expect.poll(() => dock.evaluate("return root.querySelector('.component-context-path')?.textContent")).toBe(scenario.expectedPath.join(' → '));
+        await dock.click('.dock');
+        await expect(extensionPanel(page)).toBeVisible();
+        await extensionPanel(page).getByLabel('Comment', { exact: true }).fill('Persist the real component hint.');
+        await extensionPanel(page).getByRole('button', { name: 'Save', exact: true }).click();
+      } else {
+        await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+      }
+    } else {
+      // Keep the draft open beyond the broker's 750 ms deadline so a wrong
+      // late result cannot pass an early absence assertion.
+      await page.waitForTimeout(850);
+      await expect(row).toHaveCount(0);
+      await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    }
+    if (scenario.privacy) assert.ok(Object.values(await fixturePrivacyReads(page)).every(value => value === 0));
+    results.push({ id: scenario.id, framework: scenario.framework, version: scenario.version, outcome: scenario.expectedPath ? 'hint' : 'fallback' });
+  }
+
+  await session.context.close();
+  await session.start();
+  page = session.page;
+  await page.goto(componentFixtureUrl(session.componentOrigin, first));
+  await waitForComponentFixture(page);
+  await session.activate();
+  dock = await sidebar(session.context, page);
+  await dock.click('.dock');
+  await expect(extensionPanel(page).locator('.note .component-context-path')).toHaveText(first.expectedPath.join(' → '));
+  assert.ok(session.evidence.requests.every(request => !request.url.startsWith('http')
+    || request.url.startsWith(session.origin) || request.url.startsWith(session.componentOrigin)));
+  session.evidence.componentContextMatrix = results;
+  session.evidence.scenarios.P2 = 'partial: component hints survive a real browser restart and native/overlay handoff';
+  session.evidence.scenarios.P7 = 'partial: strict-CSP HTTP framework matrix, privacy sentinels and local-only page requests';
   session.evidence.result = 'passed';
 });

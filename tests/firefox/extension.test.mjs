@@ -1,5 +1,12 @@
 import { assertElementFeedback, assertFeedbackArchive } from '../shared/expected-feedback.ts';
 import { desktopScenarios } from '../shared/desktop-scenarios.mjs';
+import {
+  componentContextFallbackScenarios,
+  componentContextMixedScenarios,
+  componentContextPositiveScenarios,
+  componentFixtureUrl,
+} from '../shared/component-context-scenarios.mjs';
+import { startFixtureServer } from '../fixtures/component-context/server.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -15,15 +22,25 @@ import firefox from 'selenium-webdriver/firefox.js';
 import { artifactBytes } from '../../scripts/release/approved-release.mjs';
 import { FIREFOX_GUID } from '../../scripts/release/release-names.mjs';
 
-let server, origin;
+let server, origin, componentServer, componentOrigin, componentFixtureHealth;
 before(async () => {
   const html = await readFile('tests/fixtures/demo/index.html');
   server = createServer((_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end(html); });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
+  componentServer = await startFixtureServer();
+  componentOrigin = componentServer.origin;
+  componentFixtureHealth = await (await fetch(`${componentOrigin}/healthz`)).json();
   await mkdir('artifacts', { recursive: true });
 });
-after(() => new Promise(done => server.close(done)));
+after(async () => {
+  const results = await Promise.allSettled([
+    componentServer?.close(),
+    new Promise((done, reject) => server.close(error => error ? reject(error) : done())),
+  ]);
+  const errors = results.filter(result => result.status === 'rejected').map(result => result.reason);
+  if (errors.length) throw new AggregateError(errors, 'Firefox fixture teardown failed');
+});
 
 async function suspendBackground(driver, extensionId = FIREFOX_GUID) {
   await driver.setContext('chrome');
@@ -136,6 +153,12 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
     signedXpiSha256: signedXpi ? hash(await readFile(signedXpi)) : null, payload,
     headless: process.env.FIREFOX_HEADLESS !== '0', remoteExtensions,
     releaseChecklist: desktopScenarios, fullReleaseParity: 'unrun', scenario: t.name, result: 'failed',
+    componentFixtures: {
+      origin: componentOrigin,
+      service: componentFixtureHealth.service,
+      contractVersion: componentFixtureHealth.version,
+      routes: componentServer.routes.map(({ id, framework, version, mode, path }) => ({ id, framework, version, mode, path })),
+    },
     storeInstall: 'unrun', storeUpdate: 'unrun', manualToolbar: 'unrun',
   };
   const restart = async () => {
@@ -264,7 +287,6 @@ test('Firefox captures regions from the native sidebar and touch input, and down
   });
   await activateDock();
   await driver.wait(() => docked("return !!root?.querySelector('.capture') && !root.querySelector('.capture').disabled"), 5000);
-  await dockClick('.comment-options');
   await dockClick('.capture');
   await driver.wait(() => ui('.capture-layer'), 5000);
   await driver.actions().move({ x: 110, y: 110 }).press().move({ x: 290, y: 210, duration: 200 }).release().perform();
@@ -304,7 +326,6 @@ test('Firefox captures regions from the native sidebar and touch input, and down
   await dockClick('.dock');
   await driver.wait(async () => (await ui('.panel')).isDisplayed(), 5000);
   await driver.manage().window().setRect({ width: 450, height: 920 });
-  await click('.comment-options');
   await click('.capture'); await driver.wait(() => ui('.capture-layer'), 5000);
   const finger = new Pointer('capture-finger', Pointer.Type.TOUCH);
   await driver.actions().insert(finger, finger.move({ x: 50, y: 110, duration: 0 }), finger.press(), finger.move({ x: 320, y: 300, duration: 200 }), finger.release()).perform();
@@ -422,7 +443,7 @@ test('Firefox creates and renders element and global comments on ordinary HTTP',
   assert.deepEqual(await driver.executeScript(() => ({ secure: isSecureContext, uuid: typeof crypto.randomUUID })), { secure: false, uuid: 'undefined' });
   await activate();
   await comment('#hero-title', 'Ordinary HTTP element feedback');
-  await click('.comment-options'); await click('.global-comment');
+  await click('.global-comment');
   await driver.wait(() => ui('#comment'), 5000, 'HTTP global action opens its editor');
   await save('Ordinary HTTP global feedback');
   await driver.wait(async () => await count() === 2, 5000);
@@ -563,6 +584,150 @@ test('Firefox default process isolation reconnects an open sidebar after page re
   await activateDock();
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'fresh toolbar activation reconnects the existing remote sidebar');
 }, true));
+
+test('Firefox production extension covers the shared component-context fixture matrix', { timeout: 180000 }, async t => session(t, async ({
+  copiedPrompt, driver, ui, click, activate, activateDock, docked, dockClick, save, evidence, extensionId,
+}) => {
+  const matrix = [
+    ...componentContextPositiveScenarios,
+    ...componentContextFallbackScenarios,
+    ...componentContextMixedScenarios,
+  ];
+  const first = componentContextPositiveScenarios[0];
+  const fixtureReady = mixed => driver.wait(() => driver.executeScript(isMixed => isMixed
+    ? globalThis.__ANMERKO_FIXTURE__?.ready === true
+    : globalThis.__ANMERKO_FIXTURE__?.ready === true
+      || globalThis.__BRIEFMARK_ANGULAR_FIXTURE__?.ready === true, mixed), 10000, 'component fixture becomes ready');
+  const openScenario = async scenario => {
+    const url = componentFixtureUrl(componentOrigin, scenario);
+    const response = await fetch(url);
+    assert.match(response.headers.get('content-security-policy'), /connect-src 'none'/);
+    await response.body?.cancel();
+    await driver.get(url);
+    await fixtureReady(scenario.route.startsWith('/mixed/'));
+    const metadata = await driver.executeScript(() => {
+      const fixture = globalThis.__ANMERKO_FIXTURE__;
+      const angular = globalThis.__BRIEFMARK_ANGULAR_FIXTURE__;
+      return fixture ? { framework: fixture.framework, version: fixture.version, mode: fixture.mode }
+        : { framework: angular.framework, version: angular.runtime.angularVersion, mode: angular.runtime.buildMode };
+    });
+    assert.equal(metadata.version, scenario.version);
+  };
+  const componentTarget = scenario => driver.executeScript(selectors => {
+    let root = document;
+    let element;
+    for (const selector of selectors) {
+      element = root.querySelector(selector);
+      if (!element) return null;
+      root = element.shadowRoot;
+    }
+    return element;
+  }, scenario.target.selectorPath);
+  const selectScenario = async scenario => {
+    await click('.select');
+    const target = await componentTarget(scenario);
+    assert.ok(target, `fixture target should exist: ${scenario.id}`);
+    if (scenario.target.dispatchTarget || scenario.target.clickPosition) {
+      await driver.executeScript(element => element.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, composed: true,
+      })), target);
+    } else {
+      await target.click();
+    }
+    await driver.wait(() => ui('#comment'), 5000, `selection opens an editor: ${scenario.id}`);
+  };
+  const contextPath = async () => {
+    const row = await ui('.component-context-path');
+    return row ? row.getText() : null;
+  };
+  const readyComponentPreference = expected => driver.wait(async () => {
+    const toggle = await ui('.component-context-toggle');
+    if (!toggle || !(await toggle.isEnabled())) return false;
+    return await toggle.getAttribute('aria-checked') === expected ? toggle : false;
+  }, 5000, `component setting becomes enabled and ${expected === 'true' ? 'on' : 'off'}`);
+  const privacyReads = () => driver.executeScript(() => {
+    const angular = globalThis.__BRIEFMARK_ANGULAR_FIXTURE__;
+    return globalThis.__ANMERKO_FIXTURE__?.privacyReads || angular?.sentinels.reads;
+  });
+
+  await openScenario(first);
+  await activate();
+  await click('.settings-button');
+  const preference = await readyComponentPreference('false');
+  assert.equal(await preference.getAttribute('aria-checked'), 'false');
+  await click('.settings-back');
+  await selectScenario(first);
+  assert.equal(await contextPath(), null);
+  assert.ok(Object.values(await privacyReads()).every(value => value === 0));
+  await click('.cancel');
+  await click('.settings-button');
+  await readyComponentPreference('false');
+  await click('.component-context-toggle');
+  const enabledPreference = await readyComponentPreference('true');
+  assert.equal(await enabledPreference.getAttribute('aria-checked'), 'true');
+  await click('.settings-back');
+
+  const outcomes = [];
+  for (const scenario of matrix) {
+    await openScenario(scenario);
+    await activate();
+    const persistedPreference = await readyComponentPreference('true');
+    assert.equal(await persistedPreference.getAttribute('aria-checked'), 'true');
+    await selectScenario(scenario);
+    if (scenario.expectedPath) {
+      await driver.wait(async () => await contextPath() === scenario.expectedPath.join(' → '), 5000,
+        `component path should match for ${scenario.id}`);
+    } else {
+      // Keep the draft open beyond the broker's 750 ms deadline so a wrong
+      // late result cannot pass an early absence assertion.
+      await driver.sleep(850);
+      assert.equal(await contextPath(), null, `ambiguous or unsupported metadata should fall back: ${scenario.id}`);
+    }
+    if (scenario.privacy) assert.ok(Object.values(await privacyReads()).every(value => value === 0));
+    await click('.cancel');
+    outcomes.push({ id: scenario.id, framework: scenario.framework, version: scenario.version,
+      outcome: scenario.expectedPath ? 'hint' : 'fallback' });
+  }
+
+  await openScenario(first);
+  await activate();
+  await selectScenario(first);
+  await driver.wait(async () => await contextPath() === first.expectedPath.join(' → '), 5000);
+  await activateDock();
+  await driver.wait(async () => await docked("return root.querySelector('.component-context-path')?.textContent")
+    === first.expectedPath.join(' → '), 5000, 'native sidebar retains the component hint');
+  await dockClick('.dock');
+  await driver.wait(async () => (await ui('.panel')).isDisplayed(), 5000);
+  await click('.parent');
+  assert.equal(await contextPath(), first.expectedPath.slice(0, -1).join(' → '));
+  await click('.cancel');
+  await selectScenario(first);
+  await save('Keep the Firefox component snapshot.');
+  await driver.wait(async () => (await ui('.note .component-context-path'))?.getText()
+    .then(text => text === first.expectedPath.join(' → ')), 5000, 'saved card retains the component hint');
+  const prompt = await copiedPrompt();
+  assert.match(prompt, /React · development metadata/);
+  assert.match(prompt, /`App` → `PricingPage` → `PlanCard` → `FeedbackButton`/);
+  await suspendBackground(driver, extensionId);
+  await activate();
+  await driver.wait(async () => (await ui('.note .component-context-path'))?.getText()
+    .then(text => text === first.expectedPath.join(' → ')), 5000, 'saved component hint survives background restart');
+  await driver.navigate().refresh();
+  await fixtureReady(false);
+  await activate();
+  await driver.wait(async () => (await ui('.note .component-context-path'))?.getText()
+    .then(text => text === first.expectedPath.join(' → ')), 5000, 'saved component hint survives page reload');
+  await click('.note .edit');
+  await click('.remove-component-context');
+  await click('.cancel');
+  assert.equal(await (await ui('.note .component-context-path')).getText(), first.expectedPath.join(' → '));
+  await click('.note .edit');
+  await click('.remove-component-context');
+  await click('.save');
+  assert.equal(await ui('.note .component-context'), null);
+  evidence.componentContextMatrix = outcomes;
+  evidence.componentContextLifecycle = 'default off, opt-in, native/overlay, parent, saved snapshot, export, background restart, reload and removal passed';
+}));
 
 test('Firefox current approved signed package preserves data across restart and same-identity signed update', { timeout: 90000 }, async t => {
   const approved = JSON.parse(await readFile('releases/approved.json', 'utf8'));

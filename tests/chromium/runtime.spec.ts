@@ -17,6 +17,60 @@ test.beforeEach(async ({ page }) => {
   await page.addScriptTag({ content: bundle });
 });
 
+test('component context preference explains when the runtime cannot collect it', async ({ page }) => {
+  await run(page, 'harness.open()');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(toggle).toBeDisabled();
+  await expect(panel(page).locator('.component-context-status')).toHaveText('Requires the extension.');
+});
+
+test('component context preference defaults off, persists, and follows committed storage changes', async ({ page }) => {
+  await run(page, 'harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await toggle.press('Space');
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  expect(await run(page, 'harness.read("anmerko:capture-component-context")')).toBe(true);
+  await run(page, 'harness.dispose(); harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await run(page, 'harness.write("anmerko:capture-component-context", false)');
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+});
+
+test('component context preference preserves its committed value on failed or pending writes', async ({ page }) => {
+  await run(page, 'harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await run(page, 'harness.failures(false, true)');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(panel(page).locator('.component-context-status')).toContainText('Could not save');
+  await run(page, 'harness.failures(false, false); harness.delay()');
+  await toggle.click();
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  expect(await run(page, 'harness.close()')).toBe(false);
+  await run(page, 'harness.release()');
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+});
+
+test('component context preference fails closed on unreadable storage and recovers through an explicit save', async ({ page }) => {
+  await run(page, 'harness.failures(true, false); harness.open(true)');
+  await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(panel(page).locator('.component-context-status')).toContainText('Could not load');
+  await run(page, 'harness.failures(false, false)');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+});
+
 test('mobile panel stays inside nonzero display safe-area insets', async ({ page, context }) => {
   const session = await context.newCDPSession(page);
   await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
@@ -37,17 +91,17 @@ test('mobile panel stays inside nonzero display safe-area insets', async ({ page
 
 test('global comments open focused, survive reopen, and have no element controls or markers', async ({ page }) => {
   await run(page, 'harness.open()');
-  const toggle = panel(page).getByRole('button', { name: 'More Comment Options' });
-  await toggle.press('ArrowDown');
-  const global = panel(page).getByRole('menuitem', { name: 'New Global Comment' });
-  // This runtime cannot capture screenshots; keyboard focus skips that action.
-  await expect(panel(page).getByRole('menuitem', { name: 'Take Screenshot' })).toBeDisabled();
+  const select = panel(page).getByRole('button', { name: 'Select Element', exact: true });
+  const capture = panel(page).getByRole('button', { name: 'Take Screenshot', exact: true });
+  const global = panel(page).getByRole('button', { name: 'New Global Comment', exact: true });
+  // This runtime cannot capture screenshots; that action stays disabled and
+  // keyboard focus skips it.
+  await expect(capture).toBeDisabled();
+  await select.focus();
+  await expect(select).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(global).toBeFocused();
-  await global.press('Escape');
-  await expect(toggle).toBeFocused();
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await toggle.click();
-  await global.click();
+  await global.press('Enter');
   const field = panel(page).getByLabel('Comment', { exact: true });
   await expect(field).toBeFocused();
   await expect(panel(page).locator('.editor .note-title')).toHaveText('Global Comment');
@@ -55,7 +109,8 @@ test('global comments open focused, survive reopen, and have no element controls
   await expect(panel(page).getByRole('button', { name: 'Locate', exact: true })).toBeHidden();
   await expect(panel(page).getByRole('button', { name: 'Use Parent Element' })).toBeHidden();
   await expect(panel(page).locator('.hierarchy')).toBeHidden();
-  await expect(toggle).toBeDisabled();
+  await expect(select).toBeDisabled();
+  await expect(global).toBeDisabled();
   await field.fill('Overall, make this page easier to scan.');
   await field.press('Control+Enter');
   await expect(page.locator('.pin')).toHaveCount(0);
@@ -75,8 +130,7 @@ test('delete all remains available while editing and only clears drafts for dele
   const field = panel(page).getByLabel('Comment', { exact: true });
   const confirmation = page.getByRole('dialog', { name: 'Delete All Comments?' });
   async function newGlobal() {
-    await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-    await panel(page).getByRole('menuitem', { name: 'New Global Comment' }).click();
+    await panel(page).getByRole('button', { name: 'New Global Comment' }).click();
   }
   await newGlobal();
   await field.fill('A saved global comment.');

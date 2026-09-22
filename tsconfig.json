@@ -10,5 +10,6 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "tests", "site/src/scripts", "site/src/env.d.ts"]
+  "include": ["src", "tests", "site/src/scripts", "site/src/env.d.ts"],
+  "exclude": ["tests/fixtures/component-context"]
 }

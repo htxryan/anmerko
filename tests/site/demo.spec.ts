@@ -3,9 +3,16 @@ import { test, expect } from '@playwright/test';
 const panel = (page: import('@playwright/test').Page) => page.getByRole('complementary', { name: 'anmerko feedback panel' });
 
 test('the built demo exposes the current shared settings and comment actions', async ({ page }) => {
+  await page.clock.install();
   await page.goto('/');
   await page.getByRole('button', { name: 'Try the Demo' }).click();
+  await expect(panel(page).getByRole('button', { name: 'Feedback settings', exact: true })).toBeVisible();
+  await page.clock.fastForward(10_000);
   await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
+  const componentCapture = panel(page).getByRole('switch', { name: 'Capture component context' });
+  await expect(componentCapture).toBeDisabled();
+  await expect(componentCapture).not.toBeChecked();
+  await expect(panel(page).locator('.component-context-status')).toHaveText('Requires the extension.');
   const support = panel(page).getByRole('link', { name: 'Buy me a coffee (opens in new tab)' });
   await expect(support).toBeVisible();
   await expect(support).toHaveAttribute('href', 'https://buymeacoffee.com/htxryan');
@@ -18,8 +25,7 @@ test('the built demo exposes the current shared settings and comment actions', a
   }
   await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
   await expect(support).toBeHidden();
-  await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-  await panel(page).getByRole('menuitem', { name: 'New Global Comment' }).click();
+  await panel(page).getByRole('button', { name: 'New Global Comment' }).click();
   await panel(page).getByLabel('Comment', { exact: true }).fill('Feedback on the whole page.');
   await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
   await expect(panel(page).locator('.note')).toContainText('Feedback on the whole page.');
@@ -37,11 +43,9 @@ test('lazy demo uses the real comment-to-prompt flow and retains only the curren
   await expect(page.getByRole('button', { name: 'Reset demo' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Try the Demo' }).click();
   await expect(panel(page)).toBeVisible();
-  await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-  const capture = panel(page).getByRole('menuitem', { name: 'Take Screenshot' });
+  const capture = panel(page).getByRole('button', { name: 'Take Screenshot' });
   await expect(capture).toBeDisabled();
   await expect(capture).toHaveAttribute('title', 'Screenshots require the extension');
-  await page.keyboard.press('Escape');
   await panel(page).getByRole('button', { name: 'Select Element' }).click();
   await page.locator('#headline').click();
   await panel(page).getByLabel('Comment', { exact: true }).fill('Make this headline clearer.');

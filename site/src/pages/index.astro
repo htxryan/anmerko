@@ -4,6 +4,8 @@ import BrowserInstall from '../components/BrowserInstall.astro';
 import ExternalLink from '../components/ExternalLink.astro';
 import ThemeProvider from '@astrojs/starlight/components/ThemeProvider.astro';
 import ThemeToggle from '../components/ThemeToggle.astro';
+// Bump when the demo video bytes change so viewers never get a stale copy.
+const DEMO_V = 9;
 ---
 <!doctype html>
 <html lang="en">
@@ -25,6 +27,8 @@ import ThemeToggle from '../components/ThemeToggle.astro';
   <header class="header wrap">
     <a class="brand" href="/" aria-label="anmerko home"><img src="/favicon.png" width="30" height="30" alt="">anmerko</a>
     <nav aria-label="Main navigation">
+      <a href="/">Home</a>
+      <a href="/features/">Features</a>
       <a href="/docs/" aria-label="Documentation">Docs</a>
       <ExternalLink href="https://github.com/htxryan/anmerko" label="GitHub" />
       <ExternalLink href="https://github.com/htxryan/anmerko/issues/new" label="Report Issue" />
@@ -51,11 +55,11 @@ import ThemeToggle from '../components/ThemeToggle.astro';
         poster="/product-illustration.svg"
         width="800"
         height="470"
-        aria-label="anmerko product overview"
+        aria-label="anmerko demo"
       >
-        <source src="/media/anmerko-overview.mp4" type="video/mp4">
-        <track kind="captions" src="/media/anmerko-overview.en.vtt" srclang="en" label="English">
-        <a href="/media/anmerko-overview.mp4">Watch the anmerko product overview video</a>
+        <source src={`/media/anmerko-homepage.mp4?v=${DEMO_V}`} type="video/mp4">
+        <track kind="captions" src="/media/anmerko-homepage.en.vtt" srclang="en" label="English">
+        <a href={`/media/anmerko-homepage.mp4?v=${DEMO_V}`}>Watch the anmerko demo video</a>
       </video>
     </figure>
     <section class="features" aria-label="Why anmerko">

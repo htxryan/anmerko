@@ -58,8 +58,7 @@ try {
     + 'These two element comments were copied from [Salad Recipe Finder](https://saladrecipefinder.com/). Screenshot exports also reference PNGs; attach those separately.\n\n'
     + '```markdown\n' + example.trimEnd() + '\n```\n');
 
-  await panel.getByRole('button', { name: 'More Comment Options' }).click();
-  await panel.getByRole('menuitem', { name: 'Take Screenshot' }).click();
+  await panel.getByRole('button', { name: 'Take Screenshot' }).click();
   await expect(page.getByRole('dialog', { name: 'Select screenshot region' })).toBeVisible();
   await page.mouse.move(90, 530); await page.mouse.down();
   await page.mouse.move(446, 668, { steps: 10 }); await page.mouse.up();
@@ -70,8 +69,7 @@ try {
   await panel.locator('.note').last().scrollIntoViewIfNeeded();
   await capture('02-screenshot-feedback.png');
 
-  await panel.getByRole('button', { name: 'More Comment Options' }).click();
-  await panel.getByRole('menuitem', { name: 'New Global Comment' }).click();
+  await panel.getByRole('button', { name: 'New Global Comment' }).click();
   await panel.getByLabel('Comment', { exact: true }).fill('Keep the recipe finder simple: clear filters, readable ingredients, and an obvious way to save favorites.');
   await capture('03-global-comment.png');
   await panel.getByRole('button', { name: 'Save', exact: true }).click();

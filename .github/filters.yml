@@ -51,6 +51,8 @@ chrome:
   - 'scripts/browsers/install-chrome.mjs'
   - 'scripts/browsers/demo.mjs'
   - 'tests/fixtures/demo/**'
+  - 'tests/fixtures/component-context/**'
+  - 'scripts/browsers/setup-component-fixtures.mjs'
 
 firefox:
   - *extension
@@ -63,6 +65,8 @@ firefox:
   - 'site/firefox-release.json'
   - 'site/installers/*.xpi'
   - 'tests/fixtures/demo/**'
+  - 'tests/fixtures/component-context/**'
+  - 'scripts/browsers/setup-component-fixtures.mjs'
 
 site:
   - '.github/workflows/deploy.yml'
@@ -114,6 +118,12 @@ highrisk:
   - 'site/installers/**'
   - 'site/firefox-release.json'
   - 'releases/**'
+  - 'tests/fixtures/component-context/**'
+  - 'scripts/browsers/setup-component-fixtures.mjs'
+  - 'src/react-context-probe.ts'
+  - 'src/vue-context-probe.ts'
+  - 'src/angular-context-probe.ts'
+  - 'src/component-context*.ts'
 
 releasegate:
   # These files decide whether proof runs and which attestation it accepts.

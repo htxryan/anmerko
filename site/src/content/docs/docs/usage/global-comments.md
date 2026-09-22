@@ -5,9 +5,8 @@ description: Add feedback about the whole current page.
 
 Use a global comment for feedback that applies to the whole current page, such as its hierarchy, visual direction, or overall experience.
 
-1. Open **More Comment Options** beside **Select Element**.
-2. Choose **New Global Comment**.
-3. Write your feedback and choose **Save**, or press **Ctrl/⌘ + Enter**.
+1. Choose **New Global Comment**.
+2. Write your feedback and choose **Save**, or press **Ctrl/⌘ + Enter**.
 
 ![A global comment about Salad Recipe Finder in the current anmerko editor](/screenshots/03-global-comment.png)
 
