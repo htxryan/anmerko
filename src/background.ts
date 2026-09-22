@@ -7,6 +7,8 @@ export { activateTab } from './activate';
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
 const sidebarOwners = new Map<number, object>();
+// Screenshot captures are serialized with a short throttle so a rapid
+// double-activation cannot race two visible-tab captures into one crop.
 let capturePending = false;
 let lastCapture = 0;
 api.action.onClicked.addListener(tab => {
