@@ -6,12 +6,13 @@ import {
   type ComponentContextProbeTarget,
 } from '../../src/component-context-bridge';
 import { selectComponentContext } from '../../src/component-context-dispatch';
+import { preactComponentContextProbe } from '../../src/preact-context-probe';
 import { reactComponentContextProbe } from '../../src/react-context-probe';
 import { vueComponentContextProbe } from '../../src/vue-context-probe';
 
 const MARKER = 'data-anmerko-context-0123456789abcdef0123456789abcdef';
-const probes = [reactComponentContextProbe, vueComponentContextProbe, angularComponentContextProbe] as const;
-const frameworks = ['react', 'vue', 'angular'] as const;
+const probes = [reactComponentContextProbe, vueComponentContextProbe, angularComponentContextProbe, preactComponentContextProbe] as const;
+const frameworks = ['react', 'vue', 'angular', 'preact'] as const;
 interface FixtureServer { origin: string; close(): Promise<void> }
 interface MixedTarget {
   id: string;

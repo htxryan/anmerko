@@ -28,7 +28,7 @@ const sender = {
 } as chrome.runtime.MessageSender;
 const react = JSON.stringify({ version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path: ['App', 'Button'], truncated: false });
 const vue = JSON.stringify({ version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path: ['App'], truncated: false });
-const probes = [(() => null), (() => null), (() => null)] as const satisfies readonly [ComponentContextProbe, ComponentContextProbe, ComponentContextProbe];
+const probes = [(() => null), (() => null), (() => null), (() => null)] as const satisfies readonly [ComponentContextProbe, ComponentContextProbe, ComponentContextProbe, ComponentContextProbe];
 
 function broker(runProbe: ComponentContextProbeRunner, readPreference: () => Promise<unknown> = async () => true, deadlineMs = 750) {
   return createComponentContextBroker({ extensionId: 'extension-id', probes, runProbe, readPreference, deadlineMs });
@@ -57,8 +57,8 @@ test('accepts only an own-extension top-frame HTTP(S) sender and an exact bounde
   expect(calls).toBe(0);
 });
 
-test('derives execution identity from the sender and accepts exactly one valid plus two clean nulls', async () => {
-  const values = [react, null, null];
+test('derives execution identity from the sender and accepts exactly one valid plus three clean nulls', async () => {
+  const values = [react, null, null, null];
   const executions: unknown[] = [];
   let preferenceReads = 0;
   const bridge = broker(async (_probe, probeTarget, execution) => {
@@ -69,18 +69,18 @@ test('derives execution identity from the sender and accepts exactly one valid p
   await expect(bridge.handle(request, sender)).resolves.toEqual({
     version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path: ['App', 'Button'], truncated: false,
   });
-  expect(executions).toEqual(Array(3).fill({ probeTarget: target, execution: { tabId: 42, documentId: 'document-1' } }));
-  expect(preferenceReads).toBe(4);
+  expect(executions).toEqual(Array(4).fill({ probeTarget: target, execution: { tabId: 42, documentId: 'document-1' } }));
+  expect(preferenceReads).toBe(5);
 });
 
 test('keeps no hint for ambiguous, all-none, malformed, oversized, or rejected probe outcomes', async () => {
   const cases: unknown[][] = [
-    [react, vue, null],
-    [null, react, null],
-    [null, null, null],
-    ['not json', null, null],
-    ['x'.repeat(2_049), null, null],
-    [JSON.stringify({ version: 1, framework: 'vue', provenance: 'react-dom-fiber-dev', path: ['App'], truncated: false }), null, null],
+    [react, vue, null, null],
+    [null, react, null, null],
+    [null, null, null, null],
+    ['not json', null, null, null],
+    ['x'.repeat(2_049), null, null, null],
+    [JSON.stringify({ version: 1, framework: 'vue', provenance: 'react-dom-fiber-dev', path: ['App'], truncated: false }), null, null, null],
   ];
   for (const values of cases) {
     const bridge = broker(async () => values.shift());
@@ -169,7 +169,7 @@ test('shares one deadline across sequential probes and retains the per-tab lock 
   release(null);
   await new Promise(resolve => setTimeout(resolve, 0));
   await expect(bridge.handle(request, sender)).resolves.toBeNull();
-  expect(calls).toBe(4);
+  expect(calls).toBe(5);
 });
 
 class FakeElement {

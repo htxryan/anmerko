@@ -5,22 +5,24 @@ import type { ComponentContextV1 } from '../../src/component-context';
 import { reactComponentContextProbe } from '../../src/react-context-probe';
 import { vueComponentContextProbe } from '../../src/vue-context-probe';
 import { angularComponentContextProbe } from '../../src/angular-context-probe';
+import { preactComponentContextProbe } from '../../src/preact-context-probe';
 
 const values: ComponentContextV1[] = [
   { version: 1, framework: 'react', provenance: 'react-dom-fiber-dev', path: ['App'], truncated: false },
   { version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path: ['App'], truncated: false },
   { version: 1, framework: 'angular', provenance: 'angular-debug-ownership', path: ['App'], truncated: false },
+  { version: 1, framework: 'preact', provenance: 'preact-vnode-prod', path: ['App'], truncated: false },
 ];
 
-test('the immutable registry contains only the three bundled adapters in protocol order', () => {
-  expect(COMPONENT_CONTEXT_PROBES).toEqual([reactComponentContextProbe, vueComponentContextProbe, angularComponentContextProbe]);
+test('the immutable registry contains only the four bundled adapters in protocol order', () => {
+  expect(COMPONENT_CONTEXT_PROBES).toEqual([reactComponentContextProbe, vueComponentContextProbe, angularComponentContextProbe, preactComponentContextProbe]);
   expect(Object.isFrozen(COMPONENT_CONTEXT_PROBES)).toBe(true);
 });
 
-test('every combination requires one valid framework and two clean no-matches', () => {
+test('every combination requires one valid framework and three clean no-matches', () => {
   const kinds = ['none', 'valid', 'indeterminate'] as const;
-  for (const a of kinds) for (const b of kinds) for (const c of kinds) {
-    const combination = [a, b, c];
+  for (const a of kinds) for (const b of kinds) for (const c of kinds) for (const d of kinds) {
+    const combination = [a, b, c, d];
     const outcomes: ComponentContextProbeOutcome[] = combination.map((kind, index) => kind === 'valid'
       ? { kind, value: values[index] } : { kind });
     const expected = !combination.includes('indeterminate') && combination.filter(kind => kind === 'valid').length === 1
@@ -31,6 +33,6 @@ test('every combination requires one valid framework and two clean no-matches', 
 
 test('incomplete inspection and a valid DTO from the wrong adapter remain unavailable', () => {
   expect(selectComponentContext([{ kind: 'valid', value: values[0] }, { kind: 'none' }])).toBe(null);
-  expect(selectComponentContext([{ kind: 'none' }, { kind: 'valid', value: values[0] }, { kind: 'none' }])).toBe(null);
-  expect(selectComponentContext([{ kind: 'valid', value: { ...values[0], path: [] } }, { kind: 'none' }, { kind: 'none' }])).toBe(null);
+  expect(selectComponentContext([{ kind: 'none' }, { kind: 'valid', value: values[0] }, { kind: 'none' }, { kind: 'none' }])).toBe(null);
+  expect(selectComponentContext([{ kind: 'valid', value: { ...values[0], path: [] } }, { kind: 'none' }, { kind: 'none' }, { kind: 'none' }])).toBe(null);
 });

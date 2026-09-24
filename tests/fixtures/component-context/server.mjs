@@ -38,6 +38,14 @@ const mixedRoutes = [
   { id: 'mixed-vue-angular-association', framework: 'mixed', version: null, mode: 'vue-angular-association', path: '/mixed/vue-angular-association', asset: '/assets/mixed.js' },
   { id: 'mixed-triple-association', framework: 'mixed', version: null, mode: 'triple-association', path: '/mixed/triple-association', asset: '/assets/mixed.js' },
 ];
+const preactRoutes = ['development', 'production'].map(mode => ({
+  id: `preact-10.29.8-${mode}`,
+  framework: 'preact',
+  version: '10.29.8',
+  mode,
+  path: `/preact/10.29.8/${mode}`,
+  asset: `/assets/preact-10.29.8-${mode}.js`,
+}));
 const angularRoutes = ['development', 'production'].map(mode => ({
   id: `angular-22.1.7-${mode}`,
   framework: 'angular',
@@ -52,6 +60,7 @@ export const fixtureRouteManifest = Object.freeze([
   ...vueRoutes,
   ...mixedRoutes,
   ...angularRoutes,
+  ...preactRoutes,
   { id: 'plain', framework: 'none', version: null, mode: 'plain', path: '/plain', asset: '/assets/plain.js' },
   { id: 'unsupported', framework: 'unknown', version: null, mode: 'unsupported', path: '/unsupported', asset: '/assets/unsupported.js' },
 ]);
@@ -164,6 +173,29 @@ export async function buildFixtures() {
       plugins: [vueSfcPlugin()],
     });
   }
+  for (const mode of ['development', 'production']) {
+    const development = mode === 'development';
+    await build({
+      entryPoints: [resolve(directory, 'preact-app.tsx')],
+      outfile: resolve(outputDirectory, `preact-10.29.8-${mode}.js`),
+      bundle: true,
+      format: 'iife',
+      platform: 'browser',
+      target: ['chrome142', 'firefox142'],
+      // Preact's classic runtime pragma: development and production share
+      // the same vnode shape (no jsxDev transform), so coverage differs only
+      // by minification, matching real deployed Preact bundles.
+      jsx: 'transform',
+      jsxFactory: 'h',
+      jsxFragment: 'Fragment',
+      minify: !development,
+      define: {
+        'process.env.NODE_ENV': JSON.stringify(development ? 'development' : 'production'),
+        __FIXTURE_VERSION__: JSON.stringify('10.29.8'),
+        __FIXTURE_MODE__: JSON.stringify(mode),
+      },
+    });
+  }
   await build({
     entryPoints: [resolve(directory, 'mixed.ts')],
     outfile: resolve(outputDirectory, 'mixed.js'),
@@ -196,10 +228,12 @@ function fixtureHtml(route) {
   const vue = route.framework === 'vue';
   const mixed = route.framework === 'mixed';
   const angular = route.framework === 'angular';
+  const preact = route.framework === 'preact';
   const target = route.id === 'plain' ? '<button id="plain-target">Plain target</button>'
     : route.id === 'unsupported' ? '<button id="unsupported-target">Unsupported marker shape</button>'
       : mixed ? mixedShell(route.mode)
         : angular ? ''
+      : preact ? '<div id="preact-root"></div><div id="preact-anonymous-host"></div>'
       : vue ? '<div id="vue-root"></div><div id="vue-teleport"></div><div id="vue-hydration"><section id="vue-hydration-owner"><p id="vue-hydrated-first">Hydrated first</p><span id="vue-hydrated-later">Hydrated later</span></section></div>'
       : '<div id="react-root"></div><div id="react-portal"></div><div id="react-shadow-host"></div>';
   const scripts = mixed

@@ -16,6 +16,7 @@ export type ComponentContextV1 = ComponentPathV1 & (
   | { framework: 'react'; provenance: 'react-dom-fiber-dev' }
   | { framework: 'vue'; provenance: 'vue3-instance-debug' }
   | { framework: 'angular'; provenance: 'angular-debug-ownership' }
+  | { framework: 'preact'; provenance: 'preact-vnode-prod' }
 );
 
 const CONTEXT_KEYS = ['version', 'framework', 'provenance', 'path', 'truncated'] as const;
@@ -23,6 +24,7 @@ const PAIRS = {
   react: 'react-dom-fiber-dev',
   vue: 'vue3-instance-debug',
   angular: 'angular-debug-ownership',
+  preact: 'preact-vnode-prod',
 } as const;
 
 function dataProperties(value: object, expectedKeys: readonly string[]): Record<string, unknown> | undefined {

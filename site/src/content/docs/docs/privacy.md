@@ -11,7 +11,7 @@ anmerko stores comments, page titles/full URLs, selected element context and sel
 
 Element capture excludes form values and editable text. Other captured text and URLs may still be private; screenshots include all visible pixels within the crop, including form contents. Review exports before sharing.
 
-Optional **Capture component context** is off by default. When enabled, new element comments may include a bounded path of React, Vue, or Angular component names and a framework/debug-metadata label. Names may reveal application structure; Vue's inferred names can match source filename basenames. The reader does not collect props, state, event handlers, inputs, signals, source paths, source files, stacks, or full framework objects. Angular's own inspection helpers may populate its debug cache while finding ownership.
+Optional **Capture component context** is off by default. When enabled, new element comments may include a bounded path of React, Vue, Angular, or Preact component names and a framework-metadata label. Names may reveal application structure; Vue's inferred names can match source filename basenames. The reader does not collect props, state, event handlers, inputs, signals, source paths, source files, stacks, or full framework objects. Angular's own inspection helpers may populate its debug cache while finding ownership.
 
 These names are untrusted website data. Debug metadata can remain exposed on deployed Vue or Angular sites; its presence does not prove a site is a development build. Hints stay local with the comment and appear in exports you request. Turning capture off leaves saved hints intact; remove a hint while editing and save to delete it from that comment.
 
