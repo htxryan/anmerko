@@ -929,6 +929,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         const notice = node('p', 'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.', 'journey-error');
         notice.setAttribute('role', 'alert');
         view.append(notice);
+      } else if (state.draft.stopReason === 'left-site') {
+        // Recording covers one site: say so instead of silently ending.
+        const notice = node('p', 'Recording ended because the page left the site you started on. Steps recorded there are kept; start a new journey from the toolbar to record somewhere else.', 'journey-help');
+        notice.setAttribute('role', 'status');
+        view.append(notice);
       }
       view.append(renderSummaries(state.draft));
       const list = node('ol', undefined, 'journey-steps');
@@ -942,6 +947,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
           : `${step.kind === 'click' ? 'Click' : 'Entered value'}: ${targetLabel}`;
         item.append(node('h2', `Step ${step.seq} · ${label}`), node('p', elapsed(step.elapsedMs), 'journey-time'));
         item.append(node('p', 'Source URL', 'journey-meta-label'), node('p', String(step.sourceUrl), 'journey-url'));
+        if (step.kind === 'navigation') {
+          item.append(node('p', 'Destination URL', 'journey-meta-label'), node('p', String(step.navigation.toUrl), 'journey-url'));
+        }
         if (step.image.status === 'retained') {
           const image = state.draft.images[step.image.imageId];
           if (image) {

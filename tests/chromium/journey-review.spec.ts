@@ -223,6 +223,12 @@ const bundle = () => buildSync({ stdin: { contents: `
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(reviewingStepsWithAllValues()) };
       changed();
     },
+    setStopReason: reason => {
+      state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+        draft: { ...reviewingDraft(reviewingSteps()), stopReason: reason } };
+      changed();
+    },
     setReviewingValuesOn: () => {
       summaryError = null; removeError = null; saveError = null;
       openSnapshotError = null; reopenError = null; stayInReview = false;
@@ -300,6 +306,25 @@ test('step removal confirms inline and preserves sequence gaps', async ({ page }
   await expect(page.getByRole('heading', { name: /Step 1 / })).toBeVisible();
   await expect(page.getByRole('heading', { name: /Step 3 / })).toBeVisible();
   await expect(page.getByRole('heading', { name: /Step 2 / })).toHaveCount(0);
+});
+
+test('review explains a stop that left the starting site', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setStopReason("left-site")');
+  await expect(page.getByText('Recording ended because the page left the site you started on. Steps recorded there are kept; start a new journey from the toolbar to record somewhere else.', { exact: true })).toBeVisible();
+});
+
+test('review shows a navigation destination alongside its source URL', async ({ page }) => {
+  await openReview(page);
+  const destination = page.getByText('https://example.test/checkout', { exact: true });
+  await expect(page.getByText('Destination URL', { exact: true })).toHaveCount(1);
+  await expect(destination).toBeVisible();
+  const step3 = page.locator('li', { has: page.getByRole('heading', { name: /Step 3 / }) });
+  await expect(step3.getByText('Source URL', { exact: true })).toBeVisible();
+  await expect(step3.getByText('Destination URL', { exact: true })).toBeVisible();
+  // Clicks carry only their source URL: no destination label leaks to them.
+  const step2 = page.locator('li', { has: page.getByRole('heading', { name: /Step 2 / }) });
+  await expect(step2.getByText('Destination URL', { exact: true })).toHaveCount(0);
 });
 
 test('save stays disabled until summaries and acknowledgement are ready', async ({ page }) => {
