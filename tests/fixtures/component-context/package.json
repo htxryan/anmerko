@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@vue/compiler-sfc": "3.5.43",
+    "preact": "10.29.8",
     "react-18": "npm:react@18.3.1",
     "react-19-2": "npm:react@19.2.7",
     "react-19-3": "npm:react@19.3.0",

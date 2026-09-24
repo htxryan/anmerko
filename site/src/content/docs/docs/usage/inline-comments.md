@@ -23,6 +23,7 @@ Enable **Capture component context** in [Settings](/docs/settings/) to include a
 - **React DOM:** Named components in supported development builds. Production and profiling builds fall back to ordinary element context.
 - **Vue 3:** Exposed debug metadata, including production builds that deliberately retain DevTools metadata.
 - **Angular:** Component ownership exposed by the framework's debug APIs. Optimized production normally omits it.
+- **Preact 10:** Named components from the runtime vnode tree, in development and production builds alike. Anonymous components yield no hint rather than a guess.
 
 The path follows the framework's component ownership. Portals, Teleport, slots, and projected content can have different component and DOM ancestry. Anonymous components, static or unmanaged nodes, missing metadata, and unsupported framework shapes may produce no hint. Other frameworks still support ordinary element comments.
 

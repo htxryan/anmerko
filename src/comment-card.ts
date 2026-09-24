@@ -57,11 +57,13 @@ export function createCommentCard(note: Note, number: number, editing = false, r
     const row = document.createElement('div');
     row.className = 'component-context';
     const label = document.createElement('strong');
-    const framework = { react: 'React', vue: 'Vue', angular: 'Angular' }[context.framework];
+    const framework = { react: 'React', vue: 'Vue', angular: 'Angular', preact: 'Preact' }[context.framework];
     label.textContent = `Component hint · ${framework}`;
     const provenance = document.createElement('span');
     provenance.className = 'component-context-source';
-    provenance.textContent = context.framework === 'react' ? 'Development metadata' : 'Debug metadata';
+    provenance.textContent = context.framework === 'react' ? 'Development metadata'
+      : context.framework === 'preact' ? 'Runtime metadata'
+      : 'Debug metadata';
     const names = document.createElement('code');
     names.className = 'component-context-path';
     names.textContent = (context.truncated ? '… → ' : '') + context.path.join(' → ');

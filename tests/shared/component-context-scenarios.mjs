@@ -1,5 +1,6 @@
 const reactPath = ['App', 'PricingPage', 'PlanCard', 'FeedbackButton'];
 const angularPath = ['_AppComponent', '_PricingPageComponent', '_PlanCardComponent'];
+const preactPath = ['App', 'PricingPage', 'PlanCard', 'FeedbackButton'];
 
 const scenario = (id, route, framework, version, selectorPath, expectedPath, extra = {}) => Object.freeze({
   id,
@@ -49,6 +50,10 @@ export const componentContextPositiveScenarios = Object.freeze([
   scenario('angular-22.1.7-open-shadow', '/angular/22.1.7/development', 'angular', '22.1.7',
     ['[data-fixture-id="angular-plan-card-host"]', '[data-fixture-id="angular-plan-card-leaf"]'], angularPath,
     { provenance: 'angular-debug-ownership', openShadow: true }),
+  scenario('preact-10.29.8-development', '/preact/10.29.8/development', 'preact', '10.29.8',
+    ['#preact-nested-button'], preactPath, { provenance: 'preact-vnode-prod', privacy: true }),
+  scenario('preact-10.29.8-production', '/preact/10.29.8/production', 'preact', '10.29.8',
+    ['#preact-nested-button'], preactPath, { provenance: 'preact-vnode-prod' }),
 ]);
 
 export const componentContextFallbackScenarios = Object.freeze([
