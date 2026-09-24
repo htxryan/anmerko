@@ -1,4 +1,5 @@
 import type { Store } from './runtime';
+import { normalizeComponentContext, type ComponentContextV1 } from './component-context';
 
 export interface ElementContext {
   selectorPath: string[];
@@ -7,6 +8,7 @@ export interface ElementContext {
   text: string;
   label: string;
   viewport: { width: number; height: number };
+  componentContext?: ComponentContextV1;
 }
 
 export interface ScreenshotContext {
@@ -151,21 +153,78 @@ export function resolveElement(context: ElementContext): Element | null {
   return element;
 }
 
+function isBaseNote(value: unknown): value is Note {
+  try {
+    if (!value || typeof value !== 'object') return false;
+    const note = value as Note;
+    const validBase = typeof note.id === 'string' && typeof note.pageUrl === 'string'
+      && typeof note.pageTitle === 'string' && typeof note.comment === 'string'
+      && typeof note.createdAt === 'string' && typeof note.updatedAt === 'string';
+    if (!validBase) return false;
+    if (note.kind !== undefined) return note.kind === 'page' && !('element' in note) && !('screenshot' in note);
+    return (note.screenshot ? isScreenshot(note.screenshot) : !!note.element && typeof note.element.tag === 'string'
+      && typeof note.element.text === 'string' && typeof note.element.label === 'string'
+      && Array.isArray(note.element.selectorPath) && note.element.selectorPath.length > 0
+      && note.element.selectorPath.every(s => typeof s === 'string')
+      && (note.element.hierarchy === undefined || (Array.isArray(note.element.hierarchy)
+        && note.element.hierarchy.every(segment => typeof segment === 'string')))
+      && Number.isFinite(note.element.viewport?.width) && Number.isFinite(note.element.viewport?.height));
+  } catch { return false; }
+}
+
+function ownDataValue(value: object, key: string): unknown {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  } catch { return undefined; }
+}
+
+function normalizeNote(value: unknown): Note | undefined {
+  try {
+    if (!isBaseNote(value)) return undefined;
+    const base = {
+      id: value.id,
+      pageUrl: value.pageUrl,
+      pageTitle: value.pageTitle,
+      comment: value.comment,
+      createdAt: value.createdAt,
+      updatedAt: value.updatedAt,
+    };
+    if (value.kind === 'page') return { ...base, kind: 'page' };
+    if (value.screenshot) {
+      const { dataUrl, width, height, region, viewport, scroll } = value.screenshot;
+      return {
+        ...base,
+        screenshot: {
+          dataUrl, width, height,
+          region: { x: region.x, y: region.y, width: region.width, height: region.height },
+          viewport: { width: viewport.width, height: viewport.height },
+          scroll: { x: scroll.x, y: scroll.y },
+        },
+      };
+    }
+    const { selectorPath, hierarchy, tag, text, label, viewport } = value.element;
+    const componentContext = normalizeComponentContext(ownDataValue(value.element, 'componentContext'));
+    return {
+      ...base,
+      element: {
+        selectorPath: [...selectorPath],
+        ...(hierarchy === undefined ? {} : { hierarchy: [...hierarchy] }),
+        tag,
+        text,
+        label,
+        viewport: { width: viewport.width, height: viewport.height },
+        ...(componentContext ? { componentContext } : {}),
+      },
+    };
+  } catch { return undefined; }
+}
+
 export function isNote(value: unknown): value is Note {
-  if (!value || typeof value !== 'object') return false;
-  const note = value as Note;
-  const validBase = typeof note.id === 'string' && typeof note.pageUrl === 'string'
-    && typeof note.pageTitle === 'string' && typeof note.comment === 'string'
-    && typeof note.createdAt === 'string' && typeof note.updatedAt === 'string';
-  if (!validBase) return false;
-  if (note.kind !== undefined) return note.kind === 'page' && !('element' in note) && !('screenshot' in note);
-  return (note.screenshot ? isScreenshot(note.screenshot) : !!note.element && typeof note.element.tag === 'string'
-    && typeof note.element.text === 'string' && typeof note.element.label === 'string'
-    && Array.isArray(note.element.selectorPath) && note.element.selectorPath.length > 0
-    && note.element.selectorPath.every(s => typeof s === 'string')
-    && (note.element.hierarchy === undefined || (Array.isArray(note.element.hierarchy)
-      && note.element.hierarchy.every(segment => typeof segment === 'string')))
-    && Number.isFinite(note.element.viewport?.width) && Number.isFinite(note.element.viewport?.height));
+  if (!isBaseNote(value)) return false;
+  if (!value.element) return true;
+  const rawContext = ownDataValue(value.element, 'componentContext');
+  return rawContext === undefined || normalizeComponentContext(rawContext) !== undefined;
 }
 
 function isScreenshot(image: ScreenshotContext): boolean {
@@ -184,14 +243,17 @@ export function screenshotFilename(note: Note): string {
 export async function readNotes(store: Store): Promise<Note[]> {
   const records = await store.readAll();
   return Object.entries(records)
-    .filter(([key, value]) => key.startsWith(STORAGE_PREFIX) && isNote(value))
-    .map(([, value]) => value as Note)
+    .filter(([key]) => key.startsWith(STORAGE_PREFIX))
+    .map(([, value]) => normalizeNote(value))
+    .filter((value): value is Note => value !== undefined)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
 export async function saveNote(store: Store, note: Note): Promise<void> {
   // A key per comment avoids overwriting unrelated notes from another tab.
-  await store.write(STORAGE_PREFIX + note.id, note);
+  const normalized = normalizeNote(note);
+  if (!normalized) throw new TypeError('Invalid note');
+  await store.write(STORAGE_PREFIX + normalized.id, normalized);
 }
 
 export async function removeNote(store: Store, id: string): Promise<void> {
@@ -201,6 +263,7 @@ export async function removeNote(store: Store, id: string): Promise<void> {
 export const DEFAULT_PROMPT_PREAMBLE = 'Comments collected with anmerko. Page URLs and captured context are listed with each comment.';
 
 export function buildPrompt(notes: Note[], preamble = DEFAULT_PROMPT_PREAMBLE): string {
+  notes = notes.map(note => normalizeNote(note)).filter((note): note is Note => note !== undefined);
   const pages = new Map<string, Note[]>();
   notes.forEach(note => {
     const key = pageIdentity(note.pageUrl);
@@ -240,6 +303,11 @@ export function buildPrompt(notes: Note[], preamble = DEFAULT_PROMPT_PREAMBLE): 
           : `- **Selector path:** ${element.selectorPath.map(inlineCode).join(' → shadow root → ')}`,
         ...(element.text ? [`- **Text excerpt:** ${inlineCode(element.text)}`] : []),
         ...(element.label ? [`- **Accessible label:** ${inlineCode(element.label)}`] : []),
+        ...(element.componentContext ? [
+          `- **Component hint:** ${{ react: 'React', vue: 'Vue', angular: 'Angular' }[element.componentContext.framework]} · ${element.componentContext.framework === 'react' ? 'development' : 'debug'} metadata (page-provided, unverified)`,
+          `- **Component path:** ${element.componentContext.truncated ? '… → ' : ''}${element.componentContext.path.map(inlineCode).join(' → ')}`,
+          ...(element.componentContext.truncated ? ['- **Component path truncated:** Yes'] : []),
+        ] : []),
         `- **Viewport:** ${element.viewport.width} × ${element.viewport.height}`, '');
     }
   }

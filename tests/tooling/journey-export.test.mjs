@@ -24,6 +24,7 @@ const note = {
   pageTitle: 'Shop',
   comment: 'Make this headline clearer.',
   createdAt: '2026-09-20T12:00:00.000Z',
+  updatedAt: '2026-09-20T12:00:00.000Z',
   element: {
     tag: 'h1',
     selectorPath: ['#hero-title'],

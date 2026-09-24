@@ -1,9 +1,11 @@
+import { COMPONENT_CONTEXT_DEFAULT, COMPONENT_CONTEXT_KEY, normalizeComponentContext } from './component-context';
+import { componentContextCapture } from './component-context-capture';
 import { createSupportIcon } from './support-icon';
 import { icon, renderIcons } from './icons';
 import { createCommentCard } from './comment-card';
 import { privateImage, selectScreenshot } from './screenshot';
 import { downloadFile, feedbackArchive } from './export';
-import type { Controller, PresentationMode, Runtime, ViewState } from './runtime';
+import type { ComponentContextUpdate, Controller, DraftTargetIdentity, PresentationMode, Runtime, ViewState } from './runtime';
 import { statusMessage } from './status';
 import { splitMenu } from './split-menu';
 import { createUuid } from './uuid';
@@ -36,10 +38,10 @@ export function mount(runtime: Runtime): Controller {
       <header><span class="logo" aria-hidden="true">↗</span><div class="brand">anmerko</div><button class="icon-button settings-button" aria-label="Extension settings" title="Settings" aria-expanded="false" aria-controls="settings"><span data-icon="settings"></span></button><button class="icon-button dock" hidden aria-label="Dock sidebar" title="Dock sidebar"><span data-icon="pin"></span></button><button class="icon-button minimize" aria-label="Minimize comments" title="Minimize comments"><span data-icon="minus"></span></button><button class="icon-button close" aria-label="Close anmerko" title="Close anmerko"><span data-icon="close"></span></button></header>
       <div class="scope-row"><select aria-label="Comment scope"><option value="page">This page</option><option value="all">All pages</option></select><span class="count">0 comments</span></div>
       <div class="content"><div class="editor-slot"></div><div class="notes"></div></div>
-      <section class="settings" id="settings" aria-label="Extension settings" hidden><div class="settings-heading"><button class="settings-back"><span data-icon="back"></span>Back</button><h1>Settings</h1></div><h2 id="theme-label">Appearance</h2><div class="theme-options" role="group" aria-labelledby="theme-label"><button class="theme-option" data-theme="light" aria-pressed="true"><span data-icon="sun"></span>Light</button><button class="theme-option" data-theme="dark" aria-pressed="false"><span data-icon="moon"></span>Dark</button></div><p class="settings-status" role="status" aria-live="polite"></p><section class="preferences" aria-labelledby="preferences-title"><h2 id="preferences-title">Preferences</h2><div class="preference-row"><span id="confirm-delete-label">Show individual comment deletion confirmation</span><button class="confirm-delete-toggle" role="switch" aria-checked="true" aria-labelledby="confirm-delete-label" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">On</span></button></div><p class="preferences-status" role="status" aria-live="polite"></p></section><div class="preamble-settings"><label for="preamble">Prompt Preamble</label><p id="preamble-help">Text before the comments. Markdown supported.</p><textarea id="preamble" rows="7" aria-describedby="preamble-help" spellcheck="false" disabled></textarea><div class="preamble-actions"><button class="primary save-preamble" disabled><span data-icon="save"></span>Save Preamble</button><button class="secondary reset-preamble" disabled><span data-icon="restore"></span>Restore Default</button></div><p class="preamble-status" role="status" aria-live="polite"></p></div></section>
+      <section class="settings" id="settings" aria-label="Extension settings" hidden><div class="settings-heading"><button class="settings-back"><span data-icon="back"></span>Back</button><h1>Settings</h1></div><h2 id="theme-label">Appearance</h2><div class="theme-options" role="group" aria-labelledby="theme-label"><button class="theme-option" data-theme="light" aria-pressed="true"><span data-icon="sun"></span>Light</button><button class="theme-option" data-theme="dark" aria-pressed="false"><span data-icon="moon"></span>Dark</button></div><p class="settings-status" role="status" aria-live="polite"></p><section class="preferences" aria-labelledby="preferences-title"><h2 id="preferences-title">Preferences</h2><div class="preference-row"><span id="confirm-delete-label">Show individual comment deletion confirmation</span><button class="confirm-delete-toggle" role="switch" aria-checked="true" aria-labelledby="confirm-delete-label" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">On</span></button></div><p class="preferences-status" role="status" aria-live="polite"></p><div class="preference-row component-context-preference"><span id="component-context-label">Capture component context</span><button class="component-context-toggle" role="switch" aria-checked="false" aria-labelledby="component-context-label" aria-describedby="component-context-help" disabled><span class="switch-track" aria-hidden="true"></span><span class="switch-value" aria-hidden="true">Off</span></button></div><p class="preference-help" id="component-context-help">Add React, Vue or Angular component names to new element comments when debug metadata is available, including deployments that retain Vue or Angular debug tools. Names can reveal application structure; Vue names may match source filename basenames. Source paths and files are not read. Review names before sharing. Turning this off leaves saved hints unchanged.</p><p class="component-context-status" role="status" aria-live="polite"></p></section><div class="preamble-settings"><label for="preamble">Prompt Preamble</label><p id="preamble-help">Text before the comments. Markdown supported.</p><textarea id="preamble" rows="7" aria-describedby="preamble-help" spellcheck="false" disabled></textarea><div class="preamble-actions"><button class="primary save-preamble" disabled><span data-icon="save"></span>Save Preamble</button><button class="secondary reset-preamble" disabled><span data-icon="restore"></span>Restore Default</button></div><p class="preamble-status" role="status" aria-live="polite"></p></div></section>
       <p class="status" role="status" aria-live="polite"></p>
       <button class="danger-button clear-copied" hidden><span data-icon="trash"></span>Delete All Comments</button>
-      <footer><section class="intro split-button" role="group" aria-label="Comment Actions"><button class="primary select split-main"><span data-icon="select"></span><span class="button-label">Select Element</span></button><button class="primary comment-options split-options" aria-label="More Comment Options" title="More Comment Options" aria-haspopup="menu" aria-expanded="false" aria-controls="comment-menu"><span data-icon="chevron"></span></button><div class="comment-menu split-menu" id="comment-menu" role="menu" aria-label="Comment Options" hidden><button class="menu-action capture" role="menuitem" tabindex="-1"><span data-icon="camera"></span><span class="button-label">Take Screenshot</span></button><button class="menu-action global-comment" role="menuitem" tabindex="-1"><span data-icon="comment"></span>New Global Comment</button></div></section><div class="footer-buttons split-button" role="group" aria-label="Prompt Actions"><button class="primary copy split-main" disabled><span data-icon="copy"></span>Copy Prompt</button><button class="primary copy-options split-options" aria-label="More Prompt Options" title="More Prompt Options" aria-haspopup="menu" aria-expanded="false" aria-controls="copy-menu" disabled><span data-icon="chevron"></span></button><div class="copy-menu split-menu" id="copy-menu" role="menu" aria-label="Prompt Options" hidden><button class="danger-button delete-all" role="menuitem" tabindex="-1" aria-disabled="true"><span data-icon="trash"></span>Delete All Comments</button></div></div><button class="text-button download" hidden><span data-icon="download"></span>Download Markdown + Images</button><a class="support-link" href="https://buymeacoffee.com/htxryan" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee (opens in new tab)" hidden>Buy me a coffee</a></footer>
+      <footer><section class="intro" role="group" aria-label="Comment Actions"><button class="primary comment-action select" aria-label="Select Element" title="Select Element"><span data-icon="select"></span></button><button class="primary comment-action capture" aria-label="Take Screenshot" title="Take Screenshot"><span data-icon="camera"></span></button><button class="primary comment-action global-comment" aria-label="New Global Comment" title="New Global Comment"><span data-icon="comment-add"></span></button><button class="primary comment-action comment-options" aria-label="More Comment Options" title="More Comment Options" aria-haspopup="menu" aria-expanded="false" aria-controls="comment-menu"><span data-icon="chevron"></span></button><div class="comment-menu split-menu" id="comment-menu" role="menu" aria-label="Comment Options" hidden></div></section><div class="footer-buttons split-button" role="group" aria-label="Prompt Actions"><button class="primary copy split-main" disabled><span data-icon="copy"></span>Copy Prompt</button><button class="primary copy-options split-options" aria-label="More Prompt Options" title="More Prompt Options" aria-haspopup="menu" aria-expanded="false" aria-controls="copy-menu" disabled><span data-icon="chevron"></span></button><div class="copy-menu split-menu" id="copy-menu" role="menu" aria-label="Prompt Options" hidden><button class="danger-button delete-all" role="menuitem" tabindex="-1" aria-disabled="true"><span data-icon="trash"></span>Delete All Comments</button></div></div><button class="text-button download" hidden><span data-icon="download"></span>Download Markdown + Images</button><a class="support-link" href="https://buymeacoffee.com/htxryan" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee (opens in new tab)" hidden>Buy me a coffee</a></footer>
       <div class="connection-shade" aria-hidden="true" hidden></div>
       <div class="connection-prompt" role="status" tabindex="-1" hidden><span data-icon="connect"></span><p class="connection-instruction">Click anmerko in the browser toolbar to connect this page.</p><p>Browser settings and protected pages cannot be annotated.</p></div>
       <dialog class="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description"><form method="dialog"><h2 id="delete-title">Delete All Comments?</h2><p id="delete-description"></p><div class="dialog-actions"><button class="secondary" value="cancel" autofocus><span data-icon="close"></span>Cancel</button><button class="danger-button" value="delete"><span data-icon="trash"></span><span class="button-label">Delete All Comments</span></button></div></form></dialog>
@@ -100,13 +102,20 @@ export function mount(runtime: Runtime): Controller {
   const preambleStatus = statusMessage($('.preamble-status'), abort.signal);
   const settingsStatus = statusMessage($('.settings-status'), abort.signal);
   const preferencesStatus = statusMessage($('.preferences-status'), abort.signal);
+  const componentContextStatus = statusMessage($('.component-context-status'), abort.signal);
   let notes: Note[] = [];
   let noteViews: Array<() => void> = [];
   let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }> | null = null;
   let disposeEditor: (() => void) | undefined;
+  let editorView: ReturnType<typeof createCommentCard> | undefined;
+  const componentCapture = componentContextCapture();
   let url = native ? '' : pageUrl();
   let title = native ? '' : document.title;
   let draft: Note | null = null;
+  let viewToken = native ? '' : createUuid();
+  let draftToken = '';
+  let targetToken = '';
+  let revision = 0;
   let composeOnPage = false;
   let composingFromMinimized = false;
   let picking = false;
@@ -127,6 +136,11 @@ export function mount(runtime: Runtime): Controller {
   let confirmIndividualDeletion = true;
   let deletionPreferenceVersion = 0;
   let deletionPreferenceSaving = false;
+  let componentContextEnabled: boolean = COMPONENT_CONTEXT_DEFAULT;
+  let componentContextReady = false;
+  let componentContextLoading = true;
+  let componentContextSaving = false;
+  let componentContextVersion = 0;
   let deleting = false;
   let connectionWarning = false;
   let captureBusy = false;
@@ -144,7 +158,24 @@ export function mount(runtime: Runtime): Controller {
   const setCopyMenu = splitMenu($('.footer-buttons'), $<HTMLButtonElement>('.copy-options'), $('#copy-menu'), abort.signal);
   const setCommentMenu = splitMenu($('.intro'), $<HTMLButtonElement>('.comment-options'), $('#comment-menu'), abort.signal);
 
-  function viewState(): ViewState { return { url, pageTitle: native ? title : document.title, draft, scope: scope.value, picking, settings, preambleDraft, capturing: captureBusy, composeOnPage }; }
+  function viewState(componentContextUpdate?: ComponentContextUpdate): ViewState {
+    return { url, pageTitle: native ? title : document.title, draft, scope: scope.value, picking, settings, preambleDraft,
+      capturing: captureBusy, composeOnPage, viewToken, draftToken, targetToken, revision, componentContextUpdate };
+  }
+  function beginDraftIdentity() {
+    draftToken = createUuid();
+    targetToken = draft?.element ? createUuid() : '';
+    ++revision;
+  }
+  function changeDraft(targetChanged = false) {
+    if (targetChanged) targetToken = draft?.element ? createUuid() : '';
+    ++revision;
+  }
+  function clearDraftIdentity() {
+    draftToken = '';
+    targetToken = '';
+    ++revision;
+  }
   function renderPreamble() {
     const field = $<HTMLTextAreaElement>('#preamble');
     const value = preambleDraft ?? preamble;
@@ -246,7 +277,7 @@ export function mount(runtime: Runtime): Controller {
   function applyDeletionPreference(value: unknown) {
     confirmIndividualDeletion = value !== false;
     $('.confirm-delete-toggle').setAttribute('aria-checked', String(confirmIndividualDeletion));
-    $('.switch-value').textContent = confirmIndividualDeletion ? 'On' : 'Off';
+    $('.confirm-delete-toggle .switch-value').textContent = confirmIndividualDeletion ? 'On' : 'Off';
   }
   async function loadDeletionPreference() {
     const version = deletionPreferenceVersion;
@@ -276,6 +307,64 @@ export function mount(runtime: Runtime): Controller {
       if (alive) $<HTMLButtonElement>('.confirm-delete-toggle').disabled = false;
     }
   });
+  function renderComponentPreference() {
+    const toggle = $<HTMLButtonElement>('.component-context-toggle');
+    toggle.setAttribute('aria-checked', String(componentContextReady && componentContextEnabled));
+    toggle.disabled = !runtime.captureComponentContext || componentContextLoading || componentContextSaving;
+    $('.component-context-toggle .switch-value').textContent = componentContextReady && componentContextEnabled ? 'On' : 'Off';
+  }
+  function applyComponentPreference(value: unknown) {
+    const wasEnabled = componentContextEnabled;
+    componentContextEnabled = !!runtime.captureComponentContext && value === true;
+    componentContextReady = true;
+    componentContextLoading = false;
+    if (!componentContextEnabled) {
+      componentCapture.cancel();
+      if (wasEnabled && draft?.element) changeDraft(true);
+    }
+    renderComponentPreference();
+    componentContextStatus();
+  }
+  async function loadComponentPreference() {
+    if (!runtime.captureComponentContext) {
+      componentContextLoading = false;
+      renderComponentPreference();
+      componentContextStatus('Requires the extension.', { persistent: true });
+      return;
+    }
+    const version = componentContextVersion;
+    try {
+      const value = await store.read(COMPONENT_CONTEXT_KEY);
+      if (alive && version === componentContextVersion) applyComponentPreference(value);
+    } catch {
+      if (alive && version === componentContextVersion) {
+        componentContextLoading = false;
+        renderComponentPreference();
+        componentContextStatus('Could not load component capture. It remains off until you save a preference.', { error: true, persistent: true });
+      }
+    }
+  }
+  $('.component-context-toggle').addEventListener('click', async () => {
+    if (!runtime.captureComponentContext || componentContextLoading || componentContextSaving) return;
+    const value = !(componentContextReady && componentContextEnabled);
+    if (!value) componentCapture.cancel();
+    const version = ++componentContextVersion;
+    componentContextSaving = true;
+    renderComponentPreference();
+    componentContextStatus();
+    try {
+      await store.write(COMPONENT_CONTEXT_KEY, value);
+      if (alive) {
+        if (version === componentContextVersion) applyComponentPreference(value);
+        componentContextStatus('Preference saved.');
+      }
+    } catch {
+      if (alive) componentContextStatus('Could not save component capture. Your previous setting is unchanged.', { error: true });
+    } finally {
+      componentContextSaving = false;
+      if (alive) renderComponentPreference();
+    }
+  });
   function renderView() {
     $('.settings').hidden = !settings;
     $('.connection-prompt').hidden = !connectionWarning || settings;
@@ -286,7 +375,6 @@ export function mount(runtime: Runtime): Controller {
     $('.content').hidden = settings;
     $('.footer-buttons').hidden = settings;
     $('.support-link').hidden = !settings;
-    if (settings) setCommentMenu(false);
     renderPrompt();
     scheduleDraw();
   }
@@ -297,16 +385,50 @@ export function mount(runtime: Runtime): Controller {
     renderView();
     syncState();
   }
-  function syncState() {
+  function syncState(componentContextUpdate?: ComponentContextUpdate) {
     if (applyingState || !alive || !integration) return;
-    void integration.sync(viewState(), presentation === 'remote').catch(connectionError);
+    void integration.sync(viewState(componentContextUpdate), presentation === 'remote').catch(connectionError);
   }
   function applyState(state: ViewState) {
     if (!alive) return;
+    const update = state.componentContextUpdate;
+    if (update) {
+      const value = normalizeComponentContext(update.value);
+      if (!value || update.viewToken !== viewToken || (state.viewToken && state.viewToken !== viewToken) || !draft?.element
+        || draft.id !== update.draftId || draftToken !== update.draftToken
+        || targetToken !== update.targetToken) return;
+      draft.element.componentContext = value;
+      editorView?.setComponentContext(value);
+      return;
+    }
+    const incomingView = typeof state.viewToken === 'string' ? state.viewToken : '';
+    const incomingRevision = Number.isSafeInteger(state.revision) && state.revision! >= 0 ? state.revision! : 0;
+    if ((!incomingView || incomingView === viewToken) && incomingRevision < revision) return;
+    const sameTarget = !!draft && !!state.draft && incomingView === viewToken
+      && draft.id === state.draft.id && state.draftToken === draftToken && state.targetToken === targetToken;
+    if (!sameTarget) componentCapture.cancel();
     applyingState = true;
     url = state.url;
     if (native) title = state.pageTitle ?? '';
-    draft = state.draft;
+    if (incomingView) viewToken = incomingView;
+    const previousDraft = draft;
+    if (sameTarget && previousDraft && state.draft) {
+      previousDraft.comment = state.draft.comment;
+      previousDraft.pageUrl = state.draft.pageUrl;
+      previousDraft.pageTitle = state.draft.pageTitle;
+      previousDraft.updatedAt = state.draft.updatedAt;
+      if (previousDraft.element && state.draft.element) {
+        const context = previousDraft.element.componentContext;
+        Object.assign(previousDraft.element, state.draft.element);
+        if (context && !state.draft.element.componentContext) previousDraft.element.componentContext = context;
+      }
+      draft = previousDraft;
+    } else draft = state.draft;
+    draftToken = typeof state.draftToken === 'string' && state.draftToken ? state.draftToken
+      : previousDraft?.id === draft?.id && draftToken ? draftToken : draft ? createUuid() : '';
+    targetToken = typeof state.targetToken === 'string' ? state.targetToken
+      : previousDraft?.id === draft?.id && targetToken ? targetToken : draft?.element ? createUuid() : '';
+    revision = incomingRevision;
     composeOnPage = !!draft && !!state.composeOnPage && (native || presentation === 'remote');
     captureBusy = !!state.capturing;
     preambleDraft = typeof state.preambleDraft === 'string' ? state.preambleDraft : null;
@@ -324,7 +446,7 @@ export function mount(runtime: Runtime): Controller {
     const changed = connectionWarning !== value;
     const restoreFocus = shadow.activeElement === prompt;
     connectionWarning = value;
-    if (value) { setCopyMenu(false); setCommentMenu(false); }
+    if (value) { setCopyMenu(false); }
     prompt.hidden = !value || settings;
     $('.connection-shade').hidden = prompt.hidden;
     if (value && changed && !settings) prompt.focus({ preventScroll: true });
@@ -336,13 +458,14 @@ export function mount(runtime: Runtime): Controller {
   }
   async function changeLayout(mode: string) {
     if (captureBusy) { status('Finish or cancel the screenshot first.'); return; }
-    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving) { status('Finishing your save…'); return; }
+    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving || componentContextSaving) { status('Finishing your save…'); return; }
     if (integration?.dockViaToolbar && !native && mode === 'dock') {
       setMinimized(false);
       status('Click anmerko in Firefox’s toolbar or Extensions menu to dock this panel.');
       return;
     }
     try {
+      componentCapture.cancel();
       await integration?.changeLayout(mode, viewState(), mobile);
     } catch (error) {
       console.error('anmerko layout:', error);
@@ -364,7 +487,6 @@ export function mount(runtime: Runtime): Controller {
   }
   function setMinimized(value: boolean) {
     setCopyMenu(false);
-    setCommentMenu(false);
     $('.panel').hidden = !native && ((presentation === 'remote' && !composeOnPage) || value || picking);
     $('.resume').hidden = native || presentation === 'remote' || !value || picking;
     $('.minimized-actions').hidden = $('.resume').hidden;
@@ -378,7 +500,7 @@ export function mount(runtime: Runtime): Controller {
   let minimizeAnimation: Animation | undefined;
   async function minimize() {
     if (minimizing || captureBusy) return;
-    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving) { status('Finishing your save…'); return; }
+    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving || componentContextSaving) { status('Finishing your save…'); return; }
     // Firefox must close its sidebar within the original user gesture.
     if (native && integration?.dockViaToolbar) { await changeLayout('minimized'); return; }
     const panel = $('.panel');
@@ -448,7 +570,9 @@ export function mount(runtime: Runtime): Controller {
     if (value) locatedId = null;
     setMinimized(false);
     $('.picker-bar').hidden = !value || native;
-    $('.select .button-label').textContent = value ? 'Cancel Selection' : 'Select Element';
+    const selectLabel = value ? 'Cancel Selection' : 'Select Element';
+    $<HTMLButtonElement>('.select').setAttribute('aria-label', selectLabel);
+    $<HTMLButtonElement>('.select').title = selectLabel;
     touch = null;
     touchPointers.clear();
     highlighted = null;
@@ -543,7 +667,16 @@ export function mount(runtime: Runtime): Controller {
     const hierarchy = !native && missingHierarchy ? liveHierarchy(note) : null;
     const displayNote: Note = hierarchy && note.element
       ? { ...note, element: { ...note.element, hierarchy } } : note;
-    const view = createCommentCard(displayNote, number, editing);
+    const view = createCommentCard(displayNote, number, editing, editing ? () => {
+      componentCapture.cancel();
+      if (draft?.element && draft.id === note.id) {
+        delete draft.element.componentContext;
+        changeDraft(true);
+        view.setComponentContext();
+        syncState();
+        $<HTMLTextAreaElement>('#comment')?.focus({ preventScroll: true });
+      }
+    } : undefined);
     if (native && missingHierarchy && samePage(note.pageUrl, url)) {
       // The sidebar has its own DOM. Ask the connected page for display-only
       // ancestry; do not scroll, highlight, or rewrite the saved comment.
@@ -627,12 +760,14 @@ export function mount(runtime: Runtime): Controller {
   function editNote(note: Note) {
     if (draft) { status('Save or cancel your current draft before editing another comment.', true); return; }
     setMinimized(false);
+    componentCapture.cancel();
     draft = structuredClone(note);
+    beginDraftIdentity();
     composeOnPage = presentation === 'remote';
     setSettings(false);
     renderEditor();
   }
-  function locateNote(note: Note, parent: boolean) {
+  function locateNote(note: Note, parent: boolean, identity?: DraftTargetIdentity) {
     if (note.kind === 'page' || !samePage(note.pageUrl, pageUrl())) return null;
     if (note.screenshot) {
       if (parent) return null;
@@ -646,7 +781,19 @@ export function mount(runtime: Runtime): Controller {
       if (!target || target === document.documentElement) return null;
       target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
       highlighted = parent ? target : null;
-      if (parent) { drawHighlight(); return captureElement(target); }
+      if (parent) {
+        drawHighlight();
+        const captured = captureElement(target);
+        if (identity && identity.viewToken === viewToken && draft?.element && draft.id === identity.draftId
+          && (draftToken === identity.draftToken || revision <= identity.revision)) {
+          draftToken = identity.draftToken;
+          targetToken = identity.targetToken;
+          revision = Math.max(revision, identity.revision);
+          draft.element = captured;
+          enrichDraft(target);
+        }
+        return captured;
+      }
     }
     locatedId = note.id;
     drawHighlight();
@@ -662,12 +809,11 @@ export function mount(runtime: Runtime): Controller {
     const slot = $('.editor-slot');
     disposeEditor?.();
     disposeEditor = undefined;
+    editorView = undefined;
     slot.replaceChildren();
     $<HTMLButtonElement>('.select').disabled = !!draft || captureBusy || (native && !url);
     $<HTMLButtonElement>('.capture').disabled = !runtime.capture || !!draft || captureBusy || (native && !url);
-    $<HTMLButtonElement>('.comment-options').disabled = !!draft || captureBusy || !url;
     $<HTMLButtonElement>('.global-comment').disabled = !!draft || captureBusy || !url;
-    if ($<HTMLButtonElement>('.comment-options').disabled) setCommentMenu(false);
     for (const selector of ['.dock', '.minimize', '.settings-button', '.close']) $<HTMLButtonElement>(selector).disabled = captureBusy;
     scope.disabled = captureBusy || (native && !url);
     if (!draft) {
@@ -682,7 +828,7 @@ export function mount(runtime: Runtime): Controller {
     if (native && composeOnPage) {
       slot.innerHTML = '<div class="draft-on-page"><p>Write your comment in the editor on the page.</p><button class="secondary edit-in-sidebar" type="button"><span data-icon="edit"></span>Edit in Sidebar</button></div>';
       renderIcons(slot);
-      slot.querySelector('.edit-in-sidebar')!.addEventListener('click', () => { composeOnPage = false; renderEditor(); });
+      slot.querySelector('.edit-in-sidebar')!.addEventListener('click', () => { composeOnPage = false; changeDraft(); renderEditor(); });
       renderNotes();
       syncState();
       return;
@@ -690,6 +836,7 @@ export function mount(runtime: Runtime): Controller {
     const filtered = visibleNotes();
     const index = filtered.findIndex(note => note.id === draft!.id);
     const view = commentView(draft, index < 0 ? filtered.length + 1 : index + 1, true);
+    editorView = view;
     disposeEditor = view.dispose;
     slot.append(view.card);
     const textarea = slot.querySelector('textarea')!;
@@ -701,22 +848,46 @@ export function mount(runtime: Runtime): Controller {
     parentButton.disabled = saving || !samePage(draft.pageUrl, url) || (!native && (!parent || parent === document.documentElement));
     parentButton.addEventListener('click', async () => {
       if (native && draft?.element && !saving) {
+        const owner = draft;
+        componentCapture.cancel();
+        delete owner.element.componentContext;
+        changeDraft(true);
+        editorView?.setComponentContext();
+        const identity: DraftTargetIdentity = { viewToken, draftId: owner.id, draftToken, targetToken, revision };
+        const requestedUrl = url;
+        parentButton.disabled = true;
+        syncState();
         try {
-          const element = await integration!.locate(draft, true);
-          if (element && typeof element !== 'boolean' && draft?.element) { draft.element = element; renderEditor(); }
-          else { parentButton.disabled = true; status('No parent element is available on this page.'); }
-        } catch (error) { connectionError(error); }
-      } else if (draft?.element && parent && !saving && samePage(draft.pageUrl, pageUrl())) { draft.element = captureElement(parent); highlighted = parent; drawHighlight(); renderEditor(); }
+          const element = await integration!.locate(owner, true, identity);
+          if (draft === owner && targetToken === identity.targetToken && url === requestedUrl) {
+            if (element && typeof element !== 'boolean' && draft.element) {
+              draft.element = element;
+              changeDraft();
+              // The page controller already owns this target and its pending
+              // enrichment. Avoid echoing the generic parent snapshot back and
+              // cancelling that lookup; later typing still syncs normally.
+              applyingState = true;
+              try { renderEditor(); } finally { applyingState = false; }
+            } else { parentButton.disabled = true; status('No parent element is available on this page.'); }
+          }
+        } catch (error) {
+          if (draft === owner && targetToken === identity.targetToken && url === requestedUrl) connectionError(error);
+        }
+      } else if (draft?.element && parent && !saving && samePage(draft.pageUrl, pageUrl())) {
+        componentCapture.cancel();
+        draft.element = captureElement(parent); changeDraft(true); highlighted = parent; drawHighlight(); renderEditor();
+        enrichDraft(parent);
+      }
     });
     textarea.disabled = saving;
     slot.querySelector<HTMLButtonElement>('.save')!.disabled = saving;
     slot.querySelector<HTMLButtonElement>('.cancel')!.disabled = saving;
-    textarea.addEventListener('input', () => { if (draft) { draft.comment = textarea.value; syncState(); } });
+    textarea.addEventListener('input', () => { if (draft) { draft.comment = textarea.value; changeDraft(); syncState(); } });
     textarea.addEventListener('keydown', event => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void commitDraft(); }
     });
     slot.querySelector('form')!.addEventListener('submit', event => { event.preventDefault(); void commitDraft(); });
-    slot.querySelector('.cancel')!.addEventListener('click', () => { if (!saving) { draft = null; highlighted = null; renderEditor(); drawHighlight(); status(); } });
+    slot.querySelector('.cancel')!.addEventListener('click', () => { if (!saving) { componentCapture.cancel(); draft = null; clearDraftIdentity(); highlighted = null; renderEditor(); drawHighlight(); status(); } });
     renderNotes();
     slot.scrollIntoView({ block: 'nearest' });
     textarea.focus();
@@ -725,6 +896,7 @@ export function mount(runtime: Runtime): Controller {
   async function commitDraft() {
     if (!draft || saving) return;
     if (!draft.comment.trim()) { status('Write a comment before saving.', true); return; }
+    componentCapture.cancel();
     saving = true;
     const save = $<HTMLButtonElement>('.save');
     save.disabled = true;
@@ -735,7 +907,7 @@ export function mount(runtime: Runtime): Controller {
     try {
       await saveNote(store, saved);
       if (!alive) return;
-      if (draft?.id === saved.id) draft = null;
+      if (draft?.id === saved.id) { draft = null; clearDraftIdentity(); }
       highlighted = null;
       renderEditor();
       await refresh();
@@ -767,6 +939,7 @@ export function mount(runtime: Runtime): Controller {
       if (screenshot && alive) {
         const time = new Date().toISOString();
         draft = { id: createUuid(), ...source, comment: '', screenshot, createdAt: time, updatedAt: time };
+        beginDraftIdentity();
         composeOnPage = presentation === 'remote' || composingFromMinimized;
       }
     } catch (error) {
@@ -776,15 +949,15 @@ export function mount(runtime: Runtime): Controller {
       if (presentation === 'remote') integration?.captureError(message);
     } finally {
       captureBusy = false; captureAbort = null;
-      if (alive) { renderEditor(); if (!draft && $('.minimized-actions').hidden) $('.comment-options').focus(); }
+      if (alive) { renderEditor(); if (!draft && $('.minimized-actions').hidden) $('.select').focus(); }
     }
   }
   function startGlobalComment() {
     if (!alive || draft || captureBusy || !url || connectionWarning) return;
-    setCommentMenu(false);
     const time = new Date().toISOString();
     draft = { id: createUuid(), kind: 'page', pageUrl: native ? url : pageUrl(), pageTitle: native ? title : document.title,
       comment: '', createdAt: time, updatedAt: time };
+    beginDraftIdentity();
     // Open synchronously in the document that owns the menu and keyboard focus.
     composeOnPage = composingFromMinimized;
     setPicking(false); setSettings(false); status();
@@ -795,14 +968,32 @@ export function mount(runtime: Runtime): Controller {
   }
   function selectElement(element?: Element) {
     if (!element || !element.isConnected || element === document.documentElement) return;
+    componentCapture.cancel();
     const time = new Date().toISOString();
     draft = { id: createUuid(), pageUrl: pageUrl(), pageTitle: document.title,
       comment: '', element: captureElement(element), createdAt: time, updatedAt: time };
+    beginDraftIdentity();
     composeOnPage = presentation === 'remote' || composingFromMinimized;
     setPicking(false);
     highlighted = element;
     drawHighlight();
     renderEditor();
+    enrichDraft(element);
+  }
+  function enrichDraft(element: Element) {
+    const owner = draft;
+    const target = owner?.element;
+    if (!owner || !target || !componentContextReady || !componentContextEnabled || componentContextSaving || native) return;
+    const capturedUrl = pageUrl();
+    const identity: DraftTargetIdentity = { viewToken, draftId: owner.id, draftToken, targetToken, revision };
+    componentCapture.start(runtime, element, target.selectorPath,
+      () => alive && !saving && draft === owner && draft.element === target && pageUrl() === capturedUrl
+        && componentContextReady && componentContextEnabled && !componentContextSaving,
+      value => {
+        target.componentContext = value;
+        editorView?.setComponentContext(value);
+        syncState({ ...identity, value });
+      });
   }
   document.addEventListener('pointermove', event => {
     if (!picking) return;
@@ -878,7 +1069,7 @@ export function mount(runtime: Runtime): Controller {
   window.visualViewport?.addEventListener('resize', updateViewport, { signal: abort.signal });
   window.visualViewport?.addEventListener('scroll', updateViewport, { signal: abort.signal });
   $('.select').addEventListener('click', () => { if (!draft) { status(); setPicking(!picking); if (!native) $('.picker-bar button').focus(); } });
-  $('.capture').addEventListener('click', event => { if (event.isTrusted) { setCommentMenu(false); void startCapture(); } });
+  $('.capture').addEventListener('click', event => { if (event.isTrusted) { void startCapture(); } });
   $('.global-comment').addEventListener('click', startGlobalComment);
   function cancelSelection() {
     setPicking(false);
@@ -983,7 +1174,7 @@ export function mount(runtime: Runtime): Controller {
     try {
       await removeNote(store, note.id);
       if (!alive) return;
-      if (draft?.id === note.id) { draft = null; renderEditor(); }
+      if (draft?.id === note.id) { draft = null; clearDraftIdentity(); renderEditor(); }
       await refresh();
       status('Comment deleted.');
     } catch (error) { if (alive) showError(error); }
@@ -1010,6 +1201,7 @@ export function mount(runtime: Runtime): Controller {
       copiedComments = null;
       if (draft && confirmed.some((note, index) => note.id === draft?.id && results[index].status === 'fulfilled')) {
         draft = null;
+        clearDraftIdentity();
         highlighted = null;
         renderEditor();
       }
@@ -1027,6 +1219,7 @@ export function mount(runtime: Runtime): Controller {
     } catch { status('Could not download the files. Your comments are still saved.', true); }
   });
   const unsubscribe = store.subscribe(changes => {
+    if (changes[COMPONENT_CONTEXT_KEY]) { ++componentContextVersion; applyComponentPreference(changes[COMPONENT_CONTEXT_KEY].newValue); }
     if (changes[CONFIRM_DELETE_KEY]) { ++deletionPreferenceVersion; applyDeletionPreference(changes[CONFIRM_DELETE_KEY].newValue); }
     if (changes[THEME_KEY]) { ++themeVersion; applyTheme(changes[THEME_KEY].newValue); }
     if (changes[PREAMBLE_KEY]) { ++preambleVersion; applyPreamble(changes[PREAMBLE_KEY].newValue); }
@@ -1038,8 +1231,11 @@ export function mount(runtime: Runtime): Controller {
     if (title !== document.title) { title = document.title; syncState(); }
     const current = pageUrl();
     if (current !== url) {
+      componentCapture.cancel();
       captureAbort?.abort();
       url = current;
+      viewToken = createUuid();
+      if (draft?.element) changeDraft(true);
       locatedId = null;
       setPicking(false);
       if (draft) renderEditor();
@@ -1051,7 +1247,7 @@ export function mount(runtime: Runtime): Controller {
   }, 650);
   function close(): boolean {
     if (!alive) return true;
-    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving) { setMinimized(false); status('Finishing your save…'); return false; }
+    if (saving || preambleSaving || themeSaving || deletionPreferenceSaving || componentContextSaving) { setMinimized(false); status('Finishing your save…'); return false; }
     if (draft?.comment.trim()) { setMinimized(false); status('Save or cancel your draft before closing.', true); setSettings(false); return false; }
     if (preambleDraft !== null) { setMinimized(false); setSettings(true); status('Save or restore your preamble before closing.', true); return false; }
     if (native) { void changeLayout('closed'); return false; }
@@ -1061,6 +1257,7 @@ export function mount(runtime: Runtime): Controller {
   function dispose() {
     if (!alive) return;
     alive = false;
+    componentCapture.cancel();
     minimizeAnimation?.cancel();
     captureAbort?.abort();
     abort.abort();
@@ -1081,6 +1278,10 @@ export function mount(runtime: Runtime): Controller {
   }
   function present(mode: PresentationMode, dock: boolean, state?: ViewState, notifySidebar = true) {
     if (!alive) return;
+    if (mode !== presentation) {
+      componentCapture.cancel();
+      if (!state && draft?.element) changeDraft(true);
+    }
     if (mode !== 'remote') captureAbort?.abort();
     canDock = dock && !mobile;
     presentation = mobile && mode === 'remote' ? 'overlay' : mode;
@@ -1098,12 +1299,16 @@ export function mount(runtime: Runtime): Controller {
     ready: Promise.resolve(), close, dispose, reveal, viewState, applyState, present, startCapture, status,
     sidebarClosed() {
       if (!alive || presentation !== 'remote') return;
+      componentCapture.cancel();
+      if (draft?.element) changeDraft(true);
       captureAbort?.abort();
       presentation = 'minimized'; returnToDock = true; composeOnPage = false; renderEditor(); setPicking(false); setMinimized(true);
     },
     locate: locateNote,
     hierarchy: liveHierarchy,
     connectionFailed(error) {
+      viewToken = createUuid();
+      revision = 0;
       applyState({ url: '', draft: null, scope: 'page', picking: false, settings: false });
       $<HTMLButtonElement>('.select').disabled = true;
       $<HTMLButtonElement>('.capture').disabled = true;
@@ -1123,7 +1328,6 @@ export function mount(runtime: Runtime): Controller {
       // The native panel has no page identity until its startup snapshot arrives.
       $<HTMLButtonElement>('.select').disabled = true;
       $<HTMLButtonElement>('.capture').disabled = true;
-      $<HTMLButtonElement>('.comment-options').disabled = true;
       $<HTMLButtonElement>('.global-comment').disabled = true;
       scope.disabled = true;
       setConnectionWarning(true);
@@ -1135,6 +1339,7 @@ export function mount(runtime: Runtime): Controller {
   applyTheme('light');
   void loadTheme();
   void loadDeletionPreference();
+  void loadComponentPreference();
   renderPreamble();
   void loadPreamble();
   void refresh();

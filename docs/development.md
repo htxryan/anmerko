@@ -1,11 +1,12 @@
 # Build and test
 
-Use Node.js 24+ from the repository root. Work in a git worktree and submit changes through a PR. **Current browser targets are Chrome, Edge, and Firefox on desktop, Edge and Firefox for Android, and Edge and Orion for iPhone.**
+Use Node.js 24.15.0+ from the repository root (the isolated Angular fixture compiler requires that patch or Node 26+). Work in a git worktree and submit changes through a PR. **Current browser targets are Chrome, Edge, and Firefox on desktop, Edge and Firefox for Android, and Edge and Orion for iPhone.**
 
 ## Quick start
 
 ```sh
 npm ci
+npm run test:context-fixtures:setup
 npx playwright install chromium
 npm run check
 npm run demo
@@ -18,6 +19,7 @@ Its local test page is maintained at `tests/fixtures/demo/index.html`.
 | --- | --- |
 | `npm run build` | Build the unpacked extension in `dist/` |
 | `npm run check` | Lint, typecheck, build, installer tests, and Chromium tests |
+| `npm run test:context-fixtures:setup` | Install locked React/Vue and isolated Angular test dependencies and build local fixtures |
 | `npm run package` | Build a versioned ZIP in `artifacts/` |
 | `npm run package:orion` | Build `artifacts/anmerko-<version>-orion.zip` for folder-based installation in Orion on iPhone |
 | `npm run test:desktop -- --browser chrome` | Test installed Chrome with the production manifest |
@@ -91,6 +93,10 @@ The demo imports the same controller and `src/panel.css` as the extension. Keep 
 Guard pending saves and drafts before closing. Disposal removes listeners, subscriptions, and timers. Chrome can reuse a sidebar after `pagehide`; keep its controller until explicit disposal or context destruction.
 
 Chromium tests use disposable profiles and test-only activation/capture permissions; release packages exclude those permissions. Branded Chrome checks use the unchanged production manifest.
+
+Component-context fixtures use port 4177 and strict CSP, with no CDN requests. The shared fixture package pins React/React DOM 18.3.1, 19.2.7 and 19.3.0 plus Vue/compiler-sfc 3.5.43; Angular 22.1.7 has an isolated AOT compiler package. The root setup command installs their committed lockfiles with lifecycle scripts disabled, explicitly rebuilds the reviewed Angular esbuild binary, and builds all modes. React aliases use explicit matching bundler resolution; `--legacy-peer-deps` applies only to that intentional multi-version test package. Neither framework runtimes nor their compilers ship with the extension or demo.
+
+Component names cross the page boundary only as a bounded, independently versioned DTO. A fixed registry runs the three serialized MAIN-world readers on an exact marked target; one valid response and two clean no-matches are required. Any uncertainty omits the hint. The global preference is off by default and rechecked before each probe and before returning. The unsaved draft owns cancellation, so saved snapshots are never backfilled. This avoids a persistent page listener or DevTools hook and keeps existing host permissions unchanged.
 
 Current extension data and page integration use the `anmerko:` storage prefix, `anmerko-sidebar` runtime port, and `anmerko-overlay` / `anmerko-image` hosts. The namespace intentionally starts clean. The owner confirmed the prelaunch preview had zero real users, so no legacy data migration or preview-to-store validation is required. Preserve historical profiles and packages as evidence, use disposable profiles for testing, and keep ordinary anmerko updates compatible with data in the same installation and profile.
 

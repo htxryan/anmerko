@@ -83,8 +83,7 @@ test.describe('ordinary HTTP comments', () => {
         await panel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
         await page.locator('#hero-title').click();
       } else {
-        await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-        await panel(page).getByRole('menuitem', { name: kind === 'global' ? 'New Global Comment' : 'Take Screenshot', exact: true }).click();
+        await panel(page).getByRole('button', { name: kind === 'global' ? 'New Global Comment' : 'Take Screenshot', exact: true }).click();
         if (kind === 'screenshot') {
           const dialog = page.getByRole('dialog', { name: 'Select screenshot region' });
           await expect(dialog).toBeVisible();
@@ -119,39 +118,23 @@ test.describe('ordinary HTTP comments', () => {
   });
 });
 
-test('comment menu supports keyboard navigation, dismissal, page scope and mixed prompt export', async ({ page, context, activate }) => {
+test('comment button bar focuses actions in order, page scope and mixed prompt export', async ({ page, context, activate }) => {
   await activate(page);
-  const toggle = panel(page).getByRole('button', { name: 'More Comment Options' });
-  const capture = panel(page).getByRole('menuitem', { name: 'Take Screenshot' });
-  const global = panel(page).getByRole('menuitem', { name: 'New Global Comment' });
-  const journey = panel(page).getByRole('menuitem', { name: 'Record journey', exact: true });
-  await toggle.press('ArrowDown');
+  const select = panel(page).getByRole('button', { name: 'Select Element', exact: true });
+  const capture = panel(page).getByRole('button', { name: 'Take Screenshot', exact: true });
+  const global = panel(page).getByRole('button', { name: 'New Global Comment', exact: true });
+  await expect(select).toBeVisible();
+  await expect(capture).toBeVisible();
+  await expect(global).toBeVisible();
+  await select.focus();
+  await expect(select).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(capture).toBeFocused();
-  const last = await journey.count() ? journey : global;
-  await capture.press('ArrowDown');
+  await page.keyboard.press('Tab');
   await expect(global).toBeFocused();
-  await global.press('ArrowDown');
-  if (last === journey) {
-    await expect(journey).toBeFocused();
-    await journey.press('ArrowDown');
-  }
-  await expect(capture).toBeFocused();
-  await capture.press('End');
-  await expect(last).toBeFocused();
-  await last.press('Home');
-  await expect(capture).toBeFocused();
-  await capture.press('Escape');
-  await expect(toggle).toBeFocused();
-  await toggle.press('ArrowUp');
-  await expect(last).toBeFocused();
-  await last.press('Tab');
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await toggle.click();
-  await page.locator('#hero-title').click();
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await toggle.click();
-  await page.screenshot({ path: 'artifacts/comment-split-menu.png' });
-  await global.click();
+  await global.press('Enter');
+  await expect(panel(page).getByLabel('Comment', { exact: true })).toBeFocused();
+  await page.screenshot({ path: 'artifacts/comment-button-bar.png' });
   await page.keyboard.type('Overall page feedback.');
   await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
   await panel(page).getByRole('button', { name: 'Select Element' }).click();
@@ -295,8 +278,7 @@ test.describe('screenshot comments', () => {
       });
       expect(await page.evaluate(() => innerWidth - visualViewport!.width)).toBe(24);
       await activate(page);
-      await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-      await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).click();
+      await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
       await expect(page.getByRole('dialog', { name: 'Select screenshot region' })).toBeVisible();
       await page.mouse.move(110, 110); await page.mouse.down(); await page.mouse.move(290, 210, { steps: 8 }); await page.mouse.up();
       await page.getByRole('button', { name: 'Use Screenshot' }).click();
@@ -328,8 +310,7 @@ test.describe('screenshot comments', () => {
     // Website scripts cannot trigger capture through a synthetic click.
     await page.locator('.capture').evaluate((el: HTMLElement) => el.click());
     await expect(page.locator('.capture-layer')).toHaveCount(0);
-    await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-    await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).click();
+    await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
     await expect(page.getByRole('dialog', { name: 'Select screenshot region' })).toBeVisible();
     await expect(page.locator('.capture-use')).toBeDisabled();
     expect(await page.locator('anmerko-image').evaluate(el => el.shadowRoot)).toBeNull();
@@ -386,8 +367,7 @@ test.describe('screenshot comments', () => {
 
   test('capture cancellation, resize and denied access restore the panel without saving an image', async ({ page, worker, activate }) => {
     await activate(page);
-    await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-    await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).click();
+    await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
     await expect(page.locator('.capture-layer')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(panel(page)).toBeVisible();
@@ -395,9 +375,8 @@ test.describe('screenshot comments', () => {
     // the UI's error if needed. While capture is pending, the panel is hidden;
     // a second click would wait indefinitely behind the successful overlay.
     await expect(async () => {
-      const capture = panel(page).getByRole('menuitem', { name: 'Take Screenshot', includeHidden: true });
+      const capture = panel(page).getByRole('button', { name: 'Take Screenshot' });
       if (await page.locator('.capture-layer').count() === 0 && await panel(page).isVisible() && await capture.isEnabled()) {
-        await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
         await capture.click({ timeout: 1500 });
       }
       await expect(page.locator('.capture-layer')).toBeVisible({ timeout: 1500 });
@@ -408,11 +387,10 @@ test.describe('screenshot comments', () => {
     await expect(notes(page)).toHaveCount(0);
     await worker.evaluate(() => { chrome.tabs.captureVisibleTab = async () => { throw new Error('Capture permission denied'); }; });
     await expect(async () => {
-      await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-      await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).click();
+      await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
       await expect(panel(page).locator('.status')).toContainText('Capture permission denied', { timeout: 1500 });
     }).toPass();
-    await expect(panel(page).getByRole('menuitem', { name: 'Take Screenshot', includeHidden: true })).toBeEnabled();
+    await expect(panel(page).getByRole('button', { name: 'Take Screenshot' })).toBeEnabled();
     await expect(page.locator('.capture-layer')).toHaveCount(0);
   });
 
@@ -428,8 +406,7 @@ test.describe('screenshot comments', () => {
         return capture(windowId, options);
       }) as typeof chrome.tabs.captureVisibleTab;
     });
-    await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-    await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).click();
+    await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
     await expect.poll(() => worker.evaluate(() => !!(globalThis as any).captureStarted)).toBe(true);
     await other.bringToFront(); await page.bringToFront();
     await worker.evaluate(() => (globalThis as any).releaseCapture());
@@ -446,8 +423,7 @@ test.describe('screenshot comments', () => {
       document.head.append(meta);
     });
     await activate(page);
-    await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
-    await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).click();
+    await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
     await expect(page.locator('.capture-layer')).toBeVisible();
     await page.mouse.move(100, 100); await page.mouse.down(); await page.mouse.move(300, 240); await page.mouse.up();
     await page.getByRole('button', { name: 'Use Screenshot' }).click();
@@ -459,8 +435,7 @@ test.describe('screenshot comments', () => {
     test('mobile starts with an adjustable box, supports touch handles and keeps docking unavailable', async ({ page, context, activate }) => {
       await activate(page);
       await expect(panel(page).getByRole('button', { name: 'Dock sidebar' })).toHaveCount(0);
-      await panel(page).getByRole('button', { name: 'More Comment Options' }).tap();
-      await panel(page).getByRole('menuitem', { name: 'Take Screenshot' }).tap();
+      await panel(page).getByRole('button', { name: 'Take Screenshot' }).tap();
       await expect(page.locator('.capture-region')).toBeVisible();
       await page.locator('.capture-layer').evaluate(layer => {
         (window as any).captureEvents = [];

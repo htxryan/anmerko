@@ -1,4 +1,11 @@
 import { activateTab } from './activate';
+import {
+  COMPONENT_CONTEXT_KEY,
+  COMPONENT_CONTEXT_MESSAGE_TYPE,
+  createComponentContextBroker,
+  createExtensionComponentContextProbeRunner,
+} from './component-context-bridge';
+import { COMPONENT_CONTEXT_PROBES } from './component-context-dispatch';
 import { extensionApi } from './platform';
 import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
@@ -73,6 +80,17 @@ async function changeLayout(tabId: number, windowId: number, mode: LayoutMode, s
   }
 }
 
+const componentContextBroker = createComponentContextBroker({
+    extensionId: api.runtime.id,
+    probes: COMPONENT_CONTEXT_PROBES,
+    runProbe: createExtensionComponentContextProbeRunner(api),
+    readPreference: async () => (await api.storage.local.get(COMPONENT_CONTEXT_KEY))[COMPONENT_CONTEXT_KEY],
+});
+api.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[COMPONENT_CONTEXT_KEY]) {
+    componentContextBroker.preferenceChanged(changes[COMPONENT_CONTEXT_KEY].newValue);
+  }
+});
 api.action.onClicked.addListener(tab => {
   if (journeys?.stopIfRecording()) return;
   if (journeys?.openReviewIfAvailable()) return;
@@ -110,6 +128,12 @@ api.action.onClicked.addListener(tab => {
 });
 api.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== api.runtime.id) return;
+  if (message?.type === COMPONENT_CONTEXT_MESSAGE_TYPE) {
+    const operation = componentContextBroker.handle(message, sender);
+    if (!operation) return;
+    operation.then(value => respond({ ok: true, value }), () => respond({ ok: true, value: null }));
+    return true;
+  }
   const fromPage = !!sender.tab?.id && /^https?:/.test(sender.url || '');
   const reply = (operation: Promise<unknown>) => {
     operation.then(value => respond({ ok: true, value }), error => respond({ ok: false, error: String(error.message || error) }));

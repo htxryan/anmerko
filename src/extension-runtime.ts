@@ -1,12 +1,22 @@
 import { closeDock } from './docking';
+import { requestComponentContext } from './component-context-bridge';
 import styles from './panel.css';
 import journeyStyles from './journey.css';
-import type { Presentation, Runtime } from './runtime';
+import type { DraftTargetIdentity, Presentation, Runtime } from './runtime';
 
 import { extensionApi } from './platform';
 import type { Store } from './runtime';
 import { journeysEnabled } from './journey-feature';
 import { createJourneyClient } from './journey-client';
+
+function draftTargetIdentity(value: unknown): DraftTargetIdentity | undefined {
+  if (!value || typeof value !== 'object' || Object.keys(value).length !== 5) return;
+  const identity = value as Record<string, unknown>;
+  if (!['viewToken', 'draftId', 'draftToken', 'targetToken'].every(key => typeof identity[key] === 'string'
+    && (identity[key] as string).length > 0 && (identity[key] as string).length <= 128)
+    || !Number.isSafeInteger(identity.revision) || (identity.revision as number) < 0) return;
+  return identity as DraftTargetIdentity;
+}
 
 export function extensionStore(): Store {
   const api = extensionApi();
@@ -77,7 +87,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       const result = await request;
       if (!result?.ok) throw new Error(result?.error || 'Could not change layout.');
     },
-    locate: (note, parent) => pageCommand(parent ? 'ANMERKO_PARENT' : 'ANMERKO_LOCATE', { note }),
+    locate: (note, parent, identity) => pageCommand(parent ? 'ANMERKO_PARENT' : 'ANMERKO_LOCATE', { note, identity }),
     hierarchy: note => pageCommand('ANMERKO_HIERARCHY', { note }),
     startCapture: () => pageCommand('ANMERKO_START_CAPTURE'),
     captureError: error => { void api.runtime.sendMessage({ type: 'ANMERKO_CAPTURE_ERROR', error }).catch(() => {}); },
@@ -98,7 +108,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         else if (message?.type === 'ANMERKO_SIDEBAR_CLOSED') { controller.sidebarClosed(); respond(true); }
         else if (message?.type === 'ANMERKO_HIERARCHY') respond(controller.hierarchy(message.note));
         else if (message?.type === 'ANMERKO_LOCATE' || message?.type === 'ANMERKO_PARENT') {
-          respond(controller.locate(message.note, message.type === 'ANMERKO_PARENT'));
+          respond(controller.locate(message.note, message.type === 'ANMERKO_PARENT', draftTargetIdentity(message.identity)));
         }
       };
       api.runtime.onMessage.addListener(messageListener);
@@ -216,5 +226,6 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       if (!result?.ok) throw new Error(result?.error || 'Could not capture this page.');
       return result.value;
     },
+    captureComponentContext: (element, selectorPath, signal) => requestComponentContext(api.runtime, element, selectorPath, signal),
   };
 }

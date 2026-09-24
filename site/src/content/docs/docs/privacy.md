@@ -13,6 +13,10 @@ Element capture excludes form values and editable text. Other captured text and 
 
 A journey records only after explicit start and stop. It stores clicks with target context, page URLs, per-step screenshots, your summaries, and — only when you opt in per launch — committed field changes, never keystrokes. Password, payment, and suspected secret fields are always skipped. Screenshots and full URLs can still show visible values, so every image and URL stays reviewable, maskable, and removable before export. Solid masks flatten pixels irreversibly; redacted text leaves the draft entirely. Saved snapshots and temporary session state stay in the browser profile; deleting a journey removes its snapshot.
 
+Optional **Capture component context** is off by default. When enabled, new element comments may include a bounded path of React, Vue, or Angular component names and a framework/debug-metadata label. Names may reveal application structure; Vue's inferred names can match source filename basenames. The reader does not collect props, state, event handlers, inputs, signals, source paths, source files, stacks, or full framework objects. Angular's own inspection helpers may populate its debug cache while finding ownership.
+
+These names are untrusted website data. Debug metadata can remain exposed on deployed Vue or Angular sites; its presence does not prove a site is a development build. Hints stay local with the comment and appear in exports you request. Turning capture off leaves saved hints intact; remove a hint while editing and save to delete it from that comment.
+
 You can edit, delete, and export feedback. Deleting comments does not delete exported files. There is no sync, import, or automatic transfer between profiles/installations. Simultaneous edits use the last saved change.
 
 anmerko’s use of information received from Google APIs follows the [Chrome Web Store User Data Policy](https://developer.chrome.com/docs/webstore/program-policies/policies) and [Limited Use requirements](https://developer.chrome.com/docs/webstore/program-policies/limited-use).
@@ -41,4 +45,4 @@ Selection reaches the top document and open shadow roots, not iframes, closed sh
 
 Help pages and the demo load from Cloudflare. These pages add no analytics, tracking scripts, cookies, or forms; the extension sends them no feedback.
 
-The demo keeps comments/settings in memory, isolated from extension data. Close/reopen retains them; reload/navigation clears them. Copying requires your action. Screenshots require the extension.
+The demo keeps comments/settings in memory, isolated from extension data. Close/reopen retains them; reload/navigation clears them. Copying requires your action. Screenshots and component-context capture require the extension.

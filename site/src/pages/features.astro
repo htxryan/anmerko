@@ -1,0 +1,156 @@
+---
+import { supportIconAttributes, supportIconPaths } from '../../../src/support-icon';
+import ExternalLink from '../components/ExternalLink.astro';
+import ThemeProvider from '@astrojs/starlight/components/ThemeProvider.astro';
+import ThemeToggle from '../components/ThemeToggle.astro';
+// Bump when clip bytes change so viewers never get a stale cached copy.
+const CLIP_V = 9;
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="What anmerko does: element, screenshot, and page comments, optional component hints, and agent-ready exports.">
+  <link rel="canonical" href="https://anmerko.com/features/">
+  <meta property="og:title" content="anmerko — Features">
+  <meta property="og:description" content="Point at what should change, add context, and hand your AI agent a clean brief.">
+  <meta property="og:url" content="https://anmerko.com/features/">
+  <title>anmerko — Features</title>
+  <ThemeProvider />
+  <link rel="icon" href="/favicon.png">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+    .features-page { padding-block: 28px 24px; }
+    .features-page .lede { margin-top: 18px; color: var(--site-muted); font-size: 17px; line-height: 1.6; }
+    .feature-list { display: grid; gap: 32px; margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--site-border); }
+    .feature-list section h2 { margin-bottom: 8px; }
+    .feature-list section p, .feature-list section li { font-size: 15px; line-height: 1.6; color: var(--site-muted); }
+    .feature-list section p { margin-top: 8px; }
+    .feature-list ul { margin: 8px 0 0; padding-left: 20px; }
+    .feature-list li + li { margin-top: 4px; }
+    .feature-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 32px; align-items: start; }
+    .feature-clip { margin: 4px 0 0; }
+    .feature-clip video { display: block; width: 100%; height: auto; border: 2px solid var(--site-border); border-radius: 12px; background: #000; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12); }
+    @media (max-width: 800px) {
+      .feature-split { grid-template-columns: minmax(0, 1fr); }
+    }
+    .feature-list a { color: var(--site-link); text-underline-offset: 3px; }
+    .features-cta { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--site-border); }
+    .features-cta p { margin-top: 8px; color: var(--site-muted); font-size: 15px; }
+    .features-cta a { color: var(--site-link); text-underline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <a href="#main" class="skip">Skip to content</a>
+  <header class="header wrap">
+    <a class="brand" href="/" aria-label="anmerko home"><img src="/favicon.png" width="30" height="30" alt="">anmerko</a>
+    <nav aria-label="Main navigation">
+      <a href="/">Home</a>
+      <a href="/features/">Features</a>
+      <a href="/docs/" aria-label="Documentation">Docs</a>
+      <ExternalLink href="https://github.com/htxryan/anmerko" label="GitHub" />
+      <ExternalLink href="https://github.com/htxryan/anmerko/issues/new" label="Report Issue" />
+    </nav>
+    <ThemeToggle />
+  </header>
+  <main id="main" class="wrap features-page">
+    <h1>Features</h1>
+    <p class="lede">Point at what should change, add context where it helps, and hand your AI agent a clean brief. Everything stays local until you choose to share it.</p>
+    <div class="feature-list">
+      <section aria-labelledby="element-comments" class="feature-split">
+        <div>
+          <h2 id="element-comments">Comment on the exact element</h2>
+          <p>Select a heading, button, image, or form control and describe what should change. anmerko saves the element type, selector, visible text, accessible label, and viewport size with your note.</p>
+          <ul>
+            <li><strong>Select Element</strong>, then click the target. <strong>Use Parent Element</strong> steps up to the container when the first pick is too narrow.</li>
+            <li>Numbered page markers; <strong>Locate</strong> scrolls back to the saved target when the page still matches it.</li>
+            <li>Edit and delete from the comment card; drafts survive moving between the floating panel and the sidebar.</li>
+          </ul>
+          <p><a href="/docs/usage/inline-comments/">Inline comments →</a></p>
+        </div>
+        <figure class="feature-clip">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/01-element-feedback.png" aria-label="Silent clip: selecting a headline and saving an element comment">
+            <source src={`/media/features/element.mp4?v=${CLIP_V}`} type="video/mp4">
+          </video>
+        </figure>
+      </section>
+      <section aria-labelledby="screenshot-comments" class="feature-split">
+        <div>
+          <h2 id="screenshot-comments">Capture a visual region</h2>
+          <p>For feedback about a look or layout, drag a box over the region and comment on the crop. Only the cropped PNG is stored — never a full-page capture.</p>
+          <ul>
+            <li>Keyboard support: arrows move, corners resize, <strong>Shift</strong> steps by ten pixels, <strong>Esc</strong> cancels.</li>
+            <li>Crops are limited to 2,400 pixels on the longest side and about 2 MB each.</li>
+            <li>Review each crop before sharing — it includes everything visible in the box.</li>
+          </ul>
+          <p><a href="/docs/usage/screenshot-comments/">Screenshot comments →</a></p>
+        </div>
+        <figure class="feature-clip">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/02-screenshot-feedback.png" aria-label="Silent clip: dragging a region and saving a screenshot comment">
+            <source src={`/media/features/screenshot.mp4?v=${CLIP_V}`} type="video/mp4">
+          </video>
+        </figure>
+      </section>
+      <section aria-labelledby="global-comments" class="feature-split">
+        <div>
+          <h2 id="global-comments">Comment on the whole page</h2>
+          <p>Hierarchy, visual direction, overall experience — some feedback is about the page, not one element. Global comments save with the page title and URL.</p>
+          <p><a href="/docs/usage/global-comments/">Global comments →</a></p>
+        </div>
+        <figure class="feature-clip">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/03-global-comment.png" aria-label="Silent clip: saving a global page comment">
+            <source src={`/media/features/global.mp4?v=${CLIP_V}`} type="video/mp4">
+          </video>
+        </figure>
+      </section>
+      <section aria-labelledby="component-hints" class="feature-split">
+        <div>
+          <h2 id="component-hints">Optional framework component hints</h2>
+          <p>Off by default. Enable <strong>Capture component context</strong> in <a href="/docs/settings/">Settings</a> to add a component-name hint (for example, <code>App &gt; PricingPage &gt; PlanCard</code>) to new element comments when the site exposes supported React, Vue, or Angular metadata.</p>
+          <ul>
+            <li>At most eight names; a separate hint row, never mixed into the selector or DOM ancestry.</li>
+            <li>Saved snapshot: exports reuse what was captured, and never re-inspect the page. Remove a hint while editing if you don't want to share it.</li>
+            <li>Honest fallback: production builds and unsupported pages keep ordinary element context with no invented names.</li>
+          </ul>
+          <p><a href="/docs/usage/inline-comments/#component-hints">Component hints →</a></p>
+        </div>
+        <figure class="feature-clip">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/05-settings.png" aria-label="Silent clip: enabling component context and capturing a React component hint">
+            <source src={`/media/features/component.mp4?v=${CLIP_V}`} type="video/mp4">
+          </video>
+        </figure>
+      </section>
+      <section aria-labelledby="agent-exports" class="feature-split">
+        <div>
+          <h2 id="agent-exports">Hand your agent a clean brief</h2>
+          <p>Choose <strong>This page</strong> or <strong>All pages</strong>, then <strong>Copy Prompt</strong> for Markdown with your feedback, page URLs, and captured context — or <strong>Download Markdown + Images</strong> for a ZIP with matching PNGs.</p>
+          <ul>
+            <li>Customizable prompt preamble under <a href="/docs/settings/#prompt-preamble">Settings</a>.</li>
+            <li>See a <a href="/docs/example-prompt/">real example prompt</a> exported from Salad Recipe Finder.</li>
+          </ul>
+          <p><a href="/docs/send-to-your-agent/">Send to your agent →</a></p>
+        </div>
+        <figure class="feature-clip">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/04-prompt-export.png" aria-label="Silent clip: saving feedback and copying the agent prompt">
+            <source src={`/media/features/export.mp4?v=${CLIP_V}`} type="video/mp4">
+          </video>
+        </figure>
+      </section>
+      <section aria-labelledby="private-by-default">
+        <h2 id="private-by-default">Private by default</h2>
+        <p>No network requests, analytics, AI calls, or cloud sync. Comments, crops, and settings stay in your browser profile until you delete them — and nothing is shared until you copy or download it.</p>
+        <p><a href="/docs/privacy/">Privacy and limitations →</a></p>
+      </section>
+    </div>
+    <div class="features-cta">
+      <h2>Try it</h2>
+      <p><a href="/">Try the Demo</a> on the home page, or <a href="/docs/install/">install the extension</a> for desktop or mobile and review the <a href="/docs/">documentation</a>.</p>
+    </div>
+  </main>
+  <footer class="wrap">
+    <p>Made by <ExternalLink href="https://ryanhenderson.dev/" label="Ryan Henderson" /></p>
+    <ExternalLink class="support-link" href="https://buymeacoffee.com/htxryan" label="Buy me a coffee"><svg {...supportIconAttributes}>{supportIconPaths.map(d => <path d={d} />)}</svg></ExternalLink>
+  </footer>
+</body>
+</html>
