@@ -29,6 +29,7 @@ export type ComponentContextProbeTuple = readonly [
   react: ComponentContextProbe,
   vue: ComponentContextProbe,
   angular: ComponentContextProbe,
+  preact: ComponentContextProbe,
 ];
 
 export interface ComponentContextProbeExecution {
@@ -51,7 +52,7 @@ const REQUEST_KEYS = ['type', 'version', 'selectorPath', 'expectedTag', 'markerN
 const MARKER_PATTERN = /^data-anmerko-context-[a-f0-9]{32}$/;
 const TAG_PATTERN = /^[a-z][a-z0-9._:-]{0,127}$/;
 const TIMED_OUT = Symbol('timed-out');
-const EXPECTED_FRAMEWORKS = ['react', 'vue', 'angular'] as const;
+const EXPECTED_FRAMEWORKS = ['react', 'vue', 'angular', 'preact'] as const;
 
 function dataProperties(value: object, expectedKeys: readonly string[]): Record<string, unknown> | undefined {
   try {
@@ -145,7 +146,7 @@ export interface ComponentContextBroker {
 }
 
 export function createComponentContextBroker(options: ComponentContextBrokerOptions): ComponentContextBroker {
-  if (options.probes.length !== 3) throw new TypeError('Exactly three component context probes are required.');
+  if (options.probes.length !== 4) throw new TypeError('Exactly four component context probes are required.');
   const deadlineMs = options.deadlineMs ?? COMPONENT_CONTEXT_DEADLINE_MS;
   const activeTabs = new Map<number, Promise<void>>();
   let disabledEpoch = 0;

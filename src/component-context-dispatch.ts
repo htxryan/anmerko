@@ -3,17 +3,19 @@ import type { ComponentContextProbeOutcome, ComponentContextProbeTuple } from '.
 import { reactComponentContextProbe } from './react-context-probe';
 import { vueComponentContextProbe } from './vue-context-probe';
 import { angularComponentContextProbe } from './angular-context-probe';
+import { preactComponentContextProbe } from './preact-context-probe';
 
 // Only this bundled registry can choose page-world code. Request data never can.
 export const COMPONENT_CONTEXT_PROBES: ComponentContextProbeTuple = /* @__PURE__ */ Object.freeze([
   reactComponentContextProbe,
   vueComponentContextProbe,
   angularComponentContextProbe,
+  preactComponentContextProbe,
 ]);
 
 export function selectComponentContext(outcomes: readonly ComponentContextProbeOutcome[]): ComponentContextV1 | null {
-  if (outcomes.length !== 3) return null;
-  const frameworks = ['react', 'vue', 'angular'] as const;
+  if (outcomes.length !== 4) return null;
+  const frameworks = ['react', 'vue', 'angular', 'preact'] as const;
   let selected: ComponentContextV1 | null = null;
   for (const [index, outcome] of outcomes.entries()) {
     if (outcome.kind === 'indeterminate') return null;
