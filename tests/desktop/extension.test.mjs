@@ -289,7 +289,20 @@ test('production component context covers the native Chrome and Edge fixture mat
     await session.activate();
     dock = await sidebar(session.context, page);
     await dock.click('.dock');
-    await expect(extensionPanel(page)).toBeVisible();
+    // The float handshake is async: syncState posts the page state to the
+    // sidebar and the page re-renders from the sidebar's posted reply. A
+    // same-tick navigation can tear the page down before the reply lands,
+    // losing the wake and leaving the panel hidden. Re-run the acquire/float
+    // handshake so a torn-down page cannot fail the matrix.
+    await expect(async () => {
+      try {
+        await expect(extensionPanel(page)).toBeVisible({ timeout: 2000 });
+      } catch {
+        dock = await sidebar(session.context, page);
+        await dock.click('.dock');
+        await expect(extensionPanel(page)).toBeVisible({ timeout: 2000 });
+      }
+    }).toPass({ timeout: 15000 });
     await expect(extensionPanel(page).locator('.component-context-toggle')).toHaveAttribute('aria-checked', 'true');
     await extensionPanel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
     const target = componentTarget(page, scenario);
@@ -306,6 +319,10 @@ test('production component context covers the native Chrome and Edge fixture mat
         await expect(extensionPanel(page)).toBeVisible();
         await extensionPanel(page).getByLabel('Comment', { exact: true }).fill('Persist the real component hint.');
         await extensionPanel(page).getByRole('button', { name: 'Save', exact: true }).click();
+        // Saving is async: storage write + refresh must land before the next
+        // navigation tears down this page. Otherwise the new page's startup
+        // snapshot can win the sidebar-port race and leave the panel hidden.
+        await expect(extensionPanel(page).locator('.note')).toHaveCount(1);
       } else {
         await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
       }
