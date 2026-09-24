@@ -19,8 +19,6 @@ export function browserManifest(source, version, target) {
   const manifest = structuredClone(source);
   manifest.version = version;
   if (target.name === 'orion') {
-    delete manifest.optional_permissions;
-    delete manifest.optional_host_permissions;
     delete manifest.minimum_chrome_version;
     delete manifest.side_panel;
     manifest.permissions = manifest.permissions.filter(permission => permission !== 'sidePanel');

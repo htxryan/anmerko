@@ -9,8 +9,6 @@ type Harness = {
   response: any;
   client?: any;
   pending?: Promise<void>;
-  resolveGrant?: (granted: boolean) => void;
-  rejectGrant?: (error: Error) => void;
 };
 type HarnessWindow = typeof globalThis & {
   clientModule: { createJourneyClient(owner?: () => { ownerTabId?: number; ownerWindowId?: number }, intent?: string): any };
@@ -51,15 +49,6 @@ async function installChrome(page: Page) {
           },
         },
       },
-      permissions: {
-        request(details: unknown) {
-          harness.log.push({ kind: 'permission', details: structuredClone(details) });
-          return new Promise<boolean>((resolve, reject) => {
-            harness.resolveGrant = resolve;
-            harness.rejectGrant = reject;
-          });
-        },
-      },
     };
     (globalThis as HarnessWindow).surfaceHarness = harness;
   });
@@ -70,7 +59,7 @@ test.beforeEach(async ({ page }) => {
   await installChrome(page);
 });
 
-test('requests optional access synchronously before native start and cancels a pending grant', async ({ page }) => {
+test('performs a native start without requesting optional access', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   const immediate = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
@@ -78,55 +67,20 @@ test('requests optional access synchronously before native start and cancels a p
       () => ({ ownerTabId: 12, ownerWindowId: 34 }),
     );
     harness.pending = harness.client.start(false);
-    return { log: structuredClone(harness.log), enteredValues: harness.client.supportsEnteredValues };
+    return {
+      log: structuredClone(harness.log),
+      enteredValues: harness.client.supportsEnteredValues,
+      permissionsApi: typeof (globalThis as any).chrome.permissions,
+    };
   });
   expect(immediate).toEqual({
-    log: [{ kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } }],
+    log: [{ kind: 'message', message: { type: 'ANMERKO_JOURNEY_START', ownerTabId: 12, ownerWindowId: 34, includeEnteredValues: false } }],
     enteredValues: true,
-  });
-  await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.resolveGrant?.(true));
-  await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.pending);
-  expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
-    { kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } },
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_START', ownerTabId: 12, ownerWindowId: 34, includeEnteredValues: false } },
-  ]);
-
-  await page.evaluate(() => {
-    const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.log.length = 0;
-    harness.pending = harness.client.start(false);
-    void harness.client.stop();
-  });
-  expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
-    { kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } },
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STOP' } },
-  ]);
-  await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.resolveGrant?.(true));
-  await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.pending);
-  expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log.filter(entry => entry.message?.type === 'ANMERKO_JOURNEY_START'))).toEqual([]);
-
-  await page.evaluate(() => {
-    const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.log.length = 0;
-    harness.pending = harness.client.start(false);
-    void harness.client.discard();
-    harness.resolveGrant?.(true);
+    permissionsApi: 'undefined',
   });
   await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.pending);
-  expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
-    { kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } },
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_DISCARD' } },
-  ]);
-
-  expect(await page.evaluate(async () => {
-    const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.log.length = 0;
-    harness.pending = harness.client.start(false);
-    void harness.client.stop();
-    harness.rejectGrant?.(new Error('private browser rejection'));
-    try { await harness.pending; return 'cancelled'; }
-    catch (error) { return error instanceof Error ? error.message : String(error); }
-  })).toBe('cancelled');
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log
+    .some(entry => entry.kind === 'permission'))).toBe(false);
 });
 
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
@@ -139,7 +93,6 @@ test('binds fallback actions to one intent and authenticates change notification
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
     harness.pending = harness.client.start(true);
-    harness.resolveGrant?.(true);
   });
   await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.pending);
   await page.evaluate(async () => {
@@ -147,7 +100,6 @@ test('binds fallback actions to one intent and authenticates change notification
     await harness.client.read(); await harness.client.stop(); await harness.client.discard();
   });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
-    { kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_START', intent: 'launch_nonce-1234567890', includeEnteredValues: true } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE' } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STOP', intent: 'launch_nonce-1234567890' } },
@@ -189,7 +141,7 @@ test('binds fallback actions to one intent and authenticates change notification
   expect(notifications).toEqual({ accepted: ['undefined', 'worker', 'generated'], count: 3, listeners: 0 });
 });
 
-test('rejects invalid launch context before requesting access and sanitizes failures', async ({ page }) => {
+test('rejects invalid launch context before start and sanitizes failures', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   expect(await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
@@ -207,19 +159,8 @@ test('rejects invalid launch context before requesting access and sanitizes fail
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
     harness.client = (globalThis as HarnessWindow).clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 2 }));
-    harness.pending = harness.client.start(false);
-    harness.resolveGrant?.(false);
-  });
-  expect(await page.evaluate(async () => {
-    try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
-    catch (error) { return error instanceof Error ? error.message : String(error); }
-  })).toBe('Allow access to all websites to record a journey, then try again.');
-
-  await page.evaluate(() => {
-    const harness = (globalThis as HarnessWindow).surfaceHarness;
     harness.response = { ok: false, code: 'busy', error: 'private backend details' };
     harness.pending = harness.client.start(false);
-    harness.resolveGrant?.(true);
   });
   expect(await page.evaluate(async () => {
     try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
@@ -240,7 +181,6 @@ test('rejects invalid launch context before requesting access and sanitizes fail
     const harness = (globalThis as HarnessWindow).surfaceHarness;
     harness.response = { ok: false, code: '__proto__', error: 'private backend details' };
     harness.pending = harness.client.start(false);
-    harness.resolveGrant?.(true);
   });
   expect(await page.evaluate(async () => {
     try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
@@ -261,17 +201,14 @@ test('trusted page strictly parses launch intent and shares the journey UI only 
   ]);
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();
   await expect.poll(async () => (await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log
-    .filter(entry => entry.kind === 'permission'))).length).toBe(1);
+    .some(entry => entry.message?.type === 'ANMERKO_JOURNEY_START')))).toBe(true);
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log
-    .find(entry => entry.kind === 'permission'))).toEqual(
-    { kind: 'permission', details: { origins: ['<all_urls>'], permissions: ['webNavigation'] } },
-  );
-  await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.resolveGrant?.(false));
-  await expect(page.getByRole('alert')).toHaveText('Allow access to all websites to record a journey, then try again.');
+    .filter(entry => entry.kind === 'permission'))).toEqual([]);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 for (const hash of ['', 'launch=short', 'launch=valid_nonce-1234567890&extra=1', 'launch=valid%5Fnonce-1234567890', 'launch=invalid/value_1234567890']) {
-  test(`does not grant or launch for invalid intent hash ${hash || '(empty)'}`, async ({ page }) => {
+  test(`does not start for invalid intent hash ${hash || '(empty)'}`, async ({ page }) => {
     await page.setContent('<!doctype html><html><head></head><body><main id="journey"></main></body></html>');
     await page.evaluate(value => { location.hash = value; }, hash);
     await page.addScriptTag({ content: pageBundle(true) });

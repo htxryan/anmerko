@@ -46,7 +46,7 @@ export const STOP_REASONS = [
   'step-limit',
   'image-budget',
   'session-storage-limit',
-  'permission-revoked',
+  'left-site',
   'focus-lost',
   'tab-lost',
   'protected-page',

@@ -15,7 +15,6 @@ type Harness = {
   removedTabs: number[];
   tabUpdates: any[];
   windowUpdates: any[];
-  permissionChecks: any[];
   scriptingCalls: any[];
   sessionStorage: Record<string, unknown>;
   alarmCreates: any[];
@@ -37,9 +36,7 @@ type Harness = {
   deferPrepare: boolean;
   releasePrepare?: () => void;
   pendingStart?: Promise<unknown>;
-  permissionsGranted: boolean;
-  deferPermission: boolean;
-  releasePermission?: () => void;
+  navigationAvailable: boolean;
   deferTabUpdate: boolean;
   releaseTabUpdate?: () => void;
   deferIdentify: boolean;
@@ -59,7 +56,6 @@ type Harness = {
     removed: { emit(...values: unknown[]): void };
     replaced: { emit(...values: unknown[]): void };
     focused: { emit(value: unknown): void };
-    permissionRemoved: { emit(value: unknown): void };
     alarm: { emit(value: unknown): void };
     committed: { emit(value: unknown): void; count(): number };
     history: { emit(value: unknown): void; count(): number };
@@ -111,7 +107,6 @@ test.beforeEach(async ({ page }) => {
     const removed = extensionEvent();
     const replaced = extensionEvent();
     const focused = extensionEvent();
-    const permissionRemoved = extensionEvent();
     const alarm = extensionEvent();
     const committed = extensionEvent();
     const history = extensionEvent();
@@ -122,7 +117,7 @@ test.beforeEach(async ({ page }) => {
     const png = canvas.toDataURL('image/png');
     const harness: Harness = {
       pageCommands: [], broadcasts: [], actions: [], createdTabs: [], removedTabs: [], ports: [],
-      tabUpdates: [], windowUpdates: [], permissionChecks: [], scriptingCalls: [], sequence: [],
+      tabUpdates: [], windowUpdates: [], scriptingCalls: [], sequence: [],
       sessionStorage: {}, alarmCreates: [], alarmClears: [], failStorageSet: false, failStorageRemove: false,
       failStorageGet: false, failAlarmCreate: false, deferStorageSet: false, failPageStopCount: 0,
       tabs: {
@@ -134,9 +129,9 @@ test.beforeEach(async ({ page }) => {
         viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, generation: 0, visible: true,
       },
       focusedWindowId: 7, wait: 1, prepareMismatch: false, deferPrepare: false,
-      permissionsGranted: true, deferPermission: false, deferTabUpdate: false,
+      navigationAvailable: true, deferTabUpdate: false,
       deferIdentify: false, deferPageStart: false, deferInjection: false, deferOwnerCheck: false, deferTabCreate: false, captureMode: 'normal',
-      events: { activated, updated, removed, replaced, focused, permissionRemoved, alarm, committed, history, fragment },
+      events: { activated, updated, removed, replaced, focused, alarm, committed, history, fragment },
       control: undefined as unknown as Harness['control'],
       reboot: undefined as unknown as Harness['reboot'],
       dispatch(message, sender) {
@@ -263,15 +258,6 @@ test.beforeEach(async ({ page }) => {
         },
         onFocusChanged: focused,
       },
-      permissions: {
-        contains: async (details: unknown) => {
-          harness.permissionChecks.push(structuredClone(details));
-          harness.sequence.push('permissions.contains');
-          if (harness.deferPermission) await new Promise<void>(resolve => { harness.releasePermission = resolve; });
-          return harness.permissionsGranted;
-        },
-        onRemoved: permissionRemoved,
-      },
       storage: {
         session: {
           async get(keys: string[]) {
@@ -314,13 +300,13 @@ test.beforeEach(async ({ page }) => {
     Object.defineProperty((globalThis as any).chrome, 'webNavigation', {
       configurable: true,
       get() {
-        if (!harness.permissionsGranted) return undefined;
+        if (!harness.navigationAvailable) return undefined;
         return { onCommitted: committed, onHistoryStateUpdated: history, onReferenceFragmentUpdated: fragment };
       },
     });
     (globalThis as HarnessWindow).harness = harness;
     (harness as any).eventBuses = [runtimeMessage, runtimeConnect, activated, updated, removed, replaced,
-      focused, permissionRemoved, alarm, committed, history, fragment];
+      focused, alarm, committed, history, fragment];
     (harness as any).runtimeMessage = runtimeMessage;
     (globalThis as any).__journeyPng = png;
   });
@@ -484,7 +470,6 @@ for (const wake of [
 
     await page.evaluate(({ owner, batch, nextUrl, kind }) => {
       const harness = (globalThis as HarnessWindow).harness;
-      harness.deferPermission = true;
       harness.reboot();
       const port = harness.connectPort('anmerko-journey-events-v1', owner);
       harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch });
@@ -499,12 +484,6 @@ for (const wake of [
       harness.events[kind === 'document' ? 'committed' : 'fragment']
         .emit({ tabId: 1, frameId: 0, url: nextUrl, documentLifecycle: 'active' });
     }, { owner: ownerPage, batch, nextUrl: wake.url, kind: wake.kind });
-    await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releasePermission))).toBe(true);
-    await page.evaluate(() => {
-      const harness = (globalThis as HarnessWindow).harness;
-      harness.deferPermission = false;
-      harness.releasePermission?.();
-    });
 
     await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
       .toBe(before.draft.steps.length + 2);
@@ -522,13 +501,10 @@ test('rejects a cold-wake click observed after its same-document navigation', as
   const nextUrl = 'https://example.test/path?item=1#navigation-first';
   await page.evaluate(({ url }) => {
     const harness = (globalThis as HarnessWindow).harness;
-    harness.deferPermission = true;
     harness.reboot();
     harness.tabs[1].url = url;
     harness.identity.url = url;
     harness.events.fragment.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
-    harness.deferPermission = false;
-    harness.releasePermission?.();
   }, { url: nextUrl });
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
     .toBe(before.draft.steps.length + 1);
@@ -563,7 +539,6 @@ test('retains a cold-wake click observed before its same-document navigation', a
   const clickElapsedMs = before.draft.steps.at(-1).elapsedMs;
   await page.evaluate(({ owner, state, url, elapsedMs }) => {
     const harness = (globalThis as HarnessWindow).harness;
-    harness.deferPermission = true;
     harness.reboot();
     // The click was captured before the fragment change, but the navigation
     // wins the cold-wake delivery race and commits first.
@@ -584,12 +559,6 @@ test('retains a cold-wake click observed before its same-document navigation', a
       }],
     } });
   }, { owner: ownerPage, state: before, url: nextUrl, elapsedMs: clickElapsedMs });
-  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releasePermission))).toBe(true);
-  await page.evaluate(() => {
-    const harness = (globalThis as HarnessWindow).harness;
-    harness.deferPermission = false;
-    harness.releasePermission?.();
-  });
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
     .toBe(before.draft.steps.length + 2);
   const recovered = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
@@ -985,10 +954,15 @@ test('does not resurrect stale committed recording bytes after write and cleanup
     .filter(command => command.message.type === 'ANMERKO_JOURNEY_PAGE_START').length)).toBe(startsBefore);
 });
 
-test('gates native start on the optional grant and installs navigation listeners only after it is present', async ({ page }) => {
-  await page.evaluate(() => { (globalThis as HarnessWindow).harness.permissionsGranted = false; });
+test('fails closed without webNavigation and installs navigation listeners once the API is available', async ({ page }) => {
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.navigationAvailable = false;
+    harness.reboot();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 }))
-    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'permission-required' });
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
   let facts = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
     return {
@@ -997,13 +971,13 @@ test('gates native start on the optional grant and installs navigation listeners
       sequence: harness.sequence,
     };
   });
-  expect(facts.listeners).toEqual([1, 1, 1]);
+  expect(facts.listeners).toEqual([0, 0, 0]);
   expect(facts.scriptingCalls).toEqual([]);
   expect(facts.sequence).not.toContain('capture');
 
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
-    harness.permissionsGranted = true;
+    harness.navigationAvailable = true;
     harness.sequence.length = 0;
   });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 }))
@@ -1017,7 +991,7 @@ test('gates native start on the optional grant and installs navigation listeners
     };
   });
   expect(facts.listeners).toEqual([1, 1, 1]);
-  expect(facts.sequence.indexOf('permissions.contains')).toBeLessThan(facts.sequence.indexOf('capture'));
+  expect(facts.sequence).toContain('capture');
 });
 
 test('observes ordered top-frame owner navigations and injects the idle observer only for new documents', async ({ page }) => {
@@ -1095,58 +1069,97 @@ test('injects again for a same-URL new document and cancels a pending connection
     && command.message.documentToken === 'document-reload')).toEqual([]);
 });
 
-test('does not inject when Stop arrives during the navigation grant recheck', async ({ page }) => {
+test('does not begin the new document when Stop arrives during navigation injection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
     const url = 'https://example.test/deferred-grant';
     harness.tabs[1].url = url;
     harness.identity = { ...harness.identity, documentToken: 'document-deferred', url, generation: 0 };
-    harness.deferPermission = true;
+    harness.deferInjection = true;
     harness.events.committed.emit({ tabId: 1, frameId: 0, url });
   });
-  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releasePermission))).toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releaseInjection))).toBe(true);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' }, sidebar)).toEqual({ ok: true });
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
-    harness.deferPermission = false;
-    harness.releasePermission?.();
+    harness.deferInjection = false;
+    harness.releaseInjection?.();
   });
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
-  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.scriptingCalls)).toEqual([]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands
+    .filter(command => command.message.type === 'ANMERKO_JOURNEY_PAGE_START'
+      && command.message.documentToken === 'document-deferred'))).toEqual([]);
 });
 
-test('stops on protected owner destinations, permission removal, and tab replacement without following a new tab', async ({ page }) => {
+test('stops on protected owner destinations and tab replacement without following a new tab', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => (globalThis as HarnessWindow).harness.events.committed.emit({
     tabId: 1, frameId: 0, url: 'chrome://settings/', documentLifecycle: 'active',
   }));
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'protected-page' } });
-
-  await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' });
-  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
-  await page.evaluate(() => {
-    const harness = (globalThis as HarnessWindow).harness;
-    harness.permissionsGranted = false;
-    harness.events.permissionRemoved.emit({ origins: ['https://example.test/*'] });
-  });
-  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
-    .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'permission-revoked' } });
+  // A protected-page stop preserves the installed navigation listeners.
   expect(await page.evaluate(() => [
     (globalThis as HarnessWindow).harness.events.committed.count(),
     (globalThis as HarnessWindow).harness.events.history.count(),
     (globalThis as HarnessWindow).harness.events.fragment.count(),
-  ])).toEqual([0, 0, 0]);
+  ])).toEqual([1, 1, 1]);
 
   await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' });
-  await page.evaluate(() => { (globalThis as HarnessWindow).harness.permissionsGranted = true; });
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => (globalThis as HarnessWindow).harness.events.replaced.emit(9, 1));
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'tab-lost' } });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.scriptingCalls
     .some((call: any) => call.target.tabId === 9))).toBe(false);
+});
+
+test('stops with left-site when an owner navigation leaves the starting site', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.events.committed.emit({
+      tabId: 1, frameId: 0, url: 'https://other.test/next', documentLifecycle: 'active',
+    });
+  });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.stopReason)
+    .toBe('left-site');
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped.phase).toBe('reviewing');
+  // The off-site destination never becomes a navigation step or an injection.
+  expect(stopped.draft.steps.every((step: any) => step.kind !== 'navigation')).toBe(true);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.scriptingCalls)).toEqual([]);
+});
+
+test('keeps recording across same-site path changes and same-URL reloads', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const pathUrl = 'https://example.test/next?item=2#section';
+  await page.evaluate(url => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[1].url = url;
+    harness.identity = { ...harness.identity, documentToken: 'same-site-document', url, generation: 0 };
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+  }, pathUrl);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.at(-1)?.navigation?.toUrl)
+    .toBe(pathUrl);
+
+  await page.evaluate(url => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.identity = { ...harness.identity, documentToken: 'same-site-reload', url, generation: 0 };
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+  }, pathUrl);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
+    .toBe(before.draft.steps.length + 2);
+
+  const state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.phase).toBe('recording');
+  expect(state.draft.stopReason).toBeUndefined();
+  expect(state.documentToken).toBe('same-site-reload');
+  expect(state.draft.steps.slice(-2).map((step: any) => step.kind)).toEqual(['navigation', 'navigation']);
+  expect(state.draft.steps.at(-2)).toMatchObject({ navigation: { toUrl: pathUrl } });
+  expect(state.draft.steps.at(-1)).toMatchObject({ navigation: { toUrl: pathUrl } });
 });
 
 test('routes matching event ports and stop commands without exposing state or raw replies to pages', async ({ page }) => {
@@ -1497,11 +1510,10 @@ test('authorizes exact trusted journey surfaces and consumes a fallback launch o
   const facts = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
     return {
-      permissionChecks: harness.permissionChecks, tabUpdates: harness.tabUpdates,
+      tabUpdates: harness.tabUpdates,
       windowUpdates: harness.windowUpdates, sequence: harness.sequence,
     };
   });
-  expect(facts.permissionChecks).toEqual([{ origins: ['<all_urls>'], permissions: ['webNavigation'] }]);
   expect(facts.tabUpdates).toContainEqual({ tabId: 1, details: { active: true } });
   expect(facts.windowUpdates).toContainEqual({ windowId: 7, details: { focused: true } });
   expect(facts.sequence).toContain('capture');
@@ -1572,8 +1584,13 @@ test('rejects forged, changed-owner, missing-owner, and expired fallback intents
     .toHaveLength(0);
 });
 
-test('requires the direct cross-site grant and consumes a denied launch intent', async ({ page }) => {
-  await page.evaluate(() => { (globalThis as HarnessWindow).harness.permissionsGranted = false; });
+test('fails a fallback launch closed without webNavigation and consumes the intent', async ({ page }) => {
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.navigationAvailable = false;
+    harness.reboot();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
   const launch = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
@@ -1583,14 +1600,13 @@ test('requires the direct cross-site grant and consumes a denied launch intent',
   });
 
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
-    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'permission-required' });
+    .toEqual({ ok: false, error: 'Journey command unavailable.' });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
     .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'launch-expired' });
   const facts = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
-    return { permissionChecks: harness.permissionChecks, tabUpdates: harness.tabUpdates, sequence: harness.sequence };
+    return { tabUpdates: harness.tabUpdates, sequence: harness.sequence };
   });
-  expect(facts.permissionChecks).toEqual([{ origins: ['<all_urls>'], permissions: ['webNavigation'] }]);
   expect(facts.tabUpdates).toEqual([]);
   expect(facts.sequence).not.toContain('capture');
 });
@@ -1630,26 +1646,23 @@ test('trusted Stop cancels fallback and native starts before controller capture 
       return { intent: url.slice(url.indexOf('#launch=') + 8), sender: { id: 'test-extension', url, frameId: 0, tab } };
     });
   };
-  const defer = async (stage: 'permission' | 'tabUpdate' | 'identify') => page.evaluate(value => {
+  const defer = async (stage: 'tabUpdate' | 'identify') => page.evaluate(value => {
     const harness = (globalThis as HarnessWindow).harness;
-    if (value === 'permission') harness.deferPermission = true;
-    else if (value === 'tabUpdate') harness.deferTabUpdate = true;
+    if (value === 'tabUpdate') harness.deferTabUpdate = true;
     else harness.deferIdentify = true;
   }, stage);
-  const release = async (stage: 'permission' | 'tabUpdate' | 'identify') => page.evaluate(value => {
+  const release = async (stage: 'tabUpdate' | 'identify') => page.evaluate(value => {
     const harness = (globalThis as HarnessWindow).harness;
-    if (value === 'permission') { harness.deferPermission = false; harness.releasePermission?.(); }
-    else if (value === 'tabUpdate') { harness.deferTabUpdate = false; harness.releaseTabUpdate?.(); }
+    if (value === 'tabUpdate') { harness.deferTabUpdate = false; harness.releaseTabUpdate?.(); }
     else { harness.deferIdentify = false; harness.releaseIdentify?.(); }
   }, stage);
-  const isWaiting = async (stage: 'permission' | 'tabUpdate' | 'identify') => page.evaluate(value => {
+  const isWaiting = async (stage: 'tabUpdate' | 'identify') => page.evaluate(value => {
     const harness = (globalThis as HarnessWindow).harness;
-    if (value === 'permission') return Boolean(harness.releasePermission);
     if (value === 'tabUpdate') return Boolean(harness.releaseTabUpdate);
     return Boolean(harness.releaseIdentify);
   }, stage);
 
-  for (const stage of ['permission', 'tabUpdate', 'identify'] as const) {
+  for (const stage of ['tabUpdate', 'identify'] as const) {
     const launch = await openLaunch();
     await defer(stage);
     const pendingStart = dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender);

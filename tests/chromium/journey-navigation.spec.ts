@@ -374,6 +374,44 @@ test('a non-HTTP document destination stops as a protected page', async () => {
   expect(fixture.calls.end).toHaveLength(1);
 });
 
+test('a cross-origin navigation stops the journey as left-site without recording a step', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://other.example/away', kind: 'document' });
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after leaving the site');
+  expect(stopped.draft.stopReason).toBe('left-site');
+  expect(stopped.draft.steps).toHaveLength(1);
+  expect(fixture.calls.connect).toEqual([]);
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('same-origin path changes and same-URL reloads keep recording instead of leaving the site', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const reloadUrl = `${START_URL}#one`;
+
+  fixture.nowMs = START_MS + 500;
+  controller.observeNavigation({ ownerTabId: 42, url: reloadUrl, kind: 'same-document' });
+  expect(recording(controller.getState()).draft.steps.at(-1)?.navigation?.toUrl).toBe(reloadUrl);
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity('document-reload', reloadUrl, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: reloadUrl, kind: 'document' });
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-reload'));
+
+  const state = recording(controller.getState());
+  expect(state.phase).toBe('recording');
+  expect(state.draft.stopReason).toBeUndefined();
+  expect(state.draft.steps.slice(-2).map(step => step.kind)).toEqual(['navigation', 'navigation']);
+  expect(state.draft.steps.slice(-2).map(step => step.kind === 'navigation' && step.navigation.toUrl)).toEqual([reloadUrl, reloadUrl]);
+});
+
 test('navigation while the initial recorder begin is pending cannot publish the old document', async () => {
   const initialBegin = deferred<void>();
   const fixture = navigationFixture({ begin: () => initialBegin.promise });

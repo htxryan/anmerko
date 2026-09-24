@@ -254,6 +254,13 @@ export function createJourneyController(
       void stop('capture-failed');
       return;
     }
+    // A journey records one site: the site it started on. activeTab only covers
+    // that origin, so leaving it ends the journey rather than silently losing
+    // steps. Cross-site capture would need host access to every site.
+    if (!sameSite(toUrl, siteOrigin(state))) {
+      void stop('left-site');
+      return;
+    }
     const sourceUrl = committedUrl(state);
     if (!sourceUrl) return;
     const previous = state;
@@ -709,6 +716,20 @@ function committedUrl(state: RecordingJourneySession): string | undefined {
   const step = state.draft.steps.at(-1);
   if (!step) return;
   return step.kind === 'navigation' ? step.navigation.toUrl : step.sourceUrl;
+}
+
+function siteOrigin(state: RecordingJourneySession): string | undefined {
+  const first = state.draft.steps[0];
+  return first?.sourceUrl;
+}
+
+function sameSite(first: string, second: string | undefined): boolean {
+  if (!second) return true;
+  try {
+    return new URL(first).origin === new URL(second).origin;
+  } catch {
+    return false;
+  }
 }
 
 function actionWindowStartMs(state: RecordingJourneySession): number {

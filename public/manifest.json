@@ -10,13 +10,8 @@
     "storage",
     "alarms",
     "clipboardWrite",
-    "sidePanel"
-  ],
-  "optional_permissions": [
+    "sidePanel",
     "webNavigation"
-  ],
-  "optional_host_permissions": [
-    "<all_urls>"
   ],
   "action": {
     "default_title": "Annotate with anmerko"

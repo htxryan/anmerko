@@ -8,14 +8,12 @@ type JourneyResponse = { ok: true; value?: unknown } | { ok: false; code?: unkno
 
 const CLIENT_ERROR = 'Could not update the journey. Try again.';
 const LAUNCH_ERROR = 'Open anmerko from a website before starting a journey.';
-const PERMISSION_ERROR = 'Allow access to all websites to record a journey, then try again.';
 const INTENT_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const BACKEND_GUIDANCE: Record<string, string> = {
   busy: 'Finish or discard the existing journey before starting another.',
   'owner-unavailable': 'Reopen anmerko from the original website and try again.',
   'initial-capture-failed': 'The initial journey screenshot failed. Try again.',
   'launch-expired': 'This launch expired. Reopen anmerko from the original website.',
-  'permission-required': 'Allow the requested permissions, then try again.',
   'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
   'stale-review': 'Another review tab changed this journey. Reload the review and try again.',
 };
@@ -121,23 +119,11 @@ export function createJourneyClient(
       const native = validOwner(currentOwner) ? currentOwner : undefined;
       const fallbackIntent = owner ? undefined : validIntent(intent) ? intent : undefined;
       if (!native && !fallbackIntent) throw new Error(LAUNCH_ERROR);
-      const generation = ++actionGeneration;
-      let permission: Promise<boolean>;
-      try {
-        permission = api.permissions.request({ origins: ['<all_urls>'], permissions: ['webNavigation'] });
-      } catch {
-        throw new Error(PERMISSION_ERROR);
-      }
-      return permission.then(async granted => {
-        if (generation !== actionGeneration) return;
-        if (!granted) throw new Error(PERMISSION_ERROR);
-        if (generation !== actionGeneration) return;
-        if (native) await command('ANMERKO_JOURNEY_START', { ...native, includeEnteredValues });
-        else await command('ANMERKO_JOURNEY_START', { intent: fallbackIntent, includeEnteredValues });
-      }, () => {
-        if (generation !== actionGeneration) return;
-        throw new Error(PERMISSION_ERROR);
-      });
+      ++actionGeneration;
+      // No optional permissions any more: a journey records the site it starts
+      // on using activeTab, so Start goes straight to the background.
+      if (native) return command('ANMERKO_JOURNEY_START', { ...native, includeEnteredValues }) as Promise<void>;
+      return command('ANMERKO_JOURNEY_START', { intent: fallbackIntent, includeEnteredValues }) as Promise<void>;
     },
     stop(): Promise<void> {
       ++actionGeneration;

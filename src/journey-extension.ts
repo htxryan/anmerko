@@ -28,7 +28,7 @@ export interface JourneyExtensionBinding {
 type Message = Record<string, unknown> & { type?: unknown };
 type ActiveState = Extract<JourneySession, { phase: 'starting' | 'recording' }>;
 type JourneyCommandErrorCode = 'busy' | 'owner-unavailable' | 'initial-capture-failed'
-  | 'launch-expired' | 'permission-required' | 'session-storage-failed' | 'stale-review';
+  | 'launch-expired' | 'session-storage-failed' | 'stale-review';
 type TrustedSurface =
   | { kind: 'sidebar' }
   | { kind: 'review'; tabId: number }
@@ -57,10 +57,6 @@ const JOURNEY_ALARMS = [RECORDING_DEADLINE_ALARM, REVIEW_WARNING_ALARM, REVIEW_E
 const MAX_PENDING_WAKE_EVENTS = 16;
 const MAX_CONCURRENT_NORMALIZATIONS = 1;
 const MAX_QUEUED_NORMALIZATIONS = 1;
-const REQUIRED_JOURNEY_PERMISSIONS: chrome.permissions.Permissions = {
-  origins: ['<all_urls>'], permissions: ['webNavigation'],
-};
-
 function success<T>(value?: T): { ok: true; value?: T } {
   return value === undefined ? { ok: true } : { ok: true, value };
 }
@@ -154,7 +150,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let launchOpening = false;
   let reviewTabId: number | undefined;
   let reviewOpening: Promise<void> | undefined;
-  let navigationApi: typeof chrome.webNavigation | undefined;
   let navigationListenersInstalled = false;
   let controller: JourneyController;
   let ready: Promise<void>;
@@ -282,9 +277,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return { tab, url, windowId: tab.windowId };
   };
 
-  const hasJourneyGrant = async () => Boolean(api.permissions?.contains
-    && await api.permissions.contains(REQUIRED_JOURNEY_PERMISSIONS));
-
   const identify = async (tabId: number): Promise<JourneyPageIdentity> => {
     const before = await focusedOwnerTab(tabId);
     const identity = pageIdentity(await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' }));
@@ -306,16 +298,16 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     };
     await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
     if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-    const grantedBeforeInjection = await hasJourneyGrant();
-    if (!stillCurrent() || !grantedBeforeInjection || !api.scripting?.executeScript) throw new Error(GENERIC_ERROR);
+    // activeTab covers the journey's own site; injection failing here means the
+    // tab left that site or became protected, and the controller stops the
+    // journey with an explicit reason.
+    if (!api.scripting?.executeScript) throw new Error(GENERIC_ERROR);
     await api.scripting.executeScript({
       target: { tabId, frameIds: [0] },
       files: ['journey-observer.js'],
       injectImmediately: true,
     });
     if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-    const grantedAfterInjection = await hasJourneyGrant();
-    if (!stillCurrent() || !grantedAfterInjection) throw new Error(GENERIC_ERROR);
     await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
 
     const expiresAt = Date.now() + OBSERVER_CONNECT_TIMEOUT_MS;
@@ -330,8 +322,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       const identity = pageIdentity(response);
       await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
       if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-      const grantStillPresent = await hasJourneyGrant();
-      if (!stillCurrent() || !grantStillPresent || identity.url !== sanitizedUrl) throw new Error(GENERIC_ERROR);
+      if (identity.url !== sanitizedUrl) throw new Error(GENERIC_ERROR);
       return identity;
     }
     throw new Error(GENERIC_ERROR);
@@ -600,12 +591,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       bufferWakeEvent({ type: 'navigation', details: { ...details }, kind });
       return;
     }
-    enqueueRoutedEvent(async () => {
-      let granted = false;
-      try { granted = await hasJourneyGrant(); } catch { /* Treat an unavailable permission check as revoked. */ }
-      if (granted) routeNavigationNow(details, kind);
-      else if (activeState(controller.getState())) await controller.stop('permission-revoked');
-    });
+    enqueueRoutedEvent(async () => { routeNavigationNow(details, kind); });
   };
   const committed = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
     routeNavigation(details, 'document');
@@ -623,32 +609,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     available.onCommitted.addListener(committed);
     available.onHistoryStateUpdated.addListener(historyUpdated);
     available.onReferenceFragmentUpdated.addListener(fragmentUpdated);
-    navigationApi = available;
     navigationListenersInstalled = true;
     return true;
   };
-  const removeNavigationListeners = () => {
-    if (!navigationListenersInstalled || !navigationApi) return;
-    const installedApi = navigationApi;
-    navigationApi = undefined;
-    navigationListenersInstalled = false;
-    try { installedApi.onCommitted.removeListener(committed); } catch { /* Permission removal can invalidate the API object. */ }
-    try { installedApi.onHistoryStateUpdated.removeListener(historyUpdated); } catch { /* Best-effort listener cleanup. */ }
-    try { installedApi.onReferenceFragmentUpdated.removeListener(fragmentUpdated); } catch { /* Best-effort listener cleanup. */ }
+  const ensureJourneySupport = (): void => {
+    if (!installNavigationListeners()) throw new Error(GENERIC_ERROR);
   };
-  const ensureJourneyGrant = async (): Promise<void> => {
-    if (!await hasJourneyGrant() || !installNavigationListeners()) throw new JourneyCommandError('permission-required');
-  };
-  const journeyPermissionRemoved = (removed: chrome.permissions.Permissions) => {
-    const affected = removed.permissions?.includes('webNavigation') || Boolean(removed.origins?.length);
-    if (!affected) return;
-    launchGeneration += 1;
-    removeNavigationListeners();
-    enqueueRoutedEvent(async () => {
-      if (activeState(controller.getState())) await controller.stop('permission-revoked');
-    });
-  };
-  api.permissions?.onRemoved?.addListener(journeyPermissionRemoved);
 
   const ownerActivated = (info: { tabId: number; windowId: number }) => {
     enqueueRoutedEvent(async () => {
@@ -726,12 +692,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const recoverRecordingOwner = async (): Promise<void> => {
     let state = controller.getState();
     if (state.phase !== 'recording') return;
-    let granted = false;
-    try { granted = await hasJourneyGrant(); } catch { /* Fail closed below. */ }
-    if (!granted) {
-      await controller.stop('permission-revoked');
-      return;
-    }
 
     const drainOwnerWakeEvents = async (): Promise<'document' | 'same-document' | undefined> => {
       let navigation: 'document' | 'same-document' | undefined;
@@ -964,7 +924,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
 
   const startFallback = async (intent: LaunchIntent, generation: number, includeEnteredValues: boolean): Promise<void> => {
-    await ensureJourneyGrant();
+    ensureJourneySupport();
     if (generation !== launchGeneration) return;
     let identity: JourneyPageIdentity;
     try {
@@ -1010,7 +970,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         try { await focusedOwnerTab(ownerTabId, ownerWindowId); }
         catch { throw new JourneyCommandError('owner-unavailable'); }
         if (generation !== launchGeneration) return;
-        await ensureJourneyGrant();
+        ensureJourneySupport();
         if (generation !== launchGeneration) return;
         if (message.includeEnteredValues !== undefined && typeof message.includeEnteredValues !== 'boolean') {
           throw new JourneyCommandError('owner-unavailable');
@@ -1188,12 +1148,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
           if (!isRecord(rawMessage) || rawMessage.type !== 'ANMERKO_JOURNEY_EVENTS' || !isRecord(rawMessage.batch)
             || rawMessage.batch.sessionId !== current.sessionId || rawMessage.batch.epoch !== current.epoch
             || rawMessage.batch.documentToken !== current.documentToken) return;
-          let granted = false;
-          try { granted = await hasJourneyGrant(); } catch { /* Fail closed below. */ }
-          if (!granted) {
-            await controller.stop('permission-revoked');
-            return;
-          }
           controller.acceptBatch(rawMessage.batch, senderTabId);
           await latestStateWrite;
         } catch { /* Malformed or stale page batches fail closed. */ }
