@@ -28,7 +28,7 @@ You can customize the text before the comments under [**Prompt Preamble** in Set
 
 ## Share a recorded journey
 
-A saved journey appears in the prompt as one summary item with its expected and actual summaries, then in full under **Recorded journeys**. Journeys that cross websites carry a **Spans pages** label; the full ordered sequence always exports whole.
+A saved journey appears in the prompt as one summary item with its expected and actual summaries, then in full under **Recorded journeys**. Journeys that cover more than one page carry a **Spans pages** label; the full ordered sequence always exports whole.
 
 In a saved review, **Copy Prompt** copies the journey brief; attach screenshots separately. **Download Markdown + Images** saves a journey ZIP containing:
 

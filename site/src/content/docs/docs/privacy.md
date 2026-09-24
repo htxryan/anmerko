@@ -21,15 +21,15 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 
 | Permission | Use |
 | --- | --- |
-| `activeTab` | Access the website after activation |
+| `activeTab` | Access the site after you activate anmerko |
 | `scripting` | Add annotation controls |
 | `storage` | Save feedback and settings locally |
+| `alarms` | Time out a recording and expire stale reviews |
 | `clipboardWrite` | Copy the requested prompt |
 | `sidePanel` | Open the Chrome or Edge sidebar |
-| `webNavigation` (optional) | Observe page changes for journey capture |
-| host access (optional) | Record journeys across websites after approval |
+| `webNavigation` | Observe page changes during a journey |
 
-There is no persistent all-sites permission by default. Starting a journey requests optional access once; you can keep it for future journeys or remove it in browser settings. Removing it stops an active recording.
+anmerko holds no host permissions and no optional permissions, and never prompts for site access. `activeTab` covers only the site where you activate it, so a journey records only the site where you started it; navigating to a different site ends the journey.
 
 ## Limits
 

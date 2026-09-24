@@ -31,7 +31,7 @@ The sidebar follows the active tab. Activate anmerko from the toolbar on each ne
 
 A journey captures a failure that unfolds over several actions: ordered clicks, page changes, a screenshot per step, and your expected-versus-actual summary for a coding agent. Static comments stay unchanged.
 
-Choose **Record journey** from **More Comment Options** on a website. The first start requests optional access for cross-site capture and navigation observation; a denied grant leaves the recorder inactive. Recording starts only after an initial screenshot succeeds — wait for the recording indicator before interacting. Up to 5 minutes or 30 steps in one tab. **Stop journey** ends recording and opens review; closing the tab, switching windows, or losing the page ends it for review instead.
+Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access granted when you activated anmerko on that site. Recording starts only after an initial screenshot succeeds — wait for the recording indicator before interacting. A journey records the site where it started: SPA route changes, hash changes, and same-site link clicks keep recording. Navigating to a different site ends the journey and opens review — the click that left is recorded, but the departure is not. Up to 5 minutes or 30 steps in one tab. **Stop journey** ends recording and opens review; closing the tab, switching windows, or losing the page ends it for review instead. Start a new journey later by activating anmerko from the toolbar again.
 
 **Include entered values** is off for every launch, even if the last journey enabled it. When on, anmerko records committed field changes only — never keystrokes — and skips passwords, payment and secret fields. Screenshots and full URLs can still show visible values either way; review everything before sharing.
 
@@ -41,7 +41,7 @@ Reloading the page records a navigation step and continues. A suspended browser 
 
 Review starts with **Expected result** and **Actual result** — both are required to save, up to 4,000 characters each. Every step shows its action, timing, full source URL, and screenshot state. Remove steps you don't need; sequence numbers stay stable. For each screenshot choose **Keep**, **Mask**, or **Remove** — masks flatten permanently and cannot be undone. **Redact** source and image URLs to `[redacted]` without breaking step and image links. Edit or clear captured values; edited values are marked and originals leave the draft.
 
-Acknowledge that full URLs and entered values are retained, then **Save journey**. Saved journeys appear once each in **Saved journeys** with a **Spans pages** label when they cross websites. Reopen a saved journey to keep editing; saving again stores a new revision. Delete one journey or all of them with confirmation; deletion removes the snapshots but never exported files.
+Acknowledge that full URLs and entered values are retained, then **Save journey**. Saved journeys appear once each in **Saved journeys** with a **Spans pages** label when they cover more than one page on that site. Reopen a saved journey to keep editing; saving again stores a new revision. Delete one journey or all of them with confirmation; deletion removes the snapshots but never exported files.
 
 ## Share a journey
 
