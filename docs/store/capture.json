@@ -1,8 +1,8 @@
 {
-  "capturedAt": "2026-09-15T03:26:56.114Z",
-  "source": "78be4fef09ef8cb92fbe4f992806b2e0ddeaaf9f",
+  "capturedAt": "2026-09-24T00:03:30.910Z",
+  "source": "ed333aa0a7729db77a9163aee56530710cc363f1",
   "extensionVersion": "0.5.3",
-  "browser": "Chrome/153.0.8010.36",
+  "browser": "Chrome/153.0.8010.53",
   "website": "https://saladrecipefinder.com/",
   "viewport": {
     "width": 1280,
@@ -12,23 +12,23 @@
   "captures": [
     {
       "file": "01-element-feedback.png",
-      "sha256": "f6be5bb6060eec91f696fe65ca38f0543e098b4f207a03108bad8fa9247481b0"
+      "sha256": "104de637fd86c3db7e51e3954a8f6af29bcad11d87313e5533008e67d12be456"
     },
     {
       "file": "02-screenshot-feedback.png",
-      "sha256": "42f50216bdd72b1627eb6127e1cdb2fa075c82dc0f3fe052176c310bbfaf6c63"
+      "sha256": "2077bce316d39ca2e7e54abb0f7815a902931ba85afd0dc0440be09e39f81b7b"
     },
     {
       "file": "03-global-comment.png",
-      "sha256": "1405e8673cc9b6593076c61c3202bf3bd9a85f4112e2b51d8a198fd2aa622df8"
+      "sha256": "f179d827c2ec0f89382273a3b69f412f5021f8eacb1b486e8a05a7ba19e9630f"
     },
     {
       "file": "04-prompt-export.png",
-      "sha256": "3738c999d22ec9312294a96dec77bc2b6b6e40a06e334f35584b4585ae8091d1"
+      "sha256": "7bf83245cc7005e48e93009eec915e0d1aba6a100ff45c84fe411b75d47c64d9"
     },
     {
       "file": "05-settings.png",
-      "sha256": "b9819019c38fb3607a41efce27f1474c717efa761948a5a54e8ea65aed9d396a"
+      "sha256": "811061c087bb3f6f6bb3c8aa7404ed189f2cf2ea1a759d6dcb287d9175906ca3"
     }
   ]
 }
