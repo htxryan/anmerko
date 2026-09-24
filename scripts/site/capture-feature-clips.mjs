@@ -11,7 +11,7 @@
 // Usage:
 //   npm run build
 //   HEADLESS=1 CLIP_VIEWPORT=1068x668 CLIP_SCALE=800:-2 FFMPEG=/path/to/ffmpeg \
-//     node scripts/site/capture-feature-clips.mjs [element|screenshot|global|component|export]
+//     node scripts/site/capture-feature-clips.mjs [element|screenshot|global|component|preact|export]
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -132,6 +132,49 @@ async function globalClip() {
   }
 }
 
+async function preactClip(fixtureOrigin) {
+  const session = await launch();
+  try {
+    const ready = page => page.waitForFunction(() => globalThis.__ANMERKO_FIXTURE__?.ready === true);
+    const { page, ss } = await setupPage(session, `${fixtureOrigin}/preact/10.29.8/production`, ready);
+    const settings = panel(page).getByRole('button', { name: 'Extension settings' });
+    const toggle = panel(page).getByRole('switch', { name: 'Capture component context' });
+    const back = panel(page).getByRole('button', { name: 'Back', exact: false });
+    const select = panel(page).getByRole('button', { name: 'Select Element', exact: true });
+    const target = page.locator('#preact-nested-button');
+    await caption(page, 'Turn on Capture component context');
+    await glide(page, await centerOf(settings), 750);
+    await clickAt(page, await centerOf(settings));
+    await toggle.waitFor();
+    await glide(page, await centerOf(toggle), 650);
+    await page.waitForTimeout(500);
+    if (await toggle.getAttribute('aria-checked') !== 'true') {
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(650);
+    }
+    await glide(page, await centerOf(back), 650);
+    await clickAt(page, await centerOf(back), 600);
+    await caption(page, 'Select the nested button');
+    await glide(page, await centerOf(select), 750);
+    await clickAt(page, await centerOf(select));
+    await pulse(page, '#preact-nested-button');
+    await glide(page, await centerOf(target), 800);
+    await page.waitForTimeout(500);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(900);
+    await panel(page).locator('.component-context-path').waitFor();
+    await caption(page, 'Works in production builds too');
+    await page.waitForTimeout(2000);
+    page._clipSs = ss;
+    await finish(session, page, { name: 'preact', outDir, srtDir: rawDir, rawDir });
+  } catch (error) {
+    await session.context.close().catch(() => {});
+    await rm(session.temp, { recursive: true, force: true });
+    throw error;
+  }
+}
 async function componentClip(fixtureOrigin) {
   const session = await launch();
   try {
@@ -251,12 +294,13 @@ await mkdir(rawDir, { recursive: true });
 await mkdir(outDir, { recursive: true });
 const clips = { element: elementClip, screenshot: screenshotClip, global: globalClip, export: exportClip };
 let fixtureServer;
-if (!only || only === 'component') {
+if (!only || only === 'component' || only === 'preact') {
   fixtureServer = await startFixtureServer();
   clips.component = () => componentClip(fixtureServer.origin);
+  clips.preact = () => preactClip(fixtureServer.origin);
 }
 try {
-  const names = only ? [only] : ['element', 'screenshot', 'global', 'component', 'export'];
+  const names = only ? [only] : ['element', 'screenshot', 'global', 'component', 'preact', 'export'];
   for (const name of names) {
     assert.ok(clips[name], `unknown clip: ${name}`);
     await clips[name]();
