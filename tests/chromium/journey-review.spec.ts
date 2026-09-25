@@ -48,6 +48,8 @@ const bundle = () => buildSync({ stdin: { contents: `
   let failingDeleteIds = [];
   let startError = null;
   let startHook = null;
+  let startGate = null;
+  let stopCalls = 0;
   let firefox = false;
   let startable = true;
   let reopenInto = null;
@@ -59,9 +61,10 @@ const bundle = () => buildSync({ stdin: { contents: `
     start: async includeEnteredValues => {
       startCalls.push(includeEnteredValues);
       startHook?.();
+      if (startGate) await startGate.promise;
       if (startError) throw new Error(startError);
     },
-    stop: async () => {},
+    stop: async () => { stopCalls += 1; },
     discard: async () => { state = { phase: 'idle', epoch: 9 }; changed(); },
     updateSummary: async (expected, actual, journeyId) => {
       summaryCalls.push([expected, actual]);
@@ -310,6 +313,9 @@ const bundle = () => buildSync({ stdin: { contents: `
     failStart: message => { startError = message; },
     // Runs inside Start, as the background does when it switches to the website tab.
     onStart: hook => { startHook = hook; },
+    holdStart: () => { startGate = gate(); },
+    releaseStart: () => { const held = startGate; startGate = null; held?.release(); },
+    stopCalls: () => stopCalls,
     setFirefox: value => { firefox = value; changed(); },
     setStartable: value => { startable = value; changed(); },
     // Reopening a saved journey lands in review at its saved revision.
@@ -1946,6 +1952,41 @@ test('a save elsewhere reports a drawn mask as lost, but not a mask editor left 
     else await expect(page.getByRole('alert')).toHaveCount(0);
     expect(await page.evaluate('journeyReviewHarness.reviewImageCalls()')).toEqual([]);
   }
+});
+
+test('a click on controls held for a press is dropped once their journey is no longer in view', async ({ page }) => {
+  await openReview(page);
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
+  const confirm = page.getByRole('button', { name: 'Confirm discard journey', exact: true });
+  await expect(confirm).toBeFocused();
+  await pressWhile(page, confirm, async () => {
+    const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+    // J1 is closed elsewhere and J2 opened while the pointer is down.
+    await page.evaluate('journeyReviewHarness.setReviewingOther()');
+    await refreshLanded(page, before);
+  });
+  await expect(page.getByRole('heading', { name: 'Step 2 · Click: Pay now' })).toBeVisible();
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 200)));
+  expect(await page.evaluate('journeyReviewHarness.state()')).toMatchObject({ phase: 'reviewing', journeyId: 'J2' });
+  await expect(page.getByRole('button', { name: 'Discard journey', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true })).toHaveCount(0);
+});
+
+test('Cancel start pressed while this surface\'s own start begins recording still cancels it', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate('journeyReviewHarness.holdStart()');
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  const cancel = page.getByRole('button', { name: 'Cancel start', exact: true });
+  await expect(cancel).toBeEnabled();
+  await pressWhile(page, cancel, async () => {
+    const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+    await page.evaluate('journeyReviewHarness.setRecording(1)');
+    // Recording reads no saved list, so wait for its read to land instead.
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+    expect(await page.evaluate('journeyReviewHarness.listCalls()')).toBe(before);
+  });
+  await expect.poll(() => page.evaluate('journeyReviewHarness.stopCalls()')).toBe(1);
+  await page.evaluate('journeyReviewHarness.releaseStart()');
 });
 
 test('the only remaining step explains why it cannot be removed', async ({ page }) => {

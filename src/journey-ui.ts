@@ -132,6 +132,12 @@ function heldBySave(caught: unknown): boolean {
   return caught instanceof Error && (caught as { code?: unknown }).code === JOURNEY_SAVE_IN_PROGRESS;
 }
 
+// Which journey a view's controls act on: one journey from its start through
+// review and saving, then its saved screen, or the launch view.
+function viewKey(session: JourneySession): string {
+  return session.phase === 'idle' ? 'idle' : `${session.phase === 'saved' ? 'saved' : 'journey'}:${session.journeyId}`;
+}
+
 // A saved journey is named by what its reporter expected, then by the page it
 // started on. Visible text never shows raw journey IDs.
 export function savedJourneyTitle(item: Pick<JourneySavedSummary, 'expected' | 'startPage'>): string {
@@ -232,6 +238,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let reviewFor = '';
   let rendering = false;
   let renderedPhase: JourneySession['phase'] | undefined;
+  let renderedKey = '';
   let announcedNotice = '';
   let savedJourneys: JourneySavedSummary[] | null = null;
   let editingStepId: string | null = null;
@@ -293,8 +300,18 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     endPressAfter(PRESS_CLICK_WAIT_MS);
   };
   // The click is dispatched after its capture listeners, so a zero delay ends
-  // the press once the control has handled it.
-  const pressClicked = () => { endPressAfter(0); };
+  // the press once the control has handled it. A click on controls rendered
+  // for a journey that is no longer the one in view (its update held for the
+  // press, or still reading the saved list) is dropped: acting on it could
+  // discard or change another journey. The current view replaces it. Only
+  // Cancel start is live while this surface's own start begins a journey.
+  const pressClicked = (event: Event) => {
+    if (renderedKey !== viewKey(state) && !startInFlight && event.composedPath().includes(view)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    endPressAfter(0);
+  };
 
   async function refresh() {
     const current = ++version;
@@ -1662,6 +1679,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const oldFocus = inView ? activeElement.textContent : null;
     const phaseChanged = renderedPhase !== undefined && renderedPhase !== state.phase;
     renderedPhase = state.phase;
+    renderedKey = viewKey(state);
     if (state.phase !== 'reviewing' && announcedNotice) {
       announcedNotice = '';
       politeLive.textContent = '';
