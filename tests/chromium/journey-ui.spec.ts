@@ -165,7 +165,9 @@ test('a storage failure after recording stopped says nothing recorded is missing
   // Still urgent: the unsaved draft can be lost.
   await expect(page.locator('.journey-stop-reason.journey-notice-error')).toHaveText(text);
   await expect(page.locator('.journey-live [aria-live="assertive"]')).toHaveText(text);
-  await expect(page.locator('.journey-limitations li')).toHaveText([JOURNEY_LIMITATIONS.reviewStorage]);
+  // The notice states this loss, so Limitations does not list it again.
+  await expect(page.locator('.journey-limitations')).toHaveCount(0);
+  await expect(page.getByText(JOURNEY_LIMITATIONS.reviewStorage, { exact: true })).toHaveCount(0);
   const shown = await page.locator('body').innerText();
   expect(shown).not.toContain('while recording');
   expect(shown).not.toMatch(/latest action[^\n]*may be (lost|missing)/);
