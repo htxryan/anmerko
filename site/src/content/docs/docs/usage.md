@@ -53,7 +53,7 @@ Steps recorded before the stop are kept, and review explains why recording ended
 
 Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none. **Limitations**, when shown, notes losses such as shortened entered values or a page anmerko could no longer access.
 
-- **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step.
+- **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step; discard the journey instead.
 - **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider. **View full-size screenshot** opens it at actual size; scroll or use the arrow keys to move around, choose **Fit to window** to see all of it, and **Close** or Esc to return.
 - **Redact** replaces a source, destination, or screenshot URL, or a click's label, with `[redacted]`, and a note names what was redacted. A click label comes from the page's text and can repeat what you typed, such as a search suggestion, even with entered values off. Clicks on fields are labelled only by field type, such as “text field”, so they offer no label redaction.
 - **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
