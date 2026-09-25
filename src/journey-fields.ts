@@ -284,7 +284,8 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
   // Password tracking: every password input in the document and its open
   // shadow roots is remembered when attached, inserted, or retyped, before a
   // reveal toggle can turn it into text. A shadow root attached after its
-  // host was inserted is found when the user first interacts inside it.
+  // host was inserted is found when the user first presses, focuses, or
+  // types anywhere inside it, including inside a nested component's root.
   const notePassword = (element: Element): void => {
     if (element instanceof HTMLInputElement && element.type.toLowerCase() === 'password') wasPassword.add(element);
   };
@@ -315,11 +316,11 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
     observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['type'], attributeOldValue: true });
     scan(root);
   };
-  const noteTarget = (target: Element | null): void => {
-    if (target === null) return;
-    notePassword(target);
-    const root = target.getRootNode();
-    if (root instanceof ShadowRoot) observeRoot(root);
+  const notePath = (event: Event): void => {
+    const target = trueTarget(event);
+    if (target !== null) notePassword(target);
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    for (const node of path) if (node instanceof ShadowRoot) observeRoot(node);
   };
 
   const emit = (element: FieldElement): void => {
@@ -387,8 +388,8 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
   // commit trigger (change, focus exit, submit, or pre-click flush).
   const onInput = (event: Event): void => {
     if (disposed || !event.isTrusted) return;
+    notePath(event);
     const target = trueTarget(event);
-    noteTarget(target);
     if ((event as InputEvent).isComposing === true) {
       if (target !== null && isFieldElement(target)) composing.add(target);
       markDirty(target);
@@ -410,9 +411,11 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
     if (target !== null && isFieldElement(target)) flush(target);
   };
 
-  const onFocusIn = (event: FocusEvent): void => {
+  // Presses and focus only note password inputs, before page handlers for
+  // the same event can reveal them.
+  const onNotePath = (event: Event): void => {
     if (disposed || !event.isTrusted) return;
-    noteTarget(trueTarget(event));
+    notePath(event);
   };
 
   const onFocusOut = (event: FocusEvent): void => {
@@ -432,8 +435,8 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
 
   const onClick = (event: MouseEvent): void => {
     if (disposed || !event.isTrusted) return;
+    notePath(event);
     const target = trueTarget(event);
-    noteTarget(target);
     flushPending();
     // The click itself toggles checkable controls (their input/change events
     // arrive after this capture phase), so commit the toggled state now when
@@ -445,7 +448,9 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
   document.addEventListener('input', onInput, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
   document.addEventListener('change', onChange, true);
-  document.addEventListener('focusin', onFocusIn, true);
+  document.addEventListener('pointerdown', onNotePath, true);
+  document.addEventListener('mousedown', onNotePath, true);
+  document.addEventListener('focusin', onNotePath, true);
   document.addEventListener('focusout', onFocusOut, true);
   document.addEventListener('submit', onSubmit, true);
   document.addEventListener('click', onClick, true);
@@ -458,7 +463,9 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
     document.removeEventListener('input', onInput, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
     document.removeEventListener('change', onChange, true);
-    document.removeEventListener('focusin', onFocusIn, true);
+    document.removeEventListener('pointerdown', onNotePath, true);
+    document.removeEventListener('mousedown', onNotePath, true);
+    document.removeEventListener('focusin', onNotePath, true);
     document.removeEventListener('focusout', onFocusOut, true);
     document.removeEventListener('submit', onSubmit, true);
     document.removeEventListener('click', onClick, true);

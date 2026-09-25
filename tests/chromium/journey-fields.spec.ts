@@ -404,6 +404,58 @@ test('card-code spellings, spelled-out initialisms, and translated labels are pr
   expectAllBatchesValid(seen);
 });
 
+test('a password in a late shadow root stays excluded when a non-focusable icon or a mousedown control reveals it', async ({ page }) => {
+  await page.setContent(`
+    <section id="later"></section>
+    <input type="text" name="nickname" id="nickname">
+    <button type="button" id="other">Other</button>
+  `);
+  const seen: unknown[] = [];
+  await attach(page, seen);
+
+  // Each host gets its shadow root after it was inserted (a component
+  // upgraded later). One reveal toggle is a non-focusable span holding an
+  // icon with its own shadow root; the other flips the field on mousedown
+  // and prevents focus. Both run before the field is ever focused.
+  await page.evaluate(() => {
+    const later = document.querySelector('#later')!;
+    const iconHost = document.createElement('icon-host');
+    const mousedownHost = document.createElement('mousedown-host');
+    later.append(iconHost, mousedownHost);
+    setTimeout(() => {
+      const iconRoot = iconHost.attachShadow({ mode: 'open' });
+      iconRoot.innerHTML = '<input type="password" id="icon-field"><span id="icon-toggle"><eye-icon></eye-icon></span>';
+      const eye = iconRoot.querySelector('eye-icon')!.attachShadow({ mode: 'open' });
+      eye.innerHTML = '<span id="eye" style="display:inline-block;width:24px;height:24px">o</span>';
+      iconRoot.querySelector('#icon-toggle')!.addEventListener('click', () => {
+        (iconRoot.querySelector('#icon-field') as HTMLInputElement).type = 'text';
+      });
+      const mousedownRoot = mousedownHost.attachShadow({ mode: 'open' });
+      mousedownRoot.innerHTML = '<input type="password" id="mousedown-field"><button type="button" id="mousedown-toggle">Show</button>';
+      mousedownRoot.querySelector('#mousedown-toggle')!.addEventListener('mousedown', event => {
+        event.preventDefault();
+        (mousedownRoot.querySelector('#mousedown-field') as HTMLInputElement).type = 'text';
+      });
+    }, 0);
+  });
+  await page.locator('icon-host eye-icon #eye').click();
+  await expect(page.locator('icon-host #icon-field')).toHaveAttribute('type', 'text');
+  await page.locator('icon-host #icon-field').fill('revealed-secret-1');
+  await page.click('#other');
+  await page.locator('mousedown-host #mousedown-toggle').click();
+  await expect(page.locator('mousedown-host #mousedown-field')).toHaveAttribute('type', 'text');
+  await page.locator('mousedown-host #mousedown-field').fill('revealed-secret-2');
+  await page.click('#other');
+
+  await page.fill('#nickname', 'green otter');
+  await page.click('#other');
+
+  expect(seen).toHaveLength(1);
+  expect((seen[0] as any).enteredValue).toEqual({ kind: 'text', value: 'green otter', truncated: false });
+  expect(JSON.stringify(seen)).not.toContain('revealed-secret');
+  expectAllBatchesValid(seen);
+});
+
 test('IME composition never marks a field dirty; the control input commits', async ({ page }) => {
   await page.setContent('<input type="text" name="city" id="city"><button type="button" id="other">Other</button>');
   const seen: unknown[] = [];
