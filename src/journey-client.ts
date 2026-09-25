@@ -1,9 +1,11 @@
 import { extensionApi, firefoxExtension } from './platform';
 import type { JourneyDraftImage, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import { isJourneyBackgroundSender } from './journey-messaging';
+import { JOURNEY_SAVE_IN_PROGRESS, JOURNEY_SAVE_IN_PROGRESS_ERROR } from './journey-ui';
 import type { JourneyClient, JourneyImageChange, JourneySavedSummary } from './journey-ui';
 
 type JourneyOwner = { ownerTabId?: number; ownerWindowId?: number };
+type ReviewingSession = Extract<JourneySession, { phase: 'reviewing' }>;
 type JourneyResponse = { ok: true; value?: unknown } | { ok: false; code?: unknown; error?: unknown };
 
 const CLIENT_ERROR = 'Could not update the journey. Try again.';
@@ -25,6 +27,10 @@ function validOwner(value: JourneyOwner | undefined): value is { ownerTabId: num
 
 function validIntent(value: string | undefined): value is string {
   return typeof value === 'string' && INTENT_PATTERN.test(value);
+}
+
+function savingError(): Error {
+  return Object.assign(new Error(JOURNEY_SAVE_IN_PROGRESS_ERROR), { code: JOURNEY_SAVE_IN_PROGRESS });
 }
 
 export function createJourneyClient(
@@ -50,52 +56,62 @@ export function createJourneyClient(
     return response.value;
   }
 
+  async function reviewing(): Promise<ReviewingSession> {
+    const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+    if (current.phase === 'saving') throw savingError();
+    if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+    return current;
+  }
+
+  // A save holds the review in its saving phase, and the background refuses
+  // edits then as stale. When the review has not changed since this edit read
+  // it, or the refusing save has since finished, the save refused it, not
+  // another tab: say so, so the view can wait for the save instead.
+  async function reviewEdit(current: ReviewingSession, type: string, extra: Record<string, unknown>): Promise<void> {
+    try {
+      await command(type, { epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision, ...extra });
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'stale-review') throw error;
+      const latest = await command('ANMERKO_JOURNEY_STATE').catch(() => undefined) as JourneySession | undefined;
+      if (latest?.phase === 'saving' || (latest?.phase === 'saved' && latest.journeyId === current.journeyId)
+        || (latest?.phase === 'reviewing' && latest.epoch === current.epoch && latest.journeyId === current.journeyId
+          && latest.draft.revision === current.draft.revision)) throw savingError();
+      throw error;
+    }
+  }
+
   return {
     supportsEnteredValues: true,
     pageLoadsEndJourney: firefoxExtension(),
     read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
     updateSummary: async (expected: string, actual: string): Promise<void> => {
-      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
-      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
-      await command('ANMERKO_JOURNEY_UPDATE_SUMMARY', {
-        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
         updatedAt: new Date().toISOString(), expected, actual,
       });
     },
     removeStep: async (stepId: string): Promise<void> => {
-      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
-      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
-      await command('ANMERKO_JOURNEY_REMOVE_STEP', {
-        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_REMOVE_STEP', {
         updatedAt: new Date().toISOString(), stepId,
       });
     },
     editValue: async (stepId: string, value: unknown): Promise<void> => {
-      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
-      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
-      await command('ANMERKO_JOURNEY_EDIT_VALUE', {
-        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_EDIT_VALUE', {
         updatedAt: new Date().toISOString(), stepId, value,
       });
     },
     redactUrl: async (stepId: string, url: JourneyUrlRedactionTarget): Promise<void> => {
-      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
-      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
-      await command('ANMERKO_JOURNEY_REDACT_URL', {
-        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_REDACT_URL', {
         updatedAt: new Date().toISOString(), stepId, url,
       });
     },
     reviewImage: async (imageId: string, change: JourneyImageChange): Promise<void> => {
-      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
-      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+      const current = await reviewing();
       // A mask drawn on older pixels must not overwrite a change another review tab made since.
       if (change.operation === 'replace' && current.draft.images[imageId]?.dataUrl !== change.maskedFrom) {
         throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
       }
-      await command('ANMERKO_JOURNEY_REVIEW_IMAGE', {
-        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision, imageId,
-        operation: change.operation, ...(change.operation === 'replace' ? { dataUrl: change.image.dataUrl } : {}),
+      await reviewEdit(current, 'ANMERKO_JOURNEY_REVIEW_IMAGE', {
+        imageId, operation: change.operation, ...(change.operation === 'replace' ? { dataUrl: change.image.dataUrl } : {}),
       });
     },
     save: async (acknowledged: boolean): Promise<{ journeyId: string; revision: number }> => {

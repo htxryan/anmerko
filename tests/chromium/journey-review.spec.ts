@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { STOP_REASONS } from '../../src/journey-limits';
@@ -18,6 +18,7 @@ const bundle = () => buildSync({ stdin: { contents: `
   const editCalls = [];
   const redactCalls = [];
   const saveCalls = [];
+  const savedSummaries = [];
   const reviewImageCalls = [];
   let lastReplacement = null;
   let reviewImageError = null;
@@ -25,7 +26,10 @@ const bundle = () => buildSync({ stdin: { contents: `
   let reviewImageGate = null;
   let saveGate = null;
   let summaryGate = null;
+  let listCalls = 0;
   const gate = () => { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release }; };
+  // Like the extension client, edits refused while a save holds the review say so.
+  const savingError = () => Object.assign(new Error('This journey is being saved. Wait for the save to finish, then try again.'), { code: 'save-in-progress' });
   let summaryError = null;
   let removeError = null;
   let saveError = null;
@@ -60,12 +64,14 @@ const bundle = () => buildSync({ stdin: { contents: `
     updateSummary: async (expected, actual) => {
       summaryCalls.push([expected, actual]);
       if (summaryGate) await summaryGate.promise;
+      if (state.phase === 'saving') throw savingError();
       if (summaryError) throw summaryError;
       state = { ...state, draft: { ...state.draft, expected, actual, revision: state.draft.revision + 1 } };
       changed();
     },
     removeStep: async stepId => {
       removeCalls.push(stepId);
+      if (state.phase === 'saving') throw savingError();
       if (removeError) throw removeError;
       state = { ...state, draft: { ...state.draft, steps: state.draft.steps.filter(step => step.id !== stepId), revision: state.draft.revision + 1 } };
       changed();
@@ -98,6 +104,7 @@ const bundle = () => buildSync({ stdin: { contents: `
           maskedCurrent: change.maskedFrom === state.draft.images[imageId]?.dataUrl }
         : { imageId, operation: 'remove' });
       if (reviewImageGate) await reviewImageGate.promise;
+      if (state.phase === 'saving') { reviewImageCalls.pop(); throw savingError(); }
       if (reviewImageError) throw reviewImageError;
       const draft = state.draft;
       if (change.operation === 'replace') {
@@ -118,6 +125,7 @@ const bundle = () => buildSync({ stdin: { contents: `
       if (saveGate) await saveGate.promise;
       if (saveError) throw saveError;
       const draft = state.draft;
+      savedSummaries.push([draft.expected, draft.actual]);
       const result = stayInReview
         ? { journeyId: draft.id, revision: draft.revision }
         : { journeyId: draft.id, revision: draft.revision + 1 };
@@ -156,6 +164,7 @@ const bundle = () => buildSync({ stdin: { contents: `
       changed();
     },
     list: async () => {
+      listCalls += 1;
       if (listShouldFail) throw new Error('Could not load saved journeys.');
       return structuredClone(listResult);
     },
@@ -265,12 +274,16 @@ const bundle = () => buildSync({ stdin: { contents: `
     editCalls: () => editCalls,
     redactCalls: () => redactCalls,
     saveCalls: () => saveCalls,
+    savedSummaries: () => savedSummaries,
     reviewImageCalls: () => reviewImageCalls,
     lastReplacement: () => lastReplacement,
     holdReviewImage: () => { reviewImageGate = gate(); },
     releaseReviewImage: () => { const held = reviewImageGate; reviewImageGate = null; held?.release(); },
     holdSave: () => { saveGate = gate(); },
     holdSummary: () => { summaryGate = gate(); },
+    releaseSummary: () => { const held = summaryGate; summaryGate = null; held?.release(); },
+    listCalls: () => listCalls,
+    state: () => state,
     releaseSave: () => { const held = saveGate; saveGate = null; held?.release(); },
     failReviewImage: () => {
       reviewImageError = Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
@@ -327,6 +340,24 @@ const bundle = () => buildSync({ stdin: { contents: `
       draft.images.I2 = { ...draft.images.I2, ...sized(1280, 720) };
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft };
+      changed();
+    },
+    // Another surface's save holds the review, then fails back to it or completes.
+    setSavingSilently: () => {
+      const { warningAt, expiresAt, ...owner } = state;
+      state = { ...owner, phase: 'saving' };
+    },
+    setSaving: () => {
+      const { warningAt, expiresAt, ...owner } = state;
+      state = { ...owner, phase: 'saving' };
+      changed();
+    },
+    failSaving: () => {
+      state = { ...state, phase: 'reviewing', warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z' };
+      changed();
+    },
+    completeSaving: () => {
+      state = { phase: 'saved', epoch: state.epoch + 1, journeyId: state.draft.id, revision: state.draft.revision + 1 };
       changed();
     },
     setIdle: () => {
@@ -1556,12 +1587,13 @@ test('an unchanged reopened journey exports and discards in one step, keeping it
   const discard = page.getByRole('button', { name: 'Discard journey', exact: true });
   await expect(discard).toHaveAccessibleDescription('Discarding closes this review. The saved copy stays in Saved journeys.');
 
-  // An edit makes the draft differ from its saved revision again. The keyboard
-  // activates Discard even if the summary autosave re-renders the view meanwhile.
+  // An edit makes the draft differ from its saved revision again. A pointer
+  // press on Discard blurs the field, and the autosave that starts lands while
+  // the pointer is still down.
+  await page.evaluate('journeyReviewHarness.holdSummary()');
   await page.getByLabel('Expected result').fill('Edited after reopening');
   await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled();
-  await discard.focus();
-  await page.keyboard.press('Enter');
+  await pressWhile(page, discard, () => landSummary(page));
   await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true }))
     .toHaveAccessibleDescription('Discard your unsaved changes? The last saved copy stays in Saved journeys.');
 });
@@ -1598,10 +1630,209 @@ test('a failed summary autosave keeps an unchanged journey from exporting its ol
   await page.getByLabel('Expected result').fill('Edited after reopening');
   await expect(page.getByRole('alert')).toHaveText('Another review tab changed this journey. Reload the review and try again.', { timeout: 10_000 });
   await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: 'Discard journey', exact: true }).focus();
-  await page.keyboard.press('Enter');
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true }))
     .toHaveAccessibleDescription('Discard your unsaved changes? The last saved copy stays in Saved journeys.');
+});
+
+// Holds the primary pointer down on a control while `during` runs, such as an
+// autosave or another tab's change landing, then releases it as one click.
+async function pressWhile(page: Page, control: Locator, during: () => Promise<void>) {
+  // Let an earlier click's re-render settle before locating the control.
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+  await control.scrollIntoViewIfNeeded();
+  const box = (await control.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await during();
+  await page.mouse.up();
+}
+
+// A refresh reads the saved list last and renders in the same turn, so a new
+// list read plus a short settle means its update has landed.
+async function refreshLanded(page: Page, before: number) {
+  await expect.poll(() => page.evaluate('journeyReviewHarness.listCalls()')).toBeGreaterThan(before);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+}
+
+async function landSummary(page: Page) {
+  const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+  await page.evaluate('journeyReviewHarness.releaseSummary()');
+  await refreshLanded(page, before);
+}
+
+async function readyToSave(page: Page) {
+  await openReview(page);
+  await page.getByLabel('Expected result').fill('Shows checkout');
+  await page.getByLabel('Actual result').fill('Opens on time');
+  await page.getByRole('checkbox', { name: /^I understand this journey retains/ }).check();
+  await expect.poll(() => page.evaluate('[journeyReviewHarness.state().draft.expected, journeyReviewHarness.state().draft.actual]'), { timeout: 10_000 })
+    .toEqual(['Shows checkout', 'Opens on time']);
+  await expect(page.getByRole('button', { name: 'Save journey', exact: true })).toBeEnabled();
+}
+
+test('Save pressed while the blur autosave lands still saves, with the typed summary', async ({ page }) => {
+  await readyToSave(page);
+  await page.evaluate('journeyReviewHarness.holdSummary()');
+  await page.getByLabel('Actual result').pressSequentially(' again');
+  // Pressing Save blurs the field, which starts the autosave; it lands and
+  // re-renders the review before the pointer is released.
+  await pressWhile(page, page.getByRole('button', { name: 'Save journey', exact: true }), () => landSummary(page));
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  expect(await page.evaluate('journeyReviewHarness.saveCalls()')).toEqual([true]);
+  expect(await page.evaluate('journeyReviewHarness.savedSummaries()')).toEqual([['Shows checkout', 'Opens on time again']]);
+});
+
+test('Save pressed before the summary autosave waits for it instead of saving the older text', async ({ page }) => {
+  await readyToSave(page);
+  await page.evaluate('journeyReviewHarness.holdSummary()');
+  await page.getByLabel('Actual result').pressSequentially(' again');
+  await page.getByRole('button', { name: 'Save journey', exact: true }).click();
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 200)));
+  expect(await page.evaluate('journeyReviewHarness.saveCalls()')).toEqual([]);
+  await page.evaluate('journeyReviewHarness.releaseSummary()');
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  expect(await page.evaluate('journeyReviewHarness.savedSummaries()')).toEqual([['Shows checkout', 'Opens on time again']]);
+});
+
+test('Save becomes available as soon as both summaries are typed, before the autosave lands', async ({ page }) => {
+  await openReview(page);
+  await page.getByRole('checkbox', { name: /^I understand this journey retains/ }).check();
+  await page.getByLabel('Expected result').fill('Shows checkout');
+  await expect.poll(() => page.evaluate('journeyReviewHarness.state().draft.expected'), { timeout: 10_000 }).toBe('Shows checkout');
+  const save = page.getByRole('button', { name: 'Save journey', exact: true });
+  await expect(save).toBeDisabled();
+  await page.evaluate('journeyReviewHarness.holdSummary()');
+  const actual = page.getByLabel('Actual result');
+  await actual.pressSequentially('O');
+  await expect(save).toBeEnabled();
+  await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toHaveCount(0);
+  // Typing continues in place.
+  await expect(actual).toBeFocused();
+  await actual.pressSequentially('pens');
+  await expect(actual).toHaveValue('Opens');
+  await actual.fill('');
+  await expect(save).toBeDisabled();
+  await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toBeVisible();
+  await expect(actual).toBeFocused();
+});
+
+test('controls pressed while another tab or a list refresh re-renders the review still get their click', async ({ page }) => {
+  await openReview(page);
+  await pressWhile(page, page.getByRole('button', { name: 'Remove step 2', exact: true }), async () => {
+    const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+    // Another review tab's change arrives as a state broadcast.
+    await page.evaluate('journeyReviewHarness.setList([])');
+    await refreshLanded(page, before);
+  });
+  await expect(page.getByRole('button', { name: 'Confirm remove step 2', exact: true })).toBeFocused();
+  await pressWhile(page, page.getByRole('button', { name: 'Keep step 2', exact: true }), async () => {
+    const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+    await page.evaluate('journeyReviewHarness.setList([])');
+    await refreshLanded(page, before);
+  });
+  await expect(page.getByRole('button', { name: 'Remove step 2', exact: true })).toBeFocused();
+  // Space activates on release, so a re-render between its press and release
+  // must not swallow it either.
+  const discard = page.getByRole('button', { name: 'Discard journey', exact: true });
+  await discard.focus();
+  await page.keyboard.down(' ');
+  const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+  await page.evaluate('journeyReviewHarness.setList([])');
+  await refreshLanded(page, before);
+  await page.keyboard.up(' ');
+  await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true })).toBeFocused();
+});
+
+test('another surface saving keeps unsent summaries, the acknowledgement and an open mask editor', async ({ page }) => {
+  await openImageReview(page);
+  const ack = page.getByRole('checkbox', { name: /^I understand this journey retains/ });
+  await ack.check();
+  await page.evaluate('journeyReviewHarness.holdSummary()');
+  await page.getByLabel('Expected result').fill('Typed before the save');
+  // Opening the editor blurs the field; its autosave stays in flight.
+  await page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+  await expect(dialog).toBeVisible();
+  await page.evaluate('journeyReviewHarness.setSaving()');
+  await expect(page.locator('.journey-view h1')).toHaveText('Saving journey');
+  // The save refuses the autosave; it waits instead of reporting an error.
+  await page.evaluate('journeyReviewHarness.releaseSummary()');
+  await expect.poll(() => page.evaluate('journeyReviewHarness.summaryCalls().length')).toBe(1);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('.journey-error')).toHaveCount(0);
+  // The save fails, so the review comes back with everything this tab had.
+  await page.evaluate('journeyReviewHarness.failSaving()');
+  await expect.poll(() => page.evaluate('journeyReviewHarness.state().draft.expected'), { timeout: 10_000 }).toBe('Typed before the save');
+  expect(await page.evaluate('journeyReviewHarness.summaryCalls()')).toEqual([['Typed before the save', ''], ['Typed before the save', '']]);
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByLabel('Expected result')).toHaveValue('Typed before the save');
+  await expect(ack).toBeChecked();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('a mask applied while another surface saves lands once the failed save returns to review', async ({ page }) => {
+  await openImageReview(page);
+  await page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+  await page.evaluate('journeyReviewHarness.setSaving()');
+  await expect(page.locator('.journey-view h1')).toHaveText('Saving journey');
+  await dialog.getByRole('spinbutton', { name: 'X', exact: true }).fill('0');
+  await dialog.getByRole('spinbutton', { name: 'Y', exact: true }).fill('0');
+  await dialog.getByRole('spinbutton', { name: 'Width', exact: true }).fill('10');
+  await dialog.getByRole('spinbutton', { name: 'Height', exact: true }).fill('5');
+  await dialog.getByRole('button', { name: 'Apply mask', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+  expect(await page.evaluate('journeyReviewHarness.reviewImageCalls()')).toEqual([]);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.evaluate('journeyReviewHarness.failSaving()');
+  await expect.poll(() => page.evaluate('journeyReviewHarness.reviewImageCalls()'), { timeout: 10_000 })
+    .toEqual([{ imageId: 'I1', operation: 'replace', width: 40, height: 20, maskedCurrent: true }]);
+  await expect(stepItem(page, 1).getByRole('status')).toHaveText('Screenshot for step 1 masked.');
+  await expect(stepItem(page, 1).getByText('Masked during review.', { exact: true })).toBeVisible();
+});
+
+test('a save that completes elsewhere reports the edits it left out', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.holdSummary()');
+  await page.getByLabel('Expected result').fill('Typed before the save');
+  await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
+  await page.evaluate('journeyReviewHarness.setSaving()');
+  await page.evaluate('journeyReviewHarness.releaseSummary()');
+  await expect.poll(() => page.evaluate('journeyReviewHarness.summaryCalls().length')).toBe(1);
+  await page.evaluate('journeyReviewHarness.completeSaving()');
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText('This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.');
+});
+
+test('an edit refused by a save in progress says so instead of blaming another tab', async ({ page }) => {
+  await openReview(page);
+  await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
+  const confirm = page.getByRole('button', { name: 'Confirm remove step 2', exact: true });
+  // The save starts after this view last rendered the review.
+  await page.evaluate('journeyReviewHarness.setSavingSilently()');
+  await confirm.click();
+  await expect(page.getByRole('alert')).toHaveText('This journey is being saved. Wait for the save to finish, then try again.');
+});
+
+test('the only remaining step explains why it cannot be removed', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setReviewingSteps(1)');
+  await expect(page.getByRole('heading', { name: /^Step 1 / })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Remove step/ })).toHaveCount(0);
+  await expect(stepItem(page, 1).getByText('A journey keeps at least one step. To remove this one, discard the journey.', { exact: true })).toBeVisible();
+  await page.evaluate('journeyReviewHarness.setReviewingSteps(2)');
+  await expect(page.getByRole('button', { name: 'Remove step 1', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove step 2', exact: true })).toBeVisible();
+  // Confirming the removal of one of two steps leaves the other without Remove.
+  await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm remove step 2', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^Step 2 / })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Remove step/ })).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('a portrait screenshot that already fits whole offers no Enlarge', async ({ page }) => {

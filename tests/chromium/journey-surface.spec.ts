@@ -112,6 +112,53 @@ test('the client says page loads end a journey only in Firefox, on desktop or An
   });
 });
 
+test('review edits refused by a save in progress say so, and real staleness still blames the other tab', async ({ page }) => {
+  await page.addScriptTag({ content: clientBundle });
+  const outcomes = await page.evaluate(async () => {
+    const { clientModule } = globalThis as HarnessWindow;
+    const runtime = (globalThis as any).chrome.runtime;
+    const reviewing = (revision: number) => ({ phase: 'reviewing', epoch: 2, sessionId: 'S', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+      warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+      draft: { id: 'J1', revision, images: { I1: { dataUrl: 'data:image/png;base64,AAAA' } }, steps: [] } });
+    const saving = { ...reviewing(3), phase: 'saving' };
+    // Each case lists the states read in order and whether the edit itself is refused as stale.
+    const run = async (states: unknown[], refused: boolean, edit: (client: any) => Promise<void>) => {
+      const sent: string[] = [];
+      let read = 0;
+      runtime.sendMessage = async (message: { type: string }) => {
+        sent.push(message.type);
+        if (message.type === 'ANMERKO_JOURNEY_STATE') return { ok: true, value: states[Math.min(read++, states.length - 1)] };
+        return refused ? { ok: false, error: 'Journey command unavailable.', code: 'stale-review' } : { ok: true };
+      };
+      try {
+        await edit(clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })));
+        return { sent, outcome: 'ok' };
+      } catch (error) {
+        return { sent, outcome: `${(error as { code?: string }).code ?? 'none'}: ${(error as Error).message}` };
+      }
+    };
+    const summary = (client: any) => client.updateSummary('Expected', 'Actual');
+    return {
+      savingBeforeEdit: await run([saving], false, summary),
+      savingAfterRefusal: await run([reviewing(3), saving], true, client => client.removeStep('S1')),
+      saveFailedSince: await run([reviewing(3), reviewing(3)], true, client => client.redactUrl('S1', 'source')),
+      savedSince: await run([reviewing(3), { phase: 'saved', epoch: 3, journeyId: 'J1', revision: 4 }], true, client => client.editValue('S1', null)),
+      imageDuringSave: await run([saving], false, client => client.reviewImage('I1', { operation: 'remove' })),
+      changedElsewhere: await run([reviewing(3), reviewing(4)], true, summary),
+    };
+  });
+  const saving = 'save-in-progress: This journey is being saved. Wait for the save to finish, then try again.';
+  const stale = 'stale-review: Another review tab changed this journey. Reload the review and try again.';
+  expect(outcomes).toEqual({
+    savingBeforeEdit: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: saving },
+    savingAfterRefusal: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_STATE'], outcome: saving },
+    saveFailedSince: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_STATE'], outcome: saving },
+    savedSince: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_STATE'], outcome: saving },
+    imageDuringSave: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: saving },
+    changedElsewhere: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_STATE'], outcome: stale },
+  });
+});
+
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   await page.evaluate(() => {

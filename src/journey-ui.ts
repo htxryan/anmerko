@@ -23,6 +23,8 @@ export interface JourneySavedSummary {
   startPage?: string;
 }
 
+// Review edits refused because a save holds the review reject with an error
+// whose code is JOURNEY_SAVE_IN_PROGRESS, so the view can await its outcome.
 export interface JourneyClient {
   read(): Promise<JourneySession>;
   // Called directly from the Start click, so the adapter can request optional
@@ -49,7 +51,16 @@ export interface JourneyClient {
   canStart?(): boolean;
 }
 
+export const JOURNEY_SAVE_IN_PROGRESS = 'save-in-progress';
+export const JOURNEY_SAVE_IN_PROGRESS_ERROR = 'This journey is being saved. Wait for the save to finish, then try again.';
 const JOURNEY_STORAGE_ERROR = 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.';
+const LOST_EDITS = 'This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.';
+const LAST_STEP = 'A journey keeps at least one step. To remove this one, discard the journey.';
+// A tap's click can follow its pointerup in a later task; a press that makes
+// no click stops holding re-renders after this long.
+const PRESS_CLICK_WAIT_MS = 500;
+// A press whose release never arrives holds re-renders at most this long.
+const PRESS_LIMIT_MS = 10_000;
 const EXPORT_SIZE_ERROR = 'Journey export exceeds the export size limit.';
 const REDACTED = '[redacted]';
 // Previews fit this height so a tall phone capture is shown whole, never cropped.
@@ -111,6 +122,10 @@ function elapsed(ms: number): string {
 
 function message(caught: unknown, fallback: string): string {
   return caught instanceof Error && caught.message ? caught.message : fallback;
+}
+
+function heldBySave(caught: unknown): boolean {
+  return caught instanceof Error && (caught as { code?: unknown }).code === JOURNEY_SAVE_IN_PROGRESS;
 }
 
 // A saved journey is named by what its reporter expected, then by the page it
@@ -181,6 +196,16 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let summaryPending: { expected: string; actual: string } | null = null;
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
   let summarySaving = false;
+  let summaryFlight: Promise<boolean> | undefined;
+  // Whether the rendered Save gating counted both summaries as entered.
+  let renderedSummaryReady = false;
+  // An autosave or screenshot change refused while a save holds the review
+  // waits for it: a failed save returns to review and the change is retried.
+  let summaryHeld = false;
+  let heldImageChange: {
+    journeyId: string; step: { id: string }; imageId: string;
+    change: JourneyImageChange; returnTo: string; subject: string;
+  } | null = null;
   // Whether the rendered review offers export for a saved revision.
   let renderedSaved = false;
   let confirmingRemove: string | null = null;
@@ -215,6 +240,45 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let pendingFocus: string[] | null = null;
   let imageStatus: { stepId: string; text: string } | null = null;
   const enlargedImages = new Set<string>();
+  // A re-render replaces every control. One landing while a pointer or Space
+  // is pressed (an autosave finishing on blur, another tab's change, a list
+  // refresh) would move the click off the pressed control and lose it, so
+  // those updates wait until the press has delivered its click.
+  let pressed = false;
+  let pressRender = false;
+  let pressTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function update(): void {
+    if (pressed) pressRender = true;
+    else render();
+  }
+
+  function endPress(): void {
+    if (pressTimer !== undefined) { clearTimeout(pressTimer); pressTimer = undefined; }
+    if (!pressed) return;
+    pressed = false;
+    if (pressRender) { pressRender = false; render(); }
+  }
+
+  function endPressAfter(ms: number): void {
+    if (!pressed) return;
+    if (pressTimer !== undefined) clearTimeout(pressTimer);
+    pressTimer = setTimeout(endPress, ms);
+  }
+
+  const pressStarted = (event: Event) => {
+    if (event instanceof KeyboardEvent && (event.key !== ' ' || event.repeat
+      || !(event.target instanceof HTMLElement) || !event.target.matches('button, input[type="checkbox"]'))) return;
+    pressed = true;
+    endPressAfter(PRESS_LIMIT_MS);
+  };
+  const pressReleased = (event: Event) => {
+    if (event instanceof KeyboardEvent && event.key !== ' ') return;
+    endPressAfter(PRESS_CLICK_WAIT_MS);
+  };
+  // The click is dispatched after its capture listeners, so a zero delay ends
+  // the press once the control has handled it.
+  const pressClicked = () => { endPressAfter(0); };
 
   async function refresh() {
     const current = ++version;
@@ -230,6 +294,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const exportKey = next.phase === 'reviewing' ? `${next.draft.id}@${next.draft.revision}`
         : next.phase === 'saved' ? `${next.journeyId}@${next.revision}` : null;
       if (exportStatusFor !== exportKey) { exportStatus = ''; exportStatusFor = null; }
+      // A save holds the review in its saving phase. What this surface has not
+      // sent yet (typed summaries, the acknowledgement, an open editor) stays:
+      // a failed save returns to review with it, a completed one reports it lost.
+      const heldBySaving = next.phase === 'saving' && next.draft.id === acknowledgedFor;
       if (next.phase === 'reviewing') {
         if (acknowledgedFor !== '' && acknowledgedFor !== next.draft.id) acknowledged = false;
         acknowledgedFor = next.draft.id;
@@ -240,10 +308,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         if (editingStepId !== null && !next.draft.steps.some(step => step.id === editingStepId)) {
           editingStepId = null;
         }
-      } else {
+      } else if (!heldBySaving) {
+        if (next.phase === 'saved' && next.journeyId === acknowledgedFor
+          && (summaryPending !== null || heldImageChange !== null || imageEditor !== null)) error = LOST_EDITS;
         acknowledged = false;
         acknowledgedFor = '';
         summaryPending = null;
+        summaryHeld = false;
+        heldImageChange = null;
         confirmingRemove = null;
         confirmingDiscard = null;
         confirmingImageRemove = null;
@@ -259,11 +331,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
           downloadBusy = false;
         }
       }
+      const reviewDraft = next.phase === 'reviewing' || heldBySaving ? next.draft : undefined;
+      const retained = (imageId: string) => reviewDraft?.steps.some(step => step.image.status === 'retained'
+        && step.image.imageId === imageId) === true;
       const editor = imageEditor;
-      if (editor && (next.phase !== 'reviewing' || next.draft.id !== editor.journeyId
-        || !next.draft.steps.some(step => step.image.status === 'retained' && step.image.imageId === editor.imageId))) {
-        editor.abort.abort();
-      }
+      if (editor && (reviewDraft?.id !== editor.journeyId || !retained(editor.imageId))) editor.abort.abort();
       if (next.phase !== 'idle') {
         confirmingDelete = null;
         deletingJourney = null;
@@ -288,15 +360,30 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         }
       }
       loadFailed = false;
-      render();
+      update();
+      resumeHeldChanges();
     } catch (caught) {
       if (alive && current === version) {
         loadFailed = true;
         error = caught instanceof Error && caught.message === JOURNEY_STORAGE_ERROR
           ? JOURNEY_STORAGE_ERROR
           : 'Could not load the journey. Reopen anmerko and try again.';
-        render();
+        update();
       }
+    }
+  }
+
+  // Changes held while a save owned the review go out once it is back.
+  function resumeHeldChanges(): void {
+    if (state.phase !== 'reviewing') return;
+    if (summaryHeld && !summarySaving) {
+      summaryHeld = false;
+      void flushSummary();
+    }
+    const held = heldImageChange;
+    if (held && imageBusy === null) {
+      heldImageChange = null;
+      if (held.journeyId === state.draft.id) void changeImage(held.step, held.imageId, held.change, held.returnTo, held.subject);
     }
   }
 
@@ -402,7 +489,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       confirmingDelete = null;
       confirmingDeleteAll = false;
     }
-    if (alive) render();
+    if (alive) update();
   }
 
   function codePoints(value: string): number {
@@ -414,23 +501,45 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     summaryTimer = setTimeout(() => { void flushSummary(); }, 400);
   }
 
-  async function flushSummary(): Promise<void> {
+  // Resolves true once nothing typed is left unsent, or false when the write
+  // failed or waits for a save that holds the review.
+  function flushSummary(): Promise<boolean> {
     if (summaryTimer !== undefined) { clearTimeout(summaryTimer); summaryTimer = undefined; }
-    if (!summaryPending || summarySaving || !alive) return;
-    if (state.phase !== 'reviewing') { summaryPending = null; return; }
+    if (summaryFlight) return summaryFlight;
+    if (!alive) return Promise.resolve(false);
+    if (!summaryPending) return Promise.resolve(true);
+    if (state.phase === 'saving') { summaryHeld = true; return Promise.resolve(false); }
+    if (state.phase !== 'reviewing') { summaryPending = null; return Promise.resolve(true); }
     const wanted = summaryPending;
     summarySaving = true;
-    try {
-      await client.updateSummary(wanted.expected, wanted.actual);
-      if (summaryPending === wanted) summaryPending = null;
-      error = '';
-    } catch (caught) {
-      error = message(caught, 'Could not update the journey. Try again.');
-    } finally {
-      summarySaving = false;
+    const flight = (async () => {
+      let written = false;
+      try {
+        await client.updateSummary(wanted.expected, wanted.actual);
+        if (summaryPending === wanted) summaryPending = null;
+        error = '';
+        written = true;
+      } catch (caught) {
+        if (heldBySave(caught)) summaryHeld = true;
+        else error = message(caught, 'Could not update the journey. Try again.');
+      } finally {
+        summarySaving = false;
+        summaryFlight = undefined;
+      }
+      if (!summaryHeld && summaryPending && summaryPending !== wanted) scheduleSummarySave();
+      else if (alive) void refresh();
+      return written;
+    })();
+    summaryFlight = flight;
+    return flight;
+  }
+
+  // Saving waits for typed summaries to reach the draft, so a Save pressed
+  // straight after typing never stores the text it replaced.
+  async function summaryWritten(): Promise<void> {
+    while (summaryPending || summarySaving) {
+      if (!await flushSummary()) throw new Error(error || JOURNEY_SAVE_IN_PROGRESS_ERROR);
     }
-    if (summaryPending && summaryPending !== wanted) scheduleSummarySave();
-    else if (alive) void refresh();
   }
 
   function savedRevision(draft: JourneyDraftV1): JourneySavedSummary | undefined {
@@ -473,9 +582,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         scheduleSummarySave();
         // The first edit of a saved revision withdraws export and one-step
         // discard at once, without interrupting an IME composition.
-        if (renderedSaved && !(event as InputEvent).isComposing) render();
+        if ((event as InputEvent).isComposing) return;
+        if (renderedSaved) render();
+        else refreshSaveGating();
       });
-      area.addEventListener('compositionend', () => { if (renderedSaved && summaryPending) render(); });
+      area.addEventListener('compositionend', () => {
+        if (renderedSaved && summaryPending) render();
+        else refreshSaveGating();
+      });
       area.addEventListener('blur', () => {
         // Re-renders detach the focused field, which fires blur synchronously
         // mid-render; only a user leaving a settled field should flush an edit.
@@ -493,8 +607,25 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
+  function summariesEntered(draft: JourneyDraftV1): boolean {
+    return (summaryPending?.expected ?? draft.expected ?? '').trim() !== ''
+      && (summaryPending?.actual ?? draft.actual ?? '').trim() !== '';
+  }
+
+  // Save's gating follows the summaries as they are typed, before the autosave
+  // lands. Only its section is rebuilt, so the field being typed in is untouched.
+  function refreshSaveGating(): void {
+    if (state.phase !== 'reviewing' || summariesEntered(state.draft) === renderedSummaryReady) return;
+    view.querySelector('.journey-save')?.replaceWith(renderSave(state.draft));
+  }
+
   function renderRemove(step: { id: string; seq: number }, steps: JourneyDraftStep[]): HTMLElement {
     const wrap = node('div', undefined, 'journey-step-actions');
+    // The background refuses to remove a journey's only step; discard ends it.
+    if (steps.length <= 1) {
+      wrap.append(node('p', LAST_STEP, 'journey-help'));
+      return wrap;
+    }
     if (confirmingRemove === step.id) {
       const confirm = node('button', `Confirm remove step ${step.seq}`, 'journey-danger');
       confirm.type = 'button';
@@ -557,10 +688,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     returnTo: string,
     subject: string,
   ): Promise<void> {
+    // A change started from an editor kept open through another surface's save still names its review.
+    const journeyId = state.phase === 'reviewing' || state.phase === 'saving' ? state.draft.id : '';
     imageBusy = step.id;
     imageStatus = null;
     error = '';
-    render();
+    update();
     // A removed screenshot takes its controls with it; keep the reader on its step.
     pendingFocus = [returnTo, `step-${step.id}`];
     try {
@@ -569,7 +702,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       imageStatus = { stepId: step.id, text: `Screenshot for ${subject} ${change.operation === 'remove' ? 'removed' : 'masked'}.` };
       if (change.operation === 'remove') pendingFocus = [`step-${step.id}`];
     } catch (caught) {
-      error = message(caught, 'Could not update the screenshot. Try again.');
+      // A mask drawn while another surface saves is applied once the review is back.
+      if (heldBySave(caught) && journeyId) heldImageChange = { journeyId, step, imageId, change, returnTo, subject };
+      else error = message(caught, 'Could not update the screenshot. Try again.');
     } finally {
       imageBusy = null;
       if (alive) void refresh();
@@ -958,10 +1093,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     ack.addEventListener('change', () => { acknowledged = ack.checked; render(); });
     ackLabel.append(ack, node('span', 'I understand this journey retains full URLs, any entered values, and its kept screenshots.'));
     section.append(ackLabel);
-    const expected = (summaryPending?.expected ?? draft.expected ?? '').trim();
-    const actual = (summaryPending?.actual ?? draft.actual ?? '').trim();
+    renderedSummaryReady = summariesEntered(draft);
     const reasons: string[] = [];
-    if (!expected || !actual) reasons.push('Enter both an expected and an actual summary.');
+    if (!renderedSummaryReady) reasons.push('Enter both an expected and an actual summary.');
     if (!draft.steps.some(step => step.image.status === 'retained')) reasons.push('Keep at least one step with its screenshot.');
     if (draft.steps.some(step => step.image.status === 'pending')) reasons.push('Wait for pending screenshots to finish.');
     if (!acknowledged) reasons.push('Acknowledge that full URLs, entered values, and kept screenshots are retained.');
@@ -987,7 +1121,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       saveBusy = true;
       error = '';
       render();
-      void client.save(acknowledged).then(() => {
+      void summaryWritten().then(() => client.save(acknowledged)).then(() => {
         error = '';
       }).catch(caught => {
         error = message(caught, 'Could not save this journey. Try again.');
@@ -1055,7 +1189,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } finally {
       copyBusy = false;
     }
-    if (alive) render();
+    if (alive) update();
   }
 
   async function downloadJourney(target: { journeyId: string; revision: number }): Promise<void> {
@@ -1079,7 +1213,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } finally {
       downloadBusy = false;
     }
-    if (alive) render();
+    if (alive) update();
   }
 
   // An unchanged reopened journey stays saved, so closing it needs no
@@ -1564,14 +1698,29 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   const refocused = () => { focusStartError(); };
   document.addEventListener('visibilitychange', reactivated);
   window.addEventListener('focus', refocused);
+  root.addEventListener('pointerdown', pressStarted, true);
+  root.addEventListener('keydown', pressStarted, true);
+  root.addEventListener('click', pressClicked, true);
+  window.addEventListener('pointerup', pressReleased, true);
+  window.addEventListener('keyup', pressReleased, true);
+  window.addEventListener('pointercancel', endPress, true);
+  window.addEventListener('blur', endPress);
   const unsubscribe = client.subscribe(() => { void refresh(); });
   void refresh();
   return () => {
     alive = false; ++version;
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
+    if (pressTimer !== undefined) clearTimeout(pressTimer);
     imageEditor?.abort.abort();
     document.removeEventListener('visibilitychange', reactivated);
     window.removeEventListener('focus', refocused);
+    root.removeEventListener('pointerdown', pressStarted, true);
+    root.removeEventListener('keydown', pressStarted, true);
+    root.removeEventListener('click', pressClicked, true);
+    window.removeEventListener('pointerup', pressReleased, true);
+    window.removeEventListener('keyup', pressReleased, true);
+    window.removeEventListener('pointercancel', endPress, true);
+    window.removeEventListener('blur', endPress);
     unsubscribe(); view.remove(); live.remove(); imageDialog.remove();
   };
 }
