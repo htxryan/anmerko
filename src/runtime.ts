@@ -71,6 +71,8 @@ export interface Runtime {
   presentation?: Presentation;
   journeys?: JourneyClient;
   openJourney?: () => Promise<void>;
+  // Whether a journey waits for review, so a page panel can offer it.
+  journeyReviewPending?: () => Promise<boolean>;
   // Reports when this page records a journey, so a floating panel can step aside.
   watchJourneyRecording?: (listener: (recording: boolean) => void) => () => void;
   onDispose?: () => void;

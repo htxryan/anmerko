@@ -8,7 +8,15 @@ import type { Store } from './runtime';
 import { currentPlatform, journeysAvailable } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 import { journeySurfaceStyles } from './journey-styles';
-import { watchJourneyPageRecording } from './journey-page-bridge';
+import { pageJourneyCommands } from './journey-page-bridge';
+
+declare const __TARGET_JOURNEYS__: boolean;
+
+// Orion builds define __TARGET_JOURNEYS__ false, which folds the journey client,
+// styles, and page commands out of their content script; esbuild folds the
+// define only within this module.
+const journeyParts = typeof __TARGET_JOURNEYS__ === 'undefined' || __TARGET_JOURNEYS__
+  ? { createJourneyClient, journeySurfaceStyles, pageJourneyCommands } : undefined;
 
 function draftTargetIdentity(value: unknown): DraftTargetIdentity | undefined {
   if (!value || typeof value !== 'object' || Object.keys(value).length !== 5) return;
@@ -43,7 +51,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   // The sidebar checks this browser itself. A page overlay trusts the
   // background's verdict: it cannot see the journey APIs, and its page may be
   // emulating another device.
-  const journeys = journeysAvailable(native ? { platform: currentPlatform(), api } : undefined);
+  const journeys = !!journeyParts && journeysAvailable(native ? { platform: currentPlatform(), api } : undefined);
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;
@@ -59,11 +67,6 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
     return api.tabs.sendMessage(targetTab, { type, ...extra });
-  }
-  async function journeyCommand(type: string, extra: Record<string, unknown> = {}) {
-    const result = await api.runtime.sendMessage({ type, ...extra });
-    if (!result?.ok) throw new Error(result?.error || 'Could not update the journey.');
-    return result.value;
   }
   const presentation: Presentation = {
     native,
@@ -266,14 +269,15 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   };
   return {
     store: extensionStore(), presentation, onDispose,
-    ...(journeys && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
-    ...(journeys && !native ? { watchJourneyRecording: watchJourneyPageRecording } : {}),
-    ...(journeys && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
+    ...(journeyParts && journeys && !native ? journeyParts.pageJourneyCommands() : {}),
+    ...(journeyParts && journeys && native ? {
+      journeys: journeyParts.createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })),
+    } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
     attachStyles(shadow) {
       const sheet = document.createElement('style');
-      sheet.textContent = styles + (journeys ? journeySurfaceStyles : '');
+      sheet.textContent = styles + (journeyParts && journeys ? journeyParts.journeySurfaceStyles : '');
       shadow.prepend(sheet);
     },
     async capture() {

@@ -3,6 +3,7 @@ import { isJourneyBackgroundSender, JOURNEY_EVENTS_PORT_NAME } from './journey-m
 import { attachJourneyRecorder } from './journey-recorder';
 import { attachJourneyFields, type JourneyFieldCommit } from './journey-fields';
 import { extensionApi } from './platform';
+import type { Runtime } from './runtime';
 import { createUuid } from './uuid';
 
 type PageIdentity = {
@@ -87,6 +88,27 @@ export function watchJourneyPageRecording(listener: (recording: boolean) => void
   signal.listeners.add(listener);
   if (signal.recording) listener(true);
   return () => { signal.listeners.delete(listener); };
+}
+
+// The floating panel's journey commands. Failures keep the background's code,
+// so the panel can say what to do.
+export function pageJourneyCommands(): Pick<Runtime, 'openJourney' | 'journeyReviewPending' | 'watchJourneyRecording'> {
+  const api = extensionApi();
+  async function command(type: string) {
+    let result;
+    try { result = await api.runtime.sendMessage({ type }); }
+    catch { throw Object.assign(new Error('Could not reach anmerko.'), { code: 'unreachable' }); }
+    if (!result?.ok) {
+      throw Object.assign(new Error(result?.error || 'Could not update the journey.'),
+        typeof result?.code === 'string' ? { code: result.code } : {});
+    }
+    return result.value;
+  }
+  return {
+    openJourney: async () => { await command('ANMERKO_JOURNEY_OPEN'); },
+    journeyReviewPending: async () => await command('ANMERKO_JOURNEY_PENDING') === true,
+    watchJourneyRecording: watchJourneyPageRecording,
+  };
 }
 
 function success<T>(value: T) {

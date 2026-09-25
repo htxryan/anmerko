@@ -10,7 +10,11 @@ const bundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
     store: { read: async () => undefined, readAll: async () => ({}), write: async () => {}, remove: async () => {}, subscribe: () => () => {} },
     attachStyles: shadow => { const style = document.createElement('style'); style.textContent = styles; shadow.append(style); },
     storageError: 'Storage unavailable', settingsLabel: 'Settings',
-    openJourney: async () => { window.launchCalls++; if (window.rejectLaunch) throw new Error('private backend detail'); },
+    openJourney: async () => {
+      window.launchCalls++;
+      if (window.rejectLaunch) throw Object.assign(new Error('private backend detail'), window.rejectCode ? { code: window.rejectCode } : {});
+    },
+    journeyReviewPending: async () => { window.pendingChecks = (window.pendingChecks || 0) + 1; return !!window.reviewPending; },
   });
 ` }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
 
@@ -25,11 +29,25 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
     store: { read: async () => undefined, readAll: async () => ({}), write: async () => {}, remove: async () => {}, subscribe: () => () => {} },
     attachStyles: shadow => { const style = document.createElement('style'); style.textContent = styles; shadow.append(style); },
     storageError: 'Storage unavailable', settingsLabel: 'Settings', capture: () => new Promise(() => {}),
-    ...(setup.journeys ? { openJourney: async () => {} } : {}),
+    ...(setup.journeys ? {
+      openJourney: async () => { window.journeyOpens = (window.journeyOpens || 0) + 1; },
+      journeyReviewPending: async () => !!window.reviewPending,
+    } : {}),
     ...(setup.recording ? { watchJourneyRecording: listener => { recordingListener = listener; return () => { recordingListener = null; }; } } : {}),
     // A native sidebar mounts the journey view inside the panel.
     ...(setup.inPanel ? { journeys: {
-      read: async () => ({ phase: 'idle', epoch: 0 }), subscribe: () => () => {}, list: async () => [],
+      read: async () => window.journeyState || { phase: 'idle', epoch: 0 },
+      subscribe: listener => {
+        const listeners = window.journeyListeners ||= new Set();
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+      list: async () => window.savedJourneys || [],
+      deleteSnapshot: async () => {},
+      reopen: async journeyId => {
+        window.reopened = [...(window.reopened || []), journeyId];
+        if (window.rejectReopen) throw Object.assign(new Error('Finish or discard the existing journey before starting another.'), { code: 'busy' });
+      },
       start: async () => {}, stop: async () => {}, discard: async () => {},
     } } : {}),
     ...(setup.native ? { presentation: { native: true, dockViaToolbar: false, sync: async () => {}, changeLayout: async () => {},
@@ -37,9 +55,10 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
   });
 ` }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
 
-async function mountPanel(page: Page, setup: { journeys?: boolean; native?: boolean; recording?: boolean; inPanel?: boolean }) {
+async function mountPanel(page: Page, setup: { journeys?: boolean; native?: boolean; recording?: boolean; inPanel?: boolean },
+  globals: Record<string, unknown> = {}) {
   await page.goto('http://127.0.0.1:4173');
-  await page.evaluate(value => { (window as any).panelSetup = value; }, setup);
+  await page.evaluate(({ value, globals }) => { Object.assign(window, globals); (window as any).panelSetup = value; }, { value: setup, globals });
   await page.addScriptTag({ content: panelBundle });
 }
 
@@ -59,11 +78,63 @@ test('page overlays request a trusted journey surface without mounting raw revie
   expect(await page.evaluate('window.launchCalls')).toBe(1);
   await expect(page.getByRole('region', { name: 'Journey recording and review' })).toHaveCount(0);
   await expect(page.locator('.journey-view')).toHaveCount(0);
+  // Every refusal names what to do on this page; none sends the reader to the
+  // toolbar, which cannot help while a journey tab is pending or recording.
+  const guidance: Array<[string | undefined, string]> = [
+    [undefined, 'Could not open the journey tab. Try again.'],
+    ['busy', 'A journey is already recording in another tab. Stop it there, then try again.'],
+    ['owner-unavailable', 'anmerko could not use this page for a journey. Keep this tab in front and try again. If it still fails, reload the page.'],
+    ['initial-capture-failed', 'The first journey screenshot failed. Keep this tab in front and try again.'],
+    ['launch-expired', 'That journey tab expired. Choose Record journey again.'],
+    ['session-storage-failed', 'Journey storage failed. Choose Record journey again to open the journey tab and reset journey storage.'],
+    ['stale-review', 'The journey changed in another anmerko view. Choose Review journey to see the latest version.'],
+    ['unreachable', 'anmerko could not reach the extension. Reload this page, then try again.'],
+  ];
   await page.evaluate('window.rejectLaunch = true');
-  await panel.getByRole('button', { name: 'More Comment Options' }).click();
-  await panel.getByRole('menuitem', { name: 'Record journey', exact: true }).click();
-  await expect(panel.getByText('Could not open the journey. Reopen anmerko from the toolbar and try again.', { exact: true })).toBeVisible();
-  await expect(page.getByText('private backend detail')).toHaveCount(0);
+  for (const [code, text] of guidance) {
+    await page.evaluate(value => { (window as any).rejectCode = value; }, code);
+    await panel.getByRole('button', { name: 'More Comment Options' }).click();
+    await panel.getByRole('menuitem', { name: 'Record journey', exact: true }).click();
+    await expect(panel.locator('.status'), code ?? 'generic').toHaveText(text);
+    await expect(page.getByText('private backend detail')).toHaveCount(0);
+    await expect(panel.getByText(/Reopen anmerko from the toolbar/)).toHaveCount(0);
+  }
+});
+
+test('a page panel offers a pending review, relabels Record journey, and asks again when recording ends or the reader returns', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mountPanel(page, { journeys: true, recording: true });
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const entry = panel.getByText('A recorded journey is waiting for review.', { exact: true });
+  const review = panel.getByRole('button', { name: 'Review journey', exact: true });
+  await expect(panel).toBeVisible();
+  await expect(entry).toHaveCount(1);
+  await expect(entry).toBeHidden();
+  await page.getByRole('button', { name: 'More Comment Options' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Record journey', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // Recording ends: the panel comes back and offers the review.
+  await page.evaluate(() => { (window as any).reviewPending = true; (window as any).setJourneyRecording(true); });
+  await expect(panel).toBeHidden();
+  await page.evaluate(() => (window as any).setJourneyRecording(false));
+  await expect(panel).toBeVisible();
+  await expect(entry).toBeVisible();
+  await expect(review).toBeVisible();
+  await page.getByRole('button', { name: 'More Comment Options' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Review journey', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await review.click();
+  expect(await page.evaluate('window.journeyOpens')).toBe(1);
+
+  // Saved or discarded in the journey tab: the entry leaves when the reader returns.
+  await page.evaluate(() => {
+    (window as any).reviewPending = false;
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(entry).toBeHidden();
+  await page.getByRole('button', { name: 'More Comment Options' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Record journey', exact: true })).toBeVisible();
 });
 
 test('consumed launch intent shows guidance instead of a dead start', async ({ page }) => {
@@ -282,4 +353,52 @@ test('journey entry points show a focus ring with at least 3:1 contrast in both 
     await expect(back).toHaveCount(0);
     await expect(options).toBeFocused();
   }
+});
+
+test('saved journeys in the comments view reopen for review and lead to the journey view that manages them', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, inPanel: true }, { savedJourneys: [
+    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true, expected: 'Checkout keeps the item' },
+    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+  ] });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const saved = panel.getByRole('region', { name: 'Saved journeys' });
+  await expect(saved.locator('li')).toHaveCount(2);
+  const reopen = saved.getByRole('button', { name: /^Reopen journey: Checkout keeps the item, saved / });
+  await expect(reopen).toBeVisible();
+  await expect(saved.getByRole('button', { name: /^Reopen journey: Untitled journey, saved / })).toBeVisible();
+
+  // A journey in progress refuses the reopen with guidance for this view.
+  await page.evaluate(() => { (window as any).rejectReopen = true; });
+  await reopen.click();
+  await expect(panel.locator('.status')).toHaveText('Finish or discard the current journey before reopening a saved one.');
+  await expect(page.locator('anmerko-overlay .journey-container')).toHaveCount(0);
+  await page.evaluate(() => { (window as any).rejectReopen = false; });
+  await reopen.click();
+  expect(await page.evaluate('window.reopened')).toEqual(['J1', 'J1']);
+  const back = page.getByRole('button', { name: 'Back to comments', exact: true });
+  await expect(back).toBeFocused();
+  await back.click();
+
+  // Manage opens the journey view on its Saved journeys list, where delete lives.
+  await saved.getByRole('button', { name: 'Manage saved journeys', exact: true }).click();
+  const view = page.locator('anmerko-overlay .journey-container');
+  await expect(view.getByRole('heading', { name: 'Saved journeys' })).toBeFocused();
+  await expect(view.getByRole('button', { name: /^Delete journey: Checkout keeps the item/ })).toBeVisible();
+});
+
+test('a native panel offers a pending review and opens the journey view for it', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, inPanel: true }, { journeyState: { phase: 'saving', epoch: 3 } });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await expect(panel.getByText('A recorded journey is waiting for review.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'More Comment Options' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Review journey', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await panel.getByRole('button', { name: 'Review journey', exact: true }).click();
+  await expect(page.locator('anmerko-overlay .journey-container').getByRole('heading', { name: 'Saving journey' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to comments', exact: true }).click();
+  // The review closes elsewhere; the background's change notice clears the entry.
+  await page.evaluate(() => { (window as any).journeyState = { phase: 'idle', epoch: 4 }; for (const listener of (window as any).journeyListeners) listener(); });
+  await expect(panel.getByText('A recorded journey is waiting for review.', { exact: true })).toBeHidden();
 });

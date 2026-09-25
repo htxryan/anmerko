@@ -9,8 +9,11 @@ import type { ComponentContextUpdate, Controller, DraftTargetIdentity, Presentat
 import { statusMessage } from './status';
 import { splitMenu } from './split-menu';
 import { createUuid } from './uuid';
-import { mountJourneyUI, savedJourneyTime, savedJourneyTitle, type JourneySavedSummary } from './journey-ui';
+import { attachJourneyPanel } from './journey-panel';
+import type { JourneySavedSummary } from './journey-ui';
 import { buildPrompt, captureElement, DEFAULT_PROMPT_PREAMBLE, elementHierarchy, pageUrl, readNotes, removeNote, resolveElement, samePage, saveNote, shorten, STORAGE_PREFIX, type Note } from './core';
+
+declare const __TARGET_JOURNEYS__: boolean;
 
 type Theme = 'light' | 'dark';
 const THEME_KEY = 'anmerko:theme';
@@ -31,9 +34,6 @@ export function mount(runtime: Runtime): Controller {
   // Inline !important prevents ordinary page CSS from moving the extension host.
   host.style.cssText = 'all:initial!important;position:fixed!important;inset:0!important;width:0!important;height:0!important;z-index:2147483647!important;';
   const shadow = host.attachShadow({ mode: 'open' });
-  // Only a journey client adds comment options. Without journeys (Orion builds,
-  // iPhone and iPad, or a browser missing their APIs) the bar keeps three actions.
-  const journeyLaunch = !!(runtime.journeys || runtime.openJourney);
   const app = document.createElement('div');
   app.className = native ? 'app native' : 'app';
   app.innerHTML = `
@@ -53,23 +53,6 @@ export function mount(runtime: Runtime): Controller {
     <div class="picker-bar" hidden><strong>⌖ Tap or click an element</strong><button><span data-icon="close"></span>Cancel</button></div>
     <div class="editor-shade" aria-hidden="true" hidden><div class="editor-cutout" hidden></div></div>
     <div class="outline" hidden></div><div class="hover-label" hidden></div><div class="pins"></div>`;
-  if (journeyLaunch) {
-    // Built with DOM APIs: Firefox's add-on linter rejects interpolated innerHTML.
-    const options = document.createElement('button');
-    options.className = 'primary comment-action comment-options';
-    for (const [name, value] of [['aria-label', 'More Comment Options'], ['title', 'More Comment Options'], ['aria-haspopup', 'menu'],
-      ['aria-expanded', 'false'], ['aria-controls', 'comment-menu']]) options.setAttribute(name, value);
-    const chevron = document.createElement('span');
-    chevron.dataset.icon = 'chevron';
-    options.append(chevron);
-    const menu = document.createElement('div');
-    menu.className = 'comment-menu split-menu';
-    menu.id = 'comment-menu';
-    menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', 'Comment Options');
-    menu.hidden = true;
-    app.querySelector('.intro')!.append(options, menu);
-  }
   renderIcons(app);
   app.querySelector('.support-link')!.prepend(createSupportIcon());
   app.querySelector('.settings-button')!.setAttribute('aria-label', runtime.settingsLabel);
@@ -83,40 +66,6 @@ export function mount(runtime: Runtime): Controller {
   document.documentElement.append(host);
   const $ = <T extends HTMLElement = HTMLElement>(selector: string) => shadow.querySelector<T>(selector)!;
   const abort = new AbortController();
-  if (journeyLaunch) {
-    const client = runtime.journeys;
-    const record = document.createElement('button');
-    record.className = 'menu-action journey-record';
-    record.setAttribute('role', 'menuitem'); record.tabIndex = -1;
-    record.textContent = 'Record journey';
-    $('#comment-menu').append(record);
-    let disposeJourney: (() => void) | undefined;
-    record.addEventListener('click', event => {
-      if (!event.isTrusted || draft || captureBusy) return;
-      setCommentMenu(false);
-      if (!client) {
-        void runtime.openJourney?.().catch(() => panelStatus('Could not open the journey. Reopen anmerko from the toolbar and try again.', { error: true }));
-        return;
-      }
-      disposeJourney?.();
-      const container = document.createElement('div'); container.className = 'journey-container';
-      const back = document.createElement('button'); back.className = 'journey-return secondary';
-      back.textContent = 'Back to comments'; back.type = 'button';
-      container.append(back); app.append(container);
-      $('.panel').inert = true;
-      const unmount = mountJourneyUI(container, client);
-      disposeJourney = () => { unmount(); container.remove(); $('.panel').inert = false; disposeJourney = undefined; };
-      back.addEventListener('click', () => {
-        disposeJourney?.();
-        // Return to the control that opened the journey, or the first usable one.
-        ['.comment-options', '.select', '.settings-button'].map(selector => $<HTMLButtonElement>(selector))
-          .find(control => !control.disabled)?.focus();
-        void refresh();
-      });
-      back.focus();
-    }, { signal: abort.signal });
-    abort.signal.addEventListener('abort', () => disposeJourney?.(), { once: true });
-  }
   // Outside this shadow root, event.target is the host rather than the input.
   // Page shortcuts (e.g. GitHub's assignee picker) can otherwise steal focus.
   // Bubble after our controls handle the event; preserve native typing,
@@ -182,6 +131,17 @@ export function mount(runtime: Runtime): Controller {
   let suppressMouseUntil = 0;
   const scope = $('select') as HTMLSelectElement;
   const setCopyMenu = splitMenu($('.footer-buttons'), $<HTMLButtonElement>('.copy-options'), $('#copy-menu'), abort.signal);
+  // Only a journey client adds comment options. Without journeys (Orion builds,
+  // iPhone and iPad, or a browser missing their APIs) the bar keeps three actions.
+  // Orion builds define __TARGET_JOURNEYS__ false, which folds the journey panel
+  // out of their content script; esbuild folds the define only within this module.
+  const journeyPanel = (typeof __TARGET_JOURNEYS__ === 'undefined' || __TARGET_JOURNEYS__) && (runtime.journeys || runtime.openJourney)
+    ? attachJourneyPanel({
+      runtime, app, shadow, signal: abort.signal,
+      state: () => ({ alive, draft: !!draft, capturing: captureBusy, settings }),
+      status, closeMenu: () => setCommentMenu(false), commentsChanged: () => void refresh(),
+    })
+    : undefined;
   const commentOptions = shadow.querySelector<HTMLButtonElement>('.comment-options');
   const setCommentMenu = commentOptions ? splitMenu($('.intro'), commentOptions, $('#comment-menu'), abort.signal) : () => {};
 
@@ -403,6 +363,7 @@ export function mount(runtime: Runtime): Controller {
     $('.footer-buttons').hidden = settings;
     $('.support-link').hidden = !settings;
     if (settings) setCommentMenu(false);
+    journeyPanel?.render();
     renderPrompt();
     scheduleDraw();
   }
@@ -564,32 +525,13 @@ export function mount(runtime: Runtime): Controller {
     console.error('anmerko:', error);
     if (alive) status(runtime.storageError, true);
   }
-  async function loadSavedJourneys(): Promise<typeof savedJourneys> {
-    const client = runtime.journeys;
-    if (!client || typeof client.list !== 'function') return null;
-    try {
-      const items = await client.list();
-      if (!Array.isArray(items)) return null;
-      const seen = new Set<string>();
-      const unique: NonNullable<typeof savedJourneys> = [];
-      for (const item of items) {
-        if (!item || typeof item.journeyId !== 'string' || seen.has(item.journeyId)) continue;
-        seen.add(item.journeyId);
-        unique.push(item);
-      }
-      return unique;
-    } catch {
-      // A missing or unreadable journey list never blocks the comments list.
-      return null;
-    }
-  }
   async function refresh() {
     const version = ++readVersion;
     try {
       const loaded = await readNotes(store);
       if (!alive || version !== readVersion) return;
       notes = loaded;
-      savedJourneys = await loadSavedJourneys();
+      savedJourneys = await journeyPanel?.loadSaved() ?? null;
       if (!alive || version !== readVersion) return;
       renderNotes();
     } catch (error) { showError(error); }
@@ -758,40 +700,7 @@ export function mount(runtime: Runtime): Controller {
       }
       list.append(card);
     });
-    if (savedJourneys && savedJourneys.length > 0) {
-      const journeysSection = document.createElement('section');
-      journeysSection.className = 'saved-journeys';
-      journeysSection.setAttribute('aria-label', 'Saved journeys');
-      const journeysTitle = document.createElement('h2');
-      journeysTitle.className = 'saved-journeys-title';
-      journeysTitle.textContent = 'Saved journeys';
-      journeysSection.append(journeysTitle);
-      const journeysList = document.createElement('ul');
-      journeysList.className = 'saved-journeys-list';
-      for (const journey of savedJourneys) {
-        const row = document.createElement('li');
-        row.className = 'saved-journey';
-        const title = document.createElement('span');
-        title.className = 'saved-journey-title';
-        title.textContent = savedJourneyTitle(journey);
-        const meta = document.createElement('span');
-        meta.className = 'saved-journey-meta';
-        const time = document.createElement('time');
-        time.dateTime = journey.updatedAt;
-        time.textContent = savedJourneyTime(journey.updatedAt);
-        meta.append('Saved ', time, ` · ${journey.stepCount} ${journey.stepCount === 1 ? 'step' : 'steps'}`);
-        if (journey.spansPages === true) {
-          const spans = document.createElement('span');
-          spans.className = 'saved-journey-spans';
-          spans.textContent = 'Spans pages';
-          meta.append(' · ', spans);
-        }
-        row.append(title, meta);
-        journeysList.append(row);
-      }
-      journeysSection.append(journeysList);
-      list.append(journeysSection);
-    }
+    if (journeyPanel && savedJourneys && savedJourneys.length > 0) list.append(journeyPanel.savedSection(savedJourneys));
     drawPins();
   }
   function editNote(note: Note) {
@@ -855,6 +764,7 @@ export function mount(runtime: Runtime): Controller {
       commentOptions.disabled = !!draft || captureBusy || !url;
       if (commentOptions.disabled) setCommentMenu(false);
     }
+    journeyPanel?.render();
     for (const selector of ['.dock', '.minimize', '.settings-button', '.close']) $<HTMLButtonElement>(selector).disabled = captureBusy;
     scope.disabled = captureBusy || (native && !url);
     if (!draft) {
@@ -1150,9 +1060,13 @@ export function mount(runtime: Runtime): Controller {
         returnToDock = false;
         setMinimized(true);
       }
-    } else if (minimizedForJourney) {
-      minimizedForJourney = false;
-      if (presentation === 'overlay' && !$('.resume').hidden) setMinimized(false);
+    } else {
+      // The panel now offers the journey's review.
+      journeyPanel?.refreshReview();
+      if (minimizedForJourney) {
+        minimizedForJourney = false;
+        if (presentation === 'overlay' && !$('.resume').hidden) setMinimized(false);
+      }
     }
   });
   $('.resume').addEventListener('click', () => {
@@ -1407,5 +1321,6 @@ export function mount(runtime: Runtime): Controller {
   renderPreamble();
   void loadPreamble();
   void refresh();
+  journeyPanel?.refreshReview();
   return controller;
 }
