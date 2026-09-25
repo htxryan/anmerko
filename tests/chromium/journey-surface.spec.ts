@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { buildSync } from 'esbuild';
+import { addJourneyApis } from './fixtures/journey-apis';
 
 type Harness = {
   log: any[];
@@ -52,6 +53,7 @@ async function installChrome(page: Page) {
     };
     (globalThis as HarnessWindow).surfaceHarness = harness;
   });
+  await page.evaluate(addJourneyApis);
 }
 
 test.beforeEach(async ({ page }) => {

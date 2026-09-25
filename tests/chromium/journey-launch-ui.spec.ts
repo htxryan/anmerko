@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { addJourneyApis } from './fixtures/journey-apis';
 
 const bundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
   import { mount } from './src/content';
@@ -80,6 +81,7 @@ test('consumed launch intent shows guidance instead of a dead start', async ({ p
     },
     permissions: { request: async () => true },
   };`);
+  await page.evaluate(addJourneyApis);
   await page.addScriptTag({ content: journeyPageBundle });
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();
@@ -120,6 +122,7 @@ test('a journey tab keeps Start and Cancel start while its one start is in fligh
       },
     };
   `);
+  await page.evaluate(addJourneyApis);
   await page.addScriptTag({ content: journeyPageBundle });
   const start = page.getByRole('button', { name: 'Start journey', exact: true });
   await start.click();

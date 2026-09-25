@@ -31,7 +31,8 @@ export function mount(runtime: Runtime): Controller {
   // Inline !important prevents ordinary page CSS from moving the extension host.
   host.style.cssText = 'all:initial!important;position:fixed!important;inset:0!important;width:0!important;height:0!important;z-index:2147483647!important;';
   const shadow = host.attachShadow({ mode: 'open' });
-  // Only a journey client adds comment options; other builds keep three actions.
+  // Only a journey client adds comment options. Without journeys (Orion builds,
+  // iPhone and iPad, or a browser missing their APIs) the bar keeps three actions.
   const journeyLaunch = !!(runtime.journeys || runtime.openJourney);
   const app = document.createElement('div');
   app.className = native ? 'app native' : 'app';

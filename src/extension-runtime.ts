@@ -5,7 +5,7 @@ import type { DraftTargetIdentity, Presentation, Runtime } from './runtime';
 
 import { extensionApi } from './platform';
 import type { Store } from './runtime';
-import { targetJourneys } from './journey-feature';
+import { currentPlatform, journeysAvailable } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 import { journeySurfaceStyles } from './journey-styles';
 import { watchJourneyPageRecording } from './journey-page-bridge';
@@ -40,6 +40,9 @@ export function extensionStore(): Store {
 export function extensionRuntime(onDispose: () => void): Runtime {
   const api = extensionApi();
   const native = location.href === api.runtime.getURL('sidebar.html');
+  // The sidebar sees the extension APIs the background needs; a page overlay
+  // cannot, so it relies on the background's verdict.
+  const journeys = journeysAvailable({ platform: currentPlatform(), api: native ? api : undefined });
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;
@@ -227,14 +230,14 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   };
   return {
     store: extensionStore(), presentation, onDispose,
-    ...(targetJourneys && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
-    ...(targetJourneys && !native ? { watchJourneyRecording: watchJourneyPageRecording } : {}),
-    ...(targetJourneys && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
+    ...(journeys && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
+    ...(journeys && !native ? { watchJourneyRecording: watchJourneyPageRecording } : {}),
+    ...(journeys && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
     attachStyles(shadow) {
       const sheet = document.createElement('style');
-      sheet.textContent = styles + (targetJourneys ? journeySurfaceStyles : '');
+      sheet.textContent = styles + (journeys ? journeySurfaceStyles : '');
       shadow.prepend(sheet);
     },
     async capture() {

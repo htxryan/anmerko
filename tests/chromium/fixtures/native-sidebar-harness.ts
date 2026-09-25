@@ -2,6 +2,7 @@ import { mount } from '../../../src/content';
 import { extensionRuntime } from '../../../src/extension-runtime';
 import { bindSidebarConnection } from '../../../src/sidebar-connection';
 import type { ViewState } from '../../../src/runtime';
+import { addJourneyApis } from './journey-apis';
 
 type Listener = (...args: any[]) => void;
 const event = () => {
@@ -61,6 +62,7 @@ Object.assign(globalThis, { chrome: {
   windows: { getCurrent: async () => ({ id: 1 }) },
   storage: { local: { async get() { return {}; } }, onChanged: event() },
 } });
+addJourneyApis();
 const runtime = extensionRuntime(() => {});
 const controller = mount(runtime);
 const state: ViewState = { url: `${location.origin}/page`, draft: null, scope: 'page', picking: false, settings: false };

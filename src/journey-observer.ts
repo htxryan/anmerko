@@ -1,10 +1,10 @@
-import { targetJourneys } from './journey-feature';
+import { currentPlatform, journeysAvailable } from './journey-feature';
 import { bindJourneyPage } from './journey-page-bridge';
 
 type JourneyObserverGlobal = typeof globalThis & { __anmerkoJourneyPage?: () => void };
 
 export function ensureJourneyPage(): (() => void) | undefined {
-  if (!targetJourneys || window.top !== window) return;
+  if (!journeysAvailable({ platform: currentPlatform() }) || window.top !== window) return;
   const global = globalThis as JourneyObserverGlobal;
   if (global.__anmerkoJourneyPage) return global.__anmerkoJourneyPage;
   let dispose: () => void;
