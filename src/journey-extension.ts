@@ -6,7 +6,7 @@ import {
   type JourneyControllerAdapter,
   type JourneyPageIdentity,
 } from './journey-controller';
-import type { JourneyDraftImage, JourneySession } from './journey-core';
+import { markJourneyReviewStorageFailure, type JourneyDraftImage, type JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
 import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import type { StopReason } from './journey-limits';
@@ -371,6 +371,31 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     try { return (await api.tabs.query({ active: true, windowId })).find(tab => validInteger(tab.id))?.id; }
     catch { return; }
   };
+  const windowFocused = async (windowId: number): Promise<boolean> => {
+    if (!windowsApi?.get) return true;
+    try { return Boolean((await windowsApi.get(windowId)).focused); }
+    catch { return false; }
+  };
+  // Where focus went once the owner tab lost it, read from the browser rather
+  // than from an event that may still be queued: the tab now shown in the
+  // owner's window, as ownerActivated would see it, or else, with that window
+  // unfocused, whether a journey tab is active in the window that has focus.
+  // Undefined while the owner tab is still shown in a focused window.
+  const ownerFocusLoss = async (ownerTabId: number): Promise<'user' | 'focus-lost' | undefined> => {
+    const state = controller.getState();
+    if (!activeState(state) || state.ownerTabId !== ownerTabId) return;
+    const shown = await activeTabIn(state.ownerWindowId);
+    if (validInteger(shown) && shown !== ownerTabId) return await focusLossReason(shown) === 'user' ? 'user' : 'focus-lost';
+    if (await windowFocused(state.ownerWindowId)) return;
+    for (const candidate of await journeyTabs()) {
+      if (candidate.windowId === state.ownerWindowId) continue;
+      try {
+        const tab = await api.tabs.get(candidate.tabId);
+        if (tab.active && tab.windowId === candidate.windowId && await windowFocused(candidate.windowId)) return 'user';
+      } catch { /* A journey tab that closed holds no focus. */ }
+    }
+    return 'focus-lost';
+  };
 
   const pageCommand = async (tabId: number, message: Message): Promise<unknown> => {
     const response = await api.tabs.sendMessage(tabId, message, { frameId: 0 });
@@ -605,12 +630,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       && current.sessionId === failedState.sessionId && current.epoch === failedState.epoch) {
       // Recording had already finished, and the draft in memory still holds
       // every step and edit; only the stored copy is behind. The storage stop
-      // reason makes review urge an immediate save, but no limitation is
-      // added: nothing is missing from a journey saved from this draft.
-      const marked = {
-        ...current,
-        draft: { ...current.draft, stopReason: 'session-storage-limit' as const },
-      };
+      // reason makes review urge an immediate save, and its limitation says
+      // the original reason was replaced while no recorded step was lost. A
+      // draft with no room for that limitation keeps its reason; the toolbar
+      // still warns.
+      const marked = markJourneyReviewStorageFailure(current);
       controller = makeController(marked);
       publishedState = marked;
       void api.action.setBadgeText({ tabId: marked.ownerTabId, text: '!' }).catch(() => {});
@@ -726,6 +750,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
       },
       pageAccessLost,
+      focusLost: ownerFocusLoss,
       // A controller replaced after a storage failure may still finish work it
       // began, such as a save. Its late state must not overwrite the
       // replacement in storage, alarms, the toolbar, or open surfaces.
@@ -1003,8 +1028,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await controller.stop('tab-lost');
         return;
       }
+      // Focus may have moved while the background was asleep. A switch to
+      // the journey's own tab is the reader's stop here too, whichever
+      // window it is in; the event saying so may still be queued.
       if (!tab.active) {
-        await controller.stop(await focusLossReason(await activeTabIn(state.ownerWindowId)));
+        await controller.stop(await ownerFocusLoss(state.ownerTabId) ?? 'focus-lost');
         return;
       }
       let tabUrl: string;
@@ -1024,7 +1052,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         try { focused = Boolean((await windowsApi.get(state.ownerWindowId)).focused); } catch { /* Fail closed below. */ }
         if (wakeEventsWaiting()) continue;
         if (!focused) {
-          await controller.stop('focus-lost');
+          await controller.stop(await ownerFocusLoss(state.ownerTabId) ?? 'focus-lost');
           return;
         }
       }
@@ -1040,7 +1068,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (current.phase !== 'recording') return;
       if (!identity.visible || identity.documentToken !== current.documentToken || identity.url !== expectedUrl
         || identity.recording?.sessionId !== current.sessionId || identity.recording.epoch !== current.epoch) {
-        await controller.stop(identity.visible ? 'capture-failed' : 'focus-lost');
+        await controller.stop(identity.visible ? 'capture-failed' : await ownerFocusLoss(current.ownerTabId) ?? 'focus-lost');
         return;
       }
       try {

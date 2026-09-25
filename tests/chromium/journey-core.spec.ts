@@ -6,6 +6,7 @@ import {
   commitJourneyNavigation,
   createJourneySession,
   editJourneyValue,
+  markJourneyReviewStorageFailure,
   redactJourneyLabel,
   redactJourneyUrl,
   reopenJourneySnapshot,
@@ -24,7 +25,7 @@ import {
   type JourneySession,
 } from '../../src/journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch, type JourneyInputEvent } from '../../src/journey-events';
-import { formatJourneyMarkdown, journeyDraftToManifest } from '../../src/journey-export';
+import { formatJourneyMarkdown, journeyDraftToManifest, journeyPrompt } from '../../src/journey-export';
 import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
 import { applyJourneyImageReview } from '../../src/journey-review';
 
@@ -1217,6 +1218,80 @@ test('lossy stops record what is missing once, and ordinary stops record nothing
   expect(overflowed.draft.limitations).toEqual([JOURNEY_LIMITATIONS.sessionStorage]);
   expect(Buffer.byteLength(JSON.stringify(overflowed)))
     .toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes);
+});
+
+test('a storage failure during review records why the stop reason changed, so a saved journey never shows it unexplained', () => {
+  const recording = recordingSession();
+  const stopped = stopJourney(recording, { epoch: 1, stoppedAt: '2026-09-20T12:00:02.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const summarized = updateJourneySummary(stopped, { ...reviewGuards(stopped), expected: 'The order saves.', actual: 'It spins.' });
+  if (summarized.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(summarized.draft.limitations).toEqual([]);
+
+  const marked = markJourneyReviewStorageFailure(summarized);
+  expect(marked.draft.stopReason).toBe('session-storage-limit');
+  expect(marked.draft.limitations).toEqual([JOURNEY_LIMITATIONS.reviewStorage]);
+  // Every step and edit is still there; only the stop reason changed.
+  expect({ ...marked.draft, stopReason: 'user', limitations: [] }).toEqual(summarized.draft);
+  expect(validateJourneyDraft(marked.draft).ok).toBe(true);
+  expect(reviewSaveGating(marked)).toEqual({ ready: true, reasons: [] });
+  const markdown = formatJourneyMarkdown(journeyDraftToManifest(marked.draft));
+  expect(markdown).toContain('Stop reason: `session-storage-limit`');
+  expect(markdown).toContain(JOURNEY_LIMITATIONS.reviewStorage);
+  expect(markdown).not.toContain('None recorded.');
+  // Neither export says recording was cut short or that an action may be
+  // missing: the prompt says why recording ended is unknown instead.
+  const prompt = journeyPrompt(journeyDraftToManifest(marked.draft));
+  expect(prompt).toContain('- **Stopped because:** unknown; journey storage failed after recording stopped and replaced the reason, but no recorded step is missing (`session-storage-limit`)');
+  for (const text of [markdown, prompt]) {
+    expect(text).not.toContain('while recording');
+    expect(text).not.toMatch(/latest action[^\n]*may be (lost|missing)/);
+  }
+
+  // A second failure changes nothing, and one after a storage stop during
+  // recording keeps that stop's own limitation alone.
+  expect(markJourneyReviewStorageFailure(marked)).toBe(marked);
+  const storageStop = stopJourney(recording, { epoch: 1, stoppedAt: '2026-09-20T12:00:02.000Z', reason: 'session-storage-limit' });
+  if (storageStop.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(markJourneyReviewStorageFailure(storageStop)).toBe(storageStop);
+  expect(storageStop.draft.limitations).toEqual([JOURNEY_LIMITATIONS.sessionStorage]);
+  // That stop still reads as a recording cut short by storage.
+  const storageSummarized = updateJourneySummary(storageStop, { ...reviewGuards(storageStop), expected: 'The order saves.', actual: 'It spins.' });
+  if (storageSummarized.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(journeyPrompt(journeyDraftToManifest(storageSummarized.draft)))
+    .toContain('- **Stopped because:** journey storage failed while recording (`session-storage-limit`)');
+
+  // Earlier limitations stay first, and a saving session is marked the same way.
+  const saving = {
+    phase: 'saving' as const, sessionId: summarized.sessionId, journeyId: summarized.journeyId, epoch: summarized.epoch,
+    ownerTabId: summarized.ownerTabId, ownerWindowId: summarized.ownerWindowId,
+    draft: { ...summarized.draft, limitations: [JOURNEY_LIMITATIONS.enteredValuesTruncated] },
+  };
+  expect(markJourneyReviewStorageFailure(saving)).toMatchObject({
+    phase: 'saving',
+    draft: { stopReason: 'session-storage-limit', limitations: [JOURNEY_LIMITATIONS.enteredValuesTruncated, JOURNEY_LIMITATIONS.reviewStorage] },
+  });
+});
+
+test('a draft with no room to explain a storage failure during review keeps its recorded stop reason', () => {
+  const stopped = stopJourney(nearSessionLimitRecording(), { epoch: 1, stoppedAt: '2026-09-20T12:00:30.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  // Fill the draft to 100 bytes under the session limit: the relabel alone
+  // would fit, but not the limitation that explains it.
+  const summarized = { ...stopped.draft, actual: 'It spins.' };
+  const room = JOURNEY_LIMITS.maxSessionBytes - Buffer.byteLength(JSON.stringify(summarized)) - 100;
+  const expected = '\u{1D11E}'.repeat(Math.floor(room / 4)) + 'a'.repeat(room % 4);
+  const full = { ...stopped, draft: { ...summarized, expected } };
+  expect(Buffer.byteLength(JSON.stringify(full.draft))).toBe(JOURNEY_LIMITS.maxSessionBytes - 100);
+  expect(validateJourneyDraft(full.draft).ok).toBe(true);
+  expect(validateJourneyDraft({ ...full.draft, stopReason: 'session-storage-limit' }).ok).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(JOURNEY_LIMITATIONS.reviewStorage))).toBeGreaterThan(100);
+
+  // A storage stop reason never appears without its explanation.
+  const marked = markJourneyReviewStorageFailure(full);
+  expect(marked).toBe(full);
+  expect(marked.draft.stopReason).toBe('user');
+  expect(marked.draft.limitations).toEqual([]);
 });
 
 test('every accepted review edit restarts the idle window from its own time', () => {

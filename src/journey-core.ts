@@ -984,12 +984,24 @@ export function acceptLateJourneyEventBatch(state: JourneySession, input: Journe
     ...draftStep(event, baseSeq + index + 1),
     image: { status: 'unavailable', reason: 'superseded' } as const,
   }));
+  // The route change overtook the actions before it, which now land in front
+  // of it. As when they arrive in order, the last of them opens the capture
+  // window the navigation falls in: a click within its window is the cause,
+  // and a field commit, or a click whose window had closed, leaves none. A
+  // screenshot shared with its click keeps the link that shares it.
+  const cause = steps.at(-1);
+  const { causedByStepId: _earlierCause, ...uncaused } = trailing.navigation;
+  const navigation = trailing.image.status === 'retained' && trailing.image.sharedNavigationResult
+    ? trailing.navigation
+    : cause?.kind === 'click' && navigatedAt - Date.parse(cause.observedAt) < JOURNEY_LIMITS.captureWindowMs
+      ? { ...uncaused, causedByStepId: cause.id }
+      : uncaused;
   const next: RecordingJourneySession = {
     ...state,
     documentCounters: { ...state.documentCounters, [batch.documentToken]: batch.localCounter },
     draft: {
       ...state.draft,
-      steps: [...state.draft.steps.slice(0, -1), ...steps, { ...trailing, seq: baseSeq + steps.length + 1 }],
+      steps: [...state.draft.steps.slice(0, -1), ...steps, { ...trailing, seq: baseSeq + steps.length + 1, navigation }],
       limitations: fitted.truncated
         ? withLimitation(state.draft.limitations, JOURNEY_LIMITATIONS.enteredValuesTruncated)
         : state.draft.limitations,
@@ -1167,6 +1179,22 @@ export function reopenJourneySnapshot(
 // draft is the reviewed one; its idle window restarts from its last edit.
 export function resumeSavingReview(state: SavingJourneySession): ReviewingJourneySession {
   return { ...state, phase: 'reviewing', ...journeyReviewWindow(Date.parse(state.draft.updatedAt)) };
+}
+
+// Session storage failed after recording stopped. The draft in memory still
+// holds every step and edit, so nothing recorded is missing, but its stop
+// reason now names the storage failure so review urges an immediate save.
+// The limitation says so, and that the original reason was replaced; a
+// journey saved from this draft never shows that stop without an entry.
+// A draft with no room left for the entry keeps its recorded stop reason
+// instead, so it stays saveable and its stop reason stays explained; the
+// toolbar still says storage failed.
+export function markJourneyReviewStorageFailure<T extends ReviewingJourneySession | SavingJourneySession>(state: T): T {
+  if (state.draft.stopReason === 'session-storage-limit') return state;
+  const limitations = withLimitation(state.draft.limitations, JOURNEY_LIMITATIONS.reviewStorage);
+  const draft = { ...state.draft, stopReason: 'session-storage-limit' as const, limitations };
+  if (!limitations.includes(JOURNEY_LIMITATIONS.reviewStorage) || !validateJourneyDraft(draft).ok) return state;
+  return { ...state, draft };
 }
 
 export type ReviewBlockReason = 'summaries-required' | 'retained-step-required' | 'images-pending' | 'invalid-draft';

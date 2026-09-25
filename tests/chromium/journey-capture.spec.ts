@@ -347,6 +347,7 @@ function adapterFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
       await overrides.end?.(tabId, input);
     },
     changed: state => { calls.changed.push(state); overrides.changed?.(state); },
+    ...(overrides.focusLost ? { focusLost: overrides.focusLost } : {}),
   };
   return fixture;
 }
@@ -575,4 +576,78 @@ test('review value edits and URL redaction apply through the controller', async 
   reviewing = controller.getState();
   if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
   expect(reviewing.draft.steps[1].sourceUrl).toBe('[redacted]');
+});
+
+// Switching to the journey's own tab is how a floating-panel reader stops a
+// journey. The owner page can report itself hidden to a post-action capture
+// before the tab switch event arrives, so the controller asks where focus
+// went instead of assuming it was lost.
+test('a post-action capture that finds the page hidden stops for where focus went', async () => {
+  const cases = [
+    ['before', 'user', 'user'], ['before', 'focus-lost', 'focus-lost'], ['before', undefined, 'focus-lost'],
+    ['after', 'user', 'user'], ['after', 'focus-lost', 'focus-lost'], ['after', undefined, 'focus-lost'],
+  ] as const;
+  for (const [when, where, reason] of cases) {
+    const label = `${when} capture, focus ${where}`;
+    const asked: number[] = [];
+    let hideOnCapture = false;
+    const fixture = adapterFixture({
+      focusLost: async tabId => { asked.push(tabId); return where; },
+      capture: async (_tabId, identity) => {
+        if (hideOnCapture) Object.assign(fixture.identity, { visible: false });
+        return image(identity.url, iso(fixture.nowMs));
+      },
+    });
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+    controller.acceptBatch(clickBatch(recording(controller.getState()), 1, 'step-click-1', 'capture-click-1'), 42);
+    if (when === 'before') Object.assign(fixture.identity, { visible: false });
+    else hideOnCapture = true;
+    fixture.nowMs = startMs + 600;
+    fixture.resolveDelay(0);
+
+    await eventually(() => expect(controller.getState().phase, label).toBe('reviewing'));
+    const stopped = controller.getState();
+    if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+    expect(stopped.draft.stopReason, label).toBe(reason);
+    expect(stopped.draft.steps[1].image, label).toEqual({ status: 'unavailable', reason: 'capture-denied' });
+    expect(asked, label).toEqual([42]);
+    expect(fixture.calls.end, label).toHaveLength(1);
+  }
+});
+
+test('an adapter that cannot say where focus went keeps a hidden page a focus loss', async () => {
+  const fixture = adapterFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  controller.acceptBatch(clickBatch(recording(controller.getState()), 1, 'step-click-1', 'capture-click-1'), 42);
+  Object.assign(fixture.identity, { visible: false });
+  fixture.nowMs = startMs + 600;
+  fixture.resolveDelay(0);
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(stopped.draft.stopReason).toBe('focus-lost');
+});
+
+test('a user stop that lands while focus is being located is kept', async () => {
+  const located = deferred<'user' | 'focus-lost' | undefined>();
+  const fixture = adapterFixture({ focusLost: () => located.promise });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  controller.acceptBatch(clickBatch(recording(controller.getState()), 1, 'step-click-1', 'capture-click-1'), 42);
+  Object.assign(fixture.identity, { visible: false });
+  fixture.nowMs = startMs + 600;
+  fixture.resolveDelay(0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps[1].image)
+    .toEqual({ status: 'unavailable', reason: 'capture-denied' }));
+
+  await controller.stop('user');
+  const stopped = controller.getState();
+  located.resolve('focus-lost');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(controller.getState()).toBe(stopped);
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(stopped.draft.stopReason).toBe('user');
+  expect(fixture.calls.end).toHaveLength(1);
 });

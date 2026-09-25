@@ -1,6 +1,6 @@
 import type { JourneyDraftImage, JourneyDraftStep, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import type { NormalizedJourneyPng } from './journey-image';
-import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
+import { JOURNEY_LIMITS, storageFailedAfterRecording, type CaptureFailure, type StopReason } from './journey-limits';
 import { downloadFile } from './export';
 import { journeyArchive, journeyArchiveName, journeyDraftToManifest, journeyPrompt } from './journey-export';
 import { reviewJourneyImage, viewJourneyImage } from './journey-image-review';
@@ -101,6 +101,9 @@ const stopNotices: Record<StopReason, string> = {
   'capture-failed': `Recording ended because anmerko lost track of the page after it changed and could not keep recording reliably. ${KEPT}`,
   'page-access-lost': `Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. ${KEPT} The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.`,
 };
+// Storage that failed after recording stopped lost nothing recorded; only
+// this unsaved draft is at risk.
+const REVIEW_STORAGE_NOTICE = 'Journey storage failed after recording stopped. Nothing recorded is missing, but save this draft now because it may be lost if the extension closes.';
 
 const PAGE_LOAD_NOTICE = 'In Firefox, reloading the page or opening another page ends the journey there. Navigation inside the page, such as a single-page app route change, keeps recording.';
 const START_ELSEWHERE = 'To record a new journey, go to the website tab, click anmerko in the browser toolbar or Extensions menu, and choose Record journey from More Comment Options.';
@@ -1741,7 +1744,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
 
   function announceStop(draft: JourneyDraftV1): HTMLElement | null {
     const reason = draft.stopReason;
-    const text = reason ? stopNotices[reason] : undefined;
+    const text = !reason ? undefined : storageFailedAfterRecording(draft) ? REVIEW_STORAGE_NOTICE : stopNotices[reason];
     if (!reason || !text) return null;
     // A storage failure can still lose the draft, so it interrupts.
     const storage = reason === 'session-storage-limit';

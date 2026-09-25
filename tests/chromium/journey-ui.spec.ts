@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { JOURNEY_LIMITATIONS } from '../../src/journey-limits';
 
 const bundle = () => buildSync({ stdin: { contents: `
   import { mountJourneyUI } from './src/journey-ui';
@@ -150,4 +151,22 @@ test('failed session loading offers an explicit storage reset', async ({ page })
   await page.getByRole('button', { name: 'Reset journey storage', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
   expect(await page.evaluate('journeyHarness.discardCalls()')).toBe(1);
+});
+
+test('a storage failure after recording stopped says nothing recorded is missing', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate(`journeyHarness.set({phase:'reviewing',epoch:2,draft:{
+    id:'J1',includeEnteredValues:false,stopReason:'session-storage-limit',steps:[],images:{},expected:'',actual:'',
+    limitations:${JSON.stringify([JOURNEY_LIMITATIONS.reviewStorage])}
+  }})`);
+  const text = 'Journey storage failed after recording stopped. Nothing recorded is missing, but save this draft now because it may be lost if the extension closes.';
+  // Still urgent: the unsaved draft can be lost.
+  await expect(page.locator('.journey-stop-reason.journey-notice-error')).toHaveText(text);
+  await expect(page.locator('.journey-live [aria-live="assertive"]')).toHaveText(text);
+  await expect(page.locator('.journey-limitations li')).toHaveText([JOURNEY_LIMITATIONS.reviewStorage]);
+  const shown = await page.locator('body').innerText();
+  expect(shown).not.toContain('while recording');
+  expect(shown).not.toMatch(/latest action[^\n]*may be (lost|missing)/);
 });
