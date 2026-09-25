@@ -2966,6 +2966,89 @@ test('switching to the journey tab stops the recording as the reader\'s own stop
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason).toBe('focus-lost');
 });
 
+// The tab switch can reach the controller's own checks before its event is
+// routed: here the browser has moved focus, but no event has arrived yet.
+test('switching tabs while a new page connects stops for where focus went, before the tab event arrives', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const startUrl = 'https://private:secret@example.test/path?item=1#top';
+  for (const [target, reason] of [['journey tab', 'user'], ['website tab', 'focus-lost']] as const) {
+    const { launchTabId } = await recordFromLaunchTab(page);
+    const nextUrl = `https://example.test/next-${reason}`;
+    await page.evaluate(url => {
+      const harness = (globalThis as HarnessWindow).harness;
+      harness.deferInjection = true;
+      harness.tabs[1].url = url;
+      harness.identity = { ...harness.identity, documentToken: 'document-next', url, generation: 1 };
+      delete harness.identity.recording;
+      harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+    }, nextUrl);
+    await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releaseInjection)), target).toBe(true);
+    await page.evaluate(tabId => {
+      const harness = (globalThis as HarnessWindow).harness;
+      harness.tabs[1].active = false;
+      harness.tabs[tabId].active = true;
+      harness.deferInjection = false;
+      const release = harness.releaseInjection;
+      harness.releaseInjection = undefined;
+      release?.();
+    }, target === 'journey tab' ? launchTabId : 2);
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason, target).toBe(reason);
+    const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    expect(stopped.draft.steps.at(-1), target).toMatchObject({
+      kind: 'navigation', navigation: { toUrl: nextUrl }, image: { status: 'unavailable', reason: 'capture-denied' },
+    });
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+    await page.evaluate(({ url, tabId }) => {
+      const harness = (globalThis as HarnessWindow).harness;
+      delete harness.tabs[tabId];
+      for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+      harness.tabs[1].url = url;
+      harness.identity = { ...harness.identity, documentToken: 'document-1', url, generation: 0 };
+      delete harness.identity.recording;
+    }, { url: startUrl, tabId: launchTabId });
+  }
+});
+
+// A background that slept through the switch finds focus already moved.
+test('a recording recovered on wake stops as the reader\'s own when a journey tab has focus, and as lost focus otherwise', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const cases = [
+    ['a journey tab in another window', 'user'],
+    ['a website in another window', 'focus-lost'],
+    ['the journey tab in the owner window', 'user'],
+    ['a hidden owner page in a focused window', 'focus-lost'],
+  ] as const;
+  for (const [where, reason] of cases) {
+    const { launchTabId } = await recordFromLaunchTab(page);
+    await page.evaluate(({ where, tabId }) => {
+      const harness = (globalThis as HarnessWindow).harness;
+      if (where === 'the journey tab in the owner window') {
+        harness.tabs[1].active = false;
+        harness.tabs[tabId].active = true;
+      } else if (where === 'a hidden owner page in a focused window') {
+        harness.identity.visible = false;
+      } else {
+        harness.tabs[tabId].windowId = 9;
+        harness.tabs[tabId].active = where === 'a journey tab in another window';
+        harness.tabs[3] = { id: 3, windowId: 9, active: where !== 'a journey tab in another window', url: 'https://third.test/' };
+        harness.focusedWindowId = 9;
+      }
+      harness.reboot();
+    }, { where, tabId: launchTabId });
+    await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+    expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason, where).toBe(reason);
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+    await page.evaluate(tabId => {
+      const harness = (globalThis as HarnessWindow).harness;
+      delete harness.tabs[tabId];
+      delete harness.tabs[3];
+      for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+      harness.focusedWindowId = 7;
+      harness.identity.visible = true;
+    }, launchTabId);
+  }
+});
+
 test('Record journey during a review reuses the launch tab where Chromium hides extension tab URLs', async ({ page }) => {
   await hideExtensionTabUrls(page);
   const { launchTabId } = await recordFromLaunchTab(page);

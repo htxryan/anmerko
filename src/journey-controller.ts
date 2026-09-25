@@ -64,6 +64,11 @@ export interface JourneyControllerAdapter {
   // Whether the browser withdrew page access to the owner tab. Firefox ties
   // activeTab to one document, so any document load in the tab revokes it.
   pageAccessLost?(tabId: number): Promise<boolean>;
+  // Where focus went once the owner tab lost it: 'user' when the reader
+  // switched to anmerko's own journey tab, which is how a floating-panel
+  // journey is stopped, 'focus-lost' for any other tab, window, or app, and
+  // undefined while the owner tab still has focus.
+  focusLost?(tabId: number): Promise<'user' | 'focus-lost' | undefined>;
   changed(state: JourneySession): void;
   saveSnapshot?(input: { draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }): Promise<{ journeyId: string; revision: number }>;
   now?(): number;
@@ -528,7 +533,7 @@ export function createJourneyController(
       if (!isCurrentRecording(generation, captureId)) return;
       if (!before.visible) {
         settleCapture(captureId, 'capture-denied');
-        await stop('focus-lost');
+        await stopForLostFocus(current.sessionId, current.ownerTabId);
         return;
       }
       if (before.documentToken !== current.documentToken || !captureSourceMatches(current, captureId, before.url)) {
@@ -552,7 +557,7 @@ export function createJourneyController(
       }
       if (!after.visible) {
         settleCapture(captureId, 'capture-denied');
-        await stop('focus-lost');
+        await stopForLostFocus(current.sessionId, current.ownerTabId);
         return;
       }
       if (!sameDocumentAndUrl(before, after) || !sameUrl(image.captureUrl, after.url)) {
@@ -575,7 +580,8 @@ export function createJourneyController(
 
   // The new document never connected, so recording cannot continue. Name a
   // withdrawn page grant (Firefox, on every document load) instead of a
-  // generic failure; the navigation step and earlier steps are kept.
+  // generic failure, and a handshake the reader interrupted by leaving the
+  // tab for where focus went; the navigation step and earlier steps are kept.
   async function stopAfterFailedHandshake(captureId: string, failure: CaptureFailure): Promise<void> {
     if (state.phase !== 'recording') return;
     const ownerTabId = state.ownerTabId;
@@ -583,9 +589,28 @@ export function createJourneyController(
     let accessLost = false;
     try { accessLost = await adapter.pageAccessLost?.(ownerTabId) ?? false; }
     catch { /* Keep the generic capture failure. */ }
+    const focus = accessLost ? undefined : await focusLoss(ownerTabId);
     if (generation !== workGeneration) return;
-    settleCapture(captureId, accessLost ? 'capture-denied' : failure);
-    await stop(accessLost ? 'page-access-lost' : 'capture-failed');
+    settleCapture(captureId, accessLost || focus ? 'capture-denied' : failure);
+    await stop(accessLost ? 'page-access-lost' : focus ?? 'capture-failed');
+  }
+
+  async function focusLoss(ownerTabId: number): Promise<'user' | 'focus-lost' | undefined> {
+    try {
+      const reason = await adapter.focusLost?.(ownerTabId);
+      return reason === 'user' || reason === 'focus-lost' ? reason : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // The owner page is no longer visible. Switching to the journey's own tab
+  // is the reader's stop; anything else, or a page hidden while its tab kept
+  // focus, is focus-lost.
+  async function stopForLostFocus(sessionId: string, ownerTabId: number): Promise<void> {
+    const reason = await focusLoss(ownerTabId) ?? 'focus-lost';
+    if (state.phase !== 'recording' || state.sessionId !== sessionId) return;
+    await stop(reason);
   }
 
   function settleCapture(captureId: string, reason: CaptureFailure): void {

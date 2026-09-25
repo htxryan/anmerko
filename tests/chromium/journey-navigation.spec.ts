@@ -795,6 +795,7 @@ function navigationFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
     },
     changed: next => { calls.changed.push(next); overrides.changed?.(next); },
     ...(overrides.pageAccessLost ? { pageAccessLost: overrides.pageAccessLost } : {}),
+    ...(overrides.focusLost ? { focusLost: overrides.focusLost } : {}),
   };
   return fixture;
 }
@@ -957,4 +958,42 @@ test('a click that arrives after the route change it made is recorded as its cau
   state = recording(controller.getState());
   expect(state.draft.steps.slice(-2).map(step => step.id)).toEqual(['stale-click', state.draft.steps.at(-1)!.id]);
   expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/later' });
+});
+
+test('a document handshake the reader interrupts by leaving the tab stops for where focus went', async () => {
+  const cases = [['user', 'user'], ['focus-lost', 'focus-lost'], [undefined, 'capture-failed']] as const;
+  for (const [where, reason] of cases) {
+    const fixture = navigationFixture({
+      connect: async () => { throw new Error('the owner tab is no longer focused'); },
+      pageAccessLost: async () => false,
+      focusLost: async () => where,
+    });
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+    fixture.nowMs = START_MS + 1_000;
+    controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+    await eventually(() => expect(controller.getState().phase, String(where)).toBe('reviewing'));
+    const stopped = controller.getState();
+    if (stopped.phase !== 'reviewing') throw new Error('Expected review after an interrupted handshake');
+    expect(stopped.draft.stopReason, String(where)).toBe(reason);
+    expect(stopped.draft.steps.at(-1)?.image, String(where))
+      .toEqual({ status: 'unavailable', reason: where ? 'capture-denied' : 'capture-error' });
+  }
+
+  // A withdrawn page grant still names itself first.
+  const asked: number[] = [];
+  const fixture = navigationFixture({
+    connect: async () => { throw new Error('Missing host permission for the tab'); },
+    pageAccessLost: async () => true,
+    focusLost: async tabId => { asked.push(tabId); return 'user'; },
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
+  expect(stopped.draft.stopReason).toBe('page-access-lost');
+  expect(asked).toEqual([]);
 });
