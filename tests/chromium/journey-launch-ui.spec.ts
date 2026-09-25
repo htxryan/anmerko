@@ -48,7 +48,13 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
         window.reopened = [...(window.reopened || []), journeyId];
         if (window.rejectReopen) throw Object.assign(new Error('Finish or discard the existing journey before starting another.'), { code: 'busy' });
       },
-      start: async () => {}, stop: async () => {}, discard: async () => {},
+      start: async () => {}, stop: async () => {},
+      // Discarding a save's confirmation leaves the snapshot saved and the session idle.
+      discard: async () => {
+        window.discards = (window.discards || 0) + 1;
+        if (window.journeyState?.phase === 'saved') window.journeyState = { phase: 'idle', epoch: window.journeyState.epoch + 1 };
+        for (const listener of window.journeyListeners || []) listener();
+      },
     } } : {}),
     ...(setup.native ? { presentation: { native: true, dockViaToolbar: false, sync: async () => {}, changeLayout: async () => {},
       locate: async () => null, hierarchy: async () => null, startCapture: async () => {}, captureError() {}, connect() {} } } : {}),
@@ -385,6 +391,59 @@ test('saved journeys in the comments view reopen for review and lead to the jour
   const view = page.locator('anmerko-overlay .journey-container');
   await expect(view.getByRole('heading', { name: 'Saved journeys' })).toBeFocused();
   await expect(view.getByRole('button', { name: /^Delete journey: Checkout keeps the item/ })).toBeVisible();
+});
+
+test('Manage saved journeys closes a save confirmation first and waits while a journey is in progress', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, inPanel: true }, {
+    savedJourneys: [{ journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' }],
+    journeyState: { phase: 'saved', epoch: 5, journeyId: 'J1', revision: 2 },
+  });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const saved = panel.getByRole('region', { name: 'Saved journeys' });
+  const manage = saved.getByRole('button', { name: 'Manage saved journeys', exact: true });
+  const reopen = saved.getByRole('button', { name: /^Reopen journey: Checkout keeps the item, saved / });
+  const held = saved.getByText('Finish or discard the current journey to reopen or manage saved journeys.', { exact: true });
+  const view = page.locator('anmerko-overlay .journey-container');
+  const notify = (state: unknown) => page.evaluate(value => {
+    (window as any).journeyState = value;
+    for (const listener of (window as any).journeyListeners) listener();
+  }, state);
+
+  // Right after a save the session still holds its confirmation, which lists
+  // nothing. Manage closes it and lands on the list, where delete lives.
+  await expect(held).toBeHidden();
+  await expect(manage).toBeEnabled();
+  await manage.click();
+  await expect(view.getByRole('heading', { name: 'Saved journeys' })).toBeFocused();
+  await expect(view.getByRole('heading', { name: 'Journey saved' })).toHaveCount(0);
+  await expect(view.getByRole('button', { name: /^Delete journey: Checkout keeps the item/ })).toBeVisible();
+  expect(await page.evaluate('window.discards')).toBe(1);
+  await page.getByRole('button', { name: 'Back to comments', exact: true }).click();
+
+  // While a journey records or waits for review, the view has no list and a
+  // saved journey cannot reopen: both wait, and say why.
+  for (const phase of ['recording', 'reviewing', 'saving']) {
+    await notify({ phase, epoch: 7 });
+    await expect(held, phase).toBeVisible();
+    await expect(manage, phase).toBeDisabled();
+    await expect(reopen, phase).toBeDisabled();
+    await expect(manage, phase).toHaveAttribute('aria-describedby', 'saved-journeys-note');
+  }
+  await notify({ phase: 'idle', epoch: 8 });
+  await expect(held).toBeHidden();
+  await expect(manage).toBeEnabled();
+  await expect(reopen).toBeEnabled();
+  await expect(manage).not.toHaveAttribute('aria-describedby', /./);
+
+  // A review that begins elsewhere before this panel hears of it is caught at
+  // the click: nothing is discarded and nothing opens.
+  await page.evaluate(() => { (window as any).journeyState = { phase: 'reviewing', epoch: 9 }; });
+  await manage.click();
+  await expect(panel.locator('.status')).toHaveText('Finish or discard the current journey to reopen or manage saved journeys.');
+  await expect(view).toHaveCount(0);
+  expect(await page.evaluate('window.discards')).toBe(1);
+  await expect(held).toBeVisible();
 });
 
 test('a native panel offers a pending review and opens the journey view for it', async ({ page }) => {

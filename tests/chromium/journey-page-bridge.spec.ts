@@ -24,6 +24,7 @@ type BridgeWindow = typeof globalThis & {
   anmerkoJourneyPageBridge: {
     bindJourneyPage(onDispose?: () => void): () => void;
     watchJourneyPageRecording(listener: (recording: boolean) => void): () => void;
+    sidePanelJourneyCommands(): { journeyPhase(): Promise<string> };
   };
   bridgeHarness: BridgeHarness;
   disposeJourneyPage: () => void;
@@ -538,6 +539,23 @@ test('the strip is a labelled group whose Stop names the journey and whose failu
     await page.evaluate(() => { (globalThis as BridgeWindow).bridgeHarness.response = { ok: true }; });
     expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: `session-${width}`, epoch: 1 })).toMatchObject({ ok: true });
   }
+});
+
+test('the native side panel asks the background for the journey phase alone', async ({ page }) => {
+  const ask = (response: unknown) => page.evaluate(async value => {
+    const viewing = globalThis as BridgeWindow;
+    viewing.bridgeHarness.response = value;
+    viewing.bridgeHarness.sent.length = 0;
+    try { return { phase: await viewing.anmerkoJourneyPageBridge.sidePanelJourneyCommands().journeyPhase(), sent: viewing.bridgeHarness.sent }; }
+    catch (error) { return { error: (error as Error).message, code: (error as { code?: string }).code, sent: viewing.bridgeHarness.sent }; }
+  }, response);
+  expect(await ask({ ok: true, value: 'reviewing' })).toEqual({ phase: 'reviewing', sent: [{ type: 'ANMERKO_JOURNEY_PHASE' }] });
+  expect(await ask({ ok: true, value: 'saved' })).toMatchObject({ phase: 'saved' });
+  // Anything but a phase, such as a whole session, is refused.
+  expect(await ask({ ok: true, value: { phase: 'reviewing' } })).toMatchObject({ error: 'Journey command unavailable.' });
+  expect(await ask(undefined)).toMatchObject({ error: 'Could not update the journey.' });
+  expect(await ask({ ok: false, error: 'Journey storage failed.', code: 'session-storage-failed' }))
+    .toMatchObject({ error: 'Journey storage failed.', code: 'session-storage-failed' });
 });
 
 test('entered values collect only with an explicit flag and merge before the click', async ({ page }) => {

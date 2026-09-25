@@ -8,7 +8,7 @@ import type { Store } from './runtime';
 import { currentPlatform, journeysAvailable } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 import { journeySurfaceStyles } from './journey-styles';
-import { pageJourneyCommands } from './journey-page-bridge';
+import { pageJourneyCommands, sidePanelJourneyCommands } from './journey-page-bridge';
 
 declare const __TARGET_JOURNEYS__: boolean;
 
@@ -16,7 +16,7 @@ declare const __TARGET_JOURNEYS__: boolean;
 // availability check, styles, and panel commands out of their content script;
 // esbuild folds the define only within this module.
 const journeyParts = typeof __TARGET_JOURNEYS__ === 'undefined' || __TARGET_JOURNEYS__
-  ? { createJourneyClient, currentPlatform, journeysAvailable, journeySurfaceStyles, pageJourneyCommands } : undefined;
+  ? { createJourneyClient, currentPlatform, journeysAvailable, journeySurfaceStyles, pageJourneyCommands, sidePanelJourneyCommands } : undefined;
 
 function draftTargetIdentity(value: unknown): DraftTargetIdentity | undefined {
   if (!value || typeof value !== 'object' || Object.keys(value).length !== 5) return;
@@ -272,6 +272,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     ...(journeyParts && journeys && !native ? journeyParts.pageJourneyCommands() : {}),
     ...(journeyParts && journeys && native ? {
       journeys: journeyParts.createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })),
+      ...journeyParts.sidePanelJourneyCommands(),
     } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',

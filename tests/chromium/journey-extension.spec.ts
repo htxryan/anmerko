@@ -2833,6 +2833,19 @@ test('a page panel learns only whether a review is pending, and any focused webs
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, otherPage)).toEqual({ ok: true, value: false });
 });
 
+test('a trusted journey surface can follow the phase alone, without the draft; pages cannot ask', async ({ page }) => {
+  const phase = async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' }, ownerPage)).toBeUndefined();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' }, { ...sidebar, id: 'other-extension' })).toBeUndefined();
+  expect(await phase()).toBe('idle');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' })).toEqual({ ok: true, value: 'recording' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await phase()).toBe('reviewing');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await phase()).toBe('idle');
+});
+
 test.describe('T07 slice 2 shared capture scheduling and bounded normalization', () => {
   const clickEvent = (id: string, captureId: string, elapsedMs: number) => ({
     kind: 'click', id, observedAt: new Date().toISOString(), elapsedMs,

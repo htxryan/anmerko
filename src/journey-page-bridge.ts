@@ -1,3 +1,4 @@
+import type { JourneySession } from './journey-core';
 import { stripUrlCredentials, type JourneyEventBatchV1 } from './journey-events';
 import { isJourneyBackgroundSender, JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { attachJourneyRecorder } from './journey-recorder';
@@ -93,24 +94,37 @@ export function watchJourneyPageRecording(listener: (recording: boolean) => void
   return () => { signal.listeners.delete(listener); };
 }
 
-// The floating panel's journey commands. Failures keep the background's code,
-// so the panel can say what to do.
-export function pageJourneyCommands(): Pick<Runtime, 'openJourney' | 'journeyReviewPending' | 'watchJourneyRecording'> {
-  const api = extensionApi();
-  async function command(type: string) {
-    let result;
-    try { result = await api.runtime.sendMessage({ type }); }
-    catch { throw Object.assign(new Error('Could not reach anmerko.'), { code: 'unreachable' }); }
-    if (!result?.ok) {
-      throw Object.assign(new Error(result?.error || 'Could not update the journey.'),
-        typeof result?.code === 'string' ? { code: result.code } : {});
-    }
-    return result.value;
+// Failures keep the background's code, so a panel can say what to do.
+async function journeyCommand(type: string): Promise<unknown> {
+  let result;
+  try { result = await extensionApi().runtime.sendMessage({ type }); }
+  catch { throw Object.assign(new Error('Could not reach anmerko.'), { code: 'unreachable' }); }
+  if (!result?.ok) {
+    throw Object.assign(new Error(result?.error || 'Could not update the journey.'),
+      typeof result?.code === 'string' ? { code: result.code } : {});
   }
+  return result.value;
+}
+
+const JOURNEY_PHASES = new Set<unknown>(['idle', 'starting', 'recording', 'reviewing', 'saving', 'saved'] satisfies Array<JourneySession['phase']>);
+
+// The floating panel's journey commands.
+export function pageJourneyCommands(): Pick<Runtime, 'openJourney' | 'journeyReviewPending' | 'watchJourneyRecording'> {
   return {
-    openJourney: async () => { await command('ANMERKO_JOURNEY_OPEN'); },
-    journeyReviewPending: async () => await command('ANMERKO_JOURNEY_PENDING') === true,
+    openJourney: async () => { await journeyCommand('ANMERKO_JOURNEY_OPEN'); },
+    journeyReviewPending: async () => await journeyCommand('ANMERKO_JOURNEY_PENDING') === true,
     watchJourneyRecording: watchJourneyPageRecording,
+  };
+}
+
+// The native side panel's journey commands beside its journey client.
+export function sidePanelJourneyCommands(): Pick<Runtime, 'journeyPhase'> {
+  return {
+    journeyPhase: async () => {
+      const phase = await journeyCommand('ANMERKO_JOURNEY_PHASE');
+      if (!JOURNEY_PHASES.has(phase)) throw new Error(GENERIC_ERROR);
+      return phase as JourneySession['phase'];
+    },
   };
 }
 

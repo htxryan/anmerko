@@ -1,6 +1,9 @@
 import { icon } from './icons';
+import type { JourneySession } from './journey-core';
 import { mountJourneyUI, savedJourneyTime, savedJourneyTitle, type JourneySavedSummary } from './journey-ui';
 import type { Runtime } from './runtime';
+
+type JourneyPhase = JourneySession['phase'];
 
 // Record journey from a page panel asks the background for a journey tab.
 // Each refusal says what to do next on this page.
@@ -16,6 +19,13 @@ const OPEN_GUIDANCE: Record<string, string> = {
 const OPEN_ERROR = 'Could not open the journey tab. Try again.';
 const REOPEN_BUSY = 'Finish or discard the current journey before reopening a saved one.';
 const REOPEN_ERROR = 'Could not reopen the journey. Try again.';
+const SAVED_HELD = 'Finish or discard the current journey to reopen or manage saved journeys.';
+const MANAGE_ERROR = 'Could not open saved journeys. Try again.';
+
+// Saved journeys wait while a journey records or waits for review: reopening
+// needs an idle session, and the journey view lists them only then.
+const inProgress = (phase: JourneyPhase | undefined) =>
+  phase === 'starting' || phase === 'recording' || phase === 'reviewing' || phase === 'saving';
 
 function errorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code;
@@ -79,29 +89,46 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
   entry.append(entryText, review);
   $('.content').prepend(entry);
 
-  let reviewPending = false;
+  // The last journey phase the background reported. A page panel learns only
+  // whether a review waits.
+  let phase: JourneyPhase | undefined;
   let reviewVersion = 0;
   let disposeView: (() => void) | undefined;
   let stopFocusWait: (() => void) | undefined;
+  let saved: { note: HTMLElement; reopens: HTMLButtonElement[]; manage?: HTMLButtonElement } | undefined;
+  const pendingReopens = new Set<HTMLButtonElement>();
+  let managing = false;
 
   // A draft or a capture in progress holds the panel.
   const busy = () => { const { draft, capturing } = host.state(); return draft || capturing; };
 
   function render() {
     const { draft, capturing, settings } = host.state();
+    const reviewPending = phase === 'reviewing' || phase === 'saving';
     record.textContent = reviewPending ? 'Review journey' : 'Record journey';
     entry.hidden = !reviewPending || settings || draft;
     review.disabled = capturing;
+    if (!saved) return;
+    const held = inProgress(phase);
+    saved.note.hidden = !held;
+    for (const button of [...saved.reopens, ...saved.manage ? [saved.manage] : []]) {
+      button.disabled = busy() || held || pendingReopens.has(button) || (button === saved.manage && managing);
+      if (held) button.setAttribute('aria-describedby', saved.note.id);
+      else button.removeAttribute('aria-describedby');
+    }
   }
+
+  const readPhase = async (): Promise<JourneyPhase | undefined> => {
+    if (runtime.journeyPhase) return runtime.journeyPhase();
+    if (client) return typeof client.read === 'function' ? (await client.read()).phase : undefined;
+    return await runtime.journeyReviewPending?.() ? 'reviewing' : undefined;
+  };
 
   function refreshReview() {
     const version = ++reviewVersion;
-    const pending = client
-      ? typeof client.read === 'function' ? client.read().then(state => state.phase === 'reviewing' || state.phase === 'saving') : Promise.resolve(false)
-      : runtime.journeyReviewPending?.() ?? Promise.resolve(false);
-    void pending.catch(() => false).then(value => {
+    void readPhase().catch(() => undefined).then(value => {
       if (!host.state().alive || version !== reviewVersion) return;
-      reviewPending = value;
+      phase = value;
       render();
     });
   }
@@ -189,16 +216,21 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
   }
 
   function savedSection(items: JourneySavedSummary[]): HTMLElement {
-    const held = busy();
     const section = document.createElement('section');
     section.className = 'saved-journeys';
     section.setAttribute('aria-label', 'Saved journeys');
     const heading = document.createElement('h2');
     heading.className = 'saved-journeys-title';
     heading.textContent = 'Saved journeys';
-    section.append(heading);
+    const note = document.createElement('p');
+    note.className = 'saved-journeys-note';
+    note.id = 'saved-journeys-note';
+    note.textContent = SAVED_HELD;
+    section.append(heading, note);
     const list = document.createElement('ul');
     list.className = 'saved-journeys-list';
+    const reopens: HTMLButtonElement[] = [];
+    pendingReopens.clear();
     for (const journey of items) {
       const row = document.createElement('li');
       row.className = 'saved-journey';
@@ -228,32 +260,62 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
         reopen.type = 'button';
         reopen.textContent = 'Reopen';
         reopen.setAttribute('aria-label', `Reopen journey: ${title.textContent}, saved ${time.textContent}`);
-        reopen.disabled = held;
         reopen.addEventListener('click', () => {
           if (reopen.disabled) return;
-          reopen.disabled = true;
-          client.reopen(journey.journeyId).then(() => { if (host.state().alive) openJourney(); }, error => {
+          pendingReopens.add(reopen);
+          render();
+          client.reopen(journey.journeyId).then(() => {
+            pendingReopens.delete(reopen);
+            if (host.state().alive) openJourney();
+          }, error => {
+            pendingReopens.delete(reopen);
             if (!host.state().alive) return;
-            reopen.disabled = false;
+            render();
             host.status(errorCode(error) === 'busy' ? REOPEN_BUSY
               : error instanceof Error && error.message ? error.message : REOPEN_ERROR, true);
           });
         });
+        reopens.push(reopen);
         row.append(reopen);
       }
       list.append(row);
     }
     section.append(list);
     // Deleting, and every other saved journey action, live in the journey view.
+    let manage: HTMLButtonElement | undefined;
     if (client && typeof client.read === 'function' && typeof client.subscribe === 'function') {
-      const manage = document.createElement('button');
-      manage.className = 'text-button saved-journeys-manage';
-      manage.type = 'button';
-      manage.textContent = 'Manage saved journeys';
-      manage.disabled = held;
-      manage.addEventListener('click', () => { if (!manage.disabled) openJourney('journey-saved-heading'); });
-      section.append(manage);
+      const button = manage = document.createElement('button');
+      button.className = 'text-button saved-journeys-manage';
+      button.type = 'button';
+      button.textContent = 'Manage saved journeys';
+      button.addEventListener('click', () => {
+        if (button.disabled) return;
+        managing = true;
+        render();
+        void (async () => {
+          // An unreadable session still opens the view, which offers its reset.
+          const current = await readPhase().catch(() => undefined);
+          if (inProgress(current)) throw Object.assign(new Error(SAVED_HELD), { code: 'busy' });
+          // The view lists saved journeys once no journey is in progress, so a
+          // save's confirmation closes first; the snapshot stays saved.
+          if (current === 'saved') await client.discard();
+        })().then(() => {
+          managing = false;
+          if (!host.state().alive) return;
+          refreshReview();
+          openJourney('journey-saved-heading');
+        }, error => {
+          managing = false;
+          if (!host.state().alive) return;
+          host.status(errorCode(error) === 'busy' ? SAVED_HELD : MANAGE_ERROR, true);
+          refreshReview();
+          render();
+        });
+      });
+      section.append(button);
     }
+    saved = { note, reopens, manage };
+    render();
     return section;
   }
 

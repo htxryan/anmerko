@@ -1,4 +1,5 @@
 import type { ElementContext, Note } from './core';
+import type { JourneySession } from './journey-core';
 import type { JourneyClient } from './journey-ui';
 import type { ComponentContextV1 } from './component-context';
 
@@ -73,6 +74,9 @@ export interface Runtime {
   openJourney?: () => Promise<void>;
   // Whether a journey waits for review, so a page panel can offer it.
   journeyReviewPending?: () => Promise<boolean>;
+  // The journey session's phase alone, so the native side panel can follow it
+  // without reading every screenshot on each change.
+  journeyPhase?: () => Promise<JourneySession['phase']>;
   // Reports when this page records a journey, so a floating panel can step aside.
   watchJourneyRecording?: (listener: (recording: boolean) => void) => () => void;
   onDispose?: () => void;

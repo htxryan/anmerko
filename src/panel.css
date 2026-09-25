@@ -304,6 +304,7 @@ footer { padding: 16px 20px 17px; border-top: 1px solid var(--border); backgroun
 .preamble-settings #preamble-help { margin: 0 0 12px; }
 .saved-journeys { margin: 0 0 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-wrap: anywhere; }
 .saved-journeys-title { margin: 0 0 6px; font-size: 13px; font-weight: 650; }
+.saved-journeys-note { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
 .saved-journeys-list { margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
 .saved-journey { display: flex; align-items: center; gap: 10px; margin: 8px 0 0; overflow-wrap: anywhere; }
 .saved-journey-text { flex: 1; min-width: 0; }

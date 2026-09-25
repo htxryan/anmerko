@@ -106,7 +106,7 @@ test('supported browser targets build clean resources and reject development hel
     const journeyFiles = ['journey.html', 'journey.js', 'journey-observer.js'];
     for (const name of journeyFiles) assert.equal(files.includes(name), target.journeys, `${target.name}: ${name}`);
     const content = await readFile(join(root, outdir, 'content.js'), 'utf8');
-    for (const marker of ['ANMERKO_JOURNEY_OPEN', 'ANMERKO_JOURNEY_PENDING', 'Record journey', 'Review journey', 'Saved journeys',
+    for (const marker of ['ANMERKO_JOURNEY_OPEN', 'ANMERKO_JOURNEY_PENDING', 'ANMERKO_JOURNEY_PHASE', 'Record journey', 'Review journey', 'Saved journeys',
       'anmerko journey recording', 'anmerko-journey-strip', '.journey-view', 'function attachJourneyPanel(', 'function mountJourneyUI(',
       'function createJourneyClient(', 'function bindJourneyPage(', 'function validateJourneyDraft(', 'var JOURNEY_LIMITS =',
       'function journeyArchiveFiles(', 'function journeyPromptSection(', 'function journeysAvailable(', 'function stripUrlCredentials(']) {
