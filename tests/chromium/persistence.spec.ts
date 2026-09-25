@@ -22,6 +22,9 @@ test('saved element, screenshot and global comments survive changing refresh URL
       contentType: 'text/html', body: `<script>history.replaceState(null, '', '/?zx=${++reloadToken}')</script>${html}`,
     }));
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    // Playwright can report a newly installed worker before its script has run,
+    // and Chrome drops a toolbar click that arrives before onClicked exists.
+    await expect.poll(() => worker.evaluate(() => chrome.action.onClicked.hasListeners())).toBe(true);
     const id = new URL(worker.url()).host;
     const cdp = await context.browser()!.newBrowserCDPSession();
     const page = await context.newPage();
