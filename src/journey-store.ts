@@ -228,16 +228,22 @@ function toSummary(record: unknown): JourneySnapshotSummary | undefined {
   if (!Number.isSafeInteger(stepCount) || (stepCount as number) < 0) return;
   const draft = (record as { draft?: unknown }).draft;
   const steps = isObject(draft) && Array.isArray(draft.steps) ? draft.steps : [];
-  const sources = new Set<string>();
+  // Stored drafts hold only the redaction marker, so every redacted URL counts
+  // as the same opaque page and the summary never depends on a hidden value.
+  const pages = new Set<string>();
   for (const step of steps) {
-    if (isObject(step) && typeof step.sourceUrl === 'string') sources.add(step.sourceUrl);
+    if (!isObject(step)) continue;
+    if (typeof step.sourceUrl === 'string') pages.add(step.sourceUrl);
+    if (step.kind === 'navigation' && isObject(step.navigation) && typeof step.navigation.toUrl === 'string') {
+      pages.add(step.navigation.toUrl);
+    }
   }
   return {
     journeyId,
     revision: revision as number,
     updatedAt: updatedAt as string,
     stepCount: stepCount as number,
-    spansPages: sources.size > 1,
+    spansPages: pages.size > 1,
   };
 }
 

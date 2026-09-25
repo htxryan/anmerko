@@ -362,6 +362,31 @@ test('destination redaction removes the navigation URL from the manifest and Mar
   expect(journeyPromptSection([manifest])).not.toContain('private-token-9q');
 });
 
+test('prompt scope counts navigation destinations and compares redacted URLs as one opaque page', () => {
+  const scope = (draft: JourneyDraftV1) => {
+    const line = journeyPromptSection([journeyDraftToManifest(draft)]).split('\n').find(text => text.startsWith('- **Scope:**'));
+    return line?.slice('- **Scope:** '.length);
+  };
+  const checkout = navigationDraft('https://shop.example/checkout');
+  expect(checkout.steps.every(step => step.sourceUrl === CART_URL)).toBe(true);
+  expect(scope(checkout)).toBe('Spans pages (full sequence in journeys.md)');
+  expect(scope({ ...checkout, steps: checkout.steps.filter(step => step.kind !== 'navigation') })).toBe('Single page');
+
+  expect(scope({ ...navigationDraft('[redacted]'), redactions: { steps: { S3: { toUrl: true } } } }))
+    .toBe('Spans pages (full sequence in journeys.md)');
+  const allRedacted = navigationDraft('[redacted]');
+  allRedacted.steps = allRedacted.steps.map(step => ({ ...step, sourceUrl: '[redacted]' }));
+  allRedacted.redactions = {
+    steps: { S1: { sourceUrl: true }, S2: { sourceUrl: true }, S3: { sourceUrl: true, toUrl: true } },
+  };
+  expect(scope(allRedacted)).toBe('Single page');
+
+  // Reviewed manifests may carry any replacement text for a redacted URL.
+  const replaced = journeyDraftToManifest(allRedacted);
+  replaced.steps[0].sourceUrl = reviewed('', true, true);
+  expect(journeyPromptSection([replaced])).toContain('- **Scope:** Single page');
+});
+
 test('archive files reference deterministic PNG identities', () => {
   const files = journeyArchiveFiles([reviewedDraft()]);
   expect(files.map(file => file.name)).toEqual(['journeys.md', 'journey-2-J1-image-2-I2.png']);

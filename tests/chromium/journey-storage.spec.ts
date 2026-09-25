@@ -281,6 +281,49 @@ function withNavigation(draft: JourneyDraftV1, toUrl: string): JourneyDraftV1 {
   return { ...draft, steps: [...draft.steps, navigation] };
 }
 
+test('list counts navigation destinations as pages without exposing redacted ones', async ({ page }) => {
+  await openStore(page);
+  const summary = (spansPages: boolean, revision = 0, updatedAt = STOPPED_AT) => ({
+    ok: true, value: [{ journeyId: 'journey-1', revision, updatedAt, stepCount: 3, spansPages }],
+  });
+
+  // Every step starts on the same source URL; only the destination differs.
+  const visible = withNavigation(baseDraft(), 'https://example.com/checkout?private-value-7z=2');
+  expect(await invoke(page, 'save', { input: snapshotInput(visible) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: 0 },
+  });
+  expect(await invoke(page, 'list', {})).toEqual(summary(true));
+
+  const redacted: JourneyDraftV1 = {
+    ...withNavigation(baseDraft(), '[redacted]'),
+    revision: 1,
+    updatedAt: UPDATED_V2_AT,
+    redactions: { steps: { 'step-3': { toUrl: true } } },
+  };
+  expect(await invoke(page, 'save', { input: snapshotInput(redacted) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: 1 },
+  });
+  const opened = await invoke(page, 'open', { journeyId: 'journey-1' });
+  expect(opened.ok).toBe(true);
+  expect((opened.value as { draft: JourneyDraftV1 }).draft).toEqual(redacted);
+  expect(JSON.stringify(opened.value)).not.toContain('private-value-7z=2');
+  expect(await invoke(page, 'list', {})).toEqual(summary(true, 1, UPDATED_V2_AT));
+
+  // Redacted URLs compare as one opaque page, never by their hidden values.
+  const allRedacted: JourneyDraftV1 = {
+    ...redacted,
+    revision: 2,
+    steps: redacted.steps.map(step => ({ ...step, sourceUrl: '[redacted]' })),
+    redactions: {
+      steps: { 'step-1': { sourceUrl: true }, 'step-2': { sourceUrl: true }, 'step-3': { sourceUrl: true, toUrl: true } },
+    },
+  };
+  expect(await invoke(page, 'save', { input: snapshotInput(allRedacted) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: 2 },
+  });
+  expect(await invoke(page, 'list', {})).toEqual(summary(false, 2, UPDATED_V2_AT));
+});
+
 test('snapshots saved with only source and capture redactions still open', async ({ page }) => {
   await openStore(page);
   const draft = withNavigation(baseDraft(), 'https://example.com/checkout');
