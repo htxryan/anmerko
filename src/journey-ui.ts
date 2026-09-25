@@ -1,6 +1,7 @@
 import type { JourneyDraftImage, JourneyDraftStep, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import type { NormalizedJourneyPng } from './journey-image';
-import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS, storageFailedAfterRecording, type CaptureFailure, type StopReason } from './journey-limits';
+import { CAPTURE_FAILURE_DESCRIPTIONS } from './journey-capture-failures';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS, storageFailedAfterRecording, type StopReason } from './journey-limits';
 import { downloadFile } from './export';
 import { journeyArchive, journeyArchiveName, journeyDraftToManifest, journeyPrompt } from './journey-export';
 import { reviewJourneyImage, viewJourneyImage } from './journey-image-review';
@@ -102,19 +103,6 @@ const DEADLINE_RECHECK_MS = 60_000;
 
 // Whether a review's deadline warning is due, or its deadline has passed.
 type DeadlineStage = 'none' | 'warning' | 'expired';
-
-const failures: Record<CaptureFailure, string> = {
-  superseded: 'superseded by a later action',
-  'navigation-timeout': 'the destination did not become ready in time',
-  'capture-denied': 'screenshot permission was denied',
-  'protected-page': 'the browser protects this page',
-  'page-document-changed': 'the page changed during capture',
-  'viewport-changed': 'the viewport changed during capture',
-  'too-large': 'the image exceeded the size limit',
-  'storage-limit': 'the journey reached its storage limit',
-  stopped: 'recording stopped before capture completed',
-  'capture-error': 'the screenshot could not be captured',
-};
 
 const KEPT = 'Steps recorded before then are kept.';
 // Review explains every stop in plain language. A journey is bound to its
@@ -1557,7 +1545,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     try {
       const snapshot = await client.openSnapshot(target.journeyId);
       const archive = journeyArchive(snapshot.draft);
-      downloadFile(new Blob([archive], { type: 'application/zip' }), journeyArchiveName(snapshot.draft.id));
+      downloadFile(new Blob([archive], { type: 'application/zip' }), journeyArchiveName(snapshot.draft.id, snapshot.draft.revision));
       exportStatus = 'Journey download started. Extract the ZIP and give your agent prompt.md with the screenshots it names; add journeys.md for full step detail.';
       exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
@@ -1906,7 +1894,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         item.append(renderImageReview(step, step.image.imageId, image, sharedSteps.get(step.image.imageId) ?? []));
       }
     } else {
-      const reason = step.image.status === 'unavailable' ? failures[step.image.reason]
+      const reason = step.image.status === 'unavailable' ? CAPTURE_FAILURE_DESCRIPTIONS[step.image.reason]
         : step.image.status === 'removed' ? 'removed during review' : 'capture pending';
       item.append(node('p', `Screenshot unavailable: ${reason}.`, 'journey-help'));
     }

@@ -118,9 +118,10 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
     }
   }
 
+  // Only the phase, asked on every journey change: reading the session would
+  // carry every screenshot with it.
   const readPhase = async (): Promise<JourneyPhase | undefined> => {
     if (runtime.journeyPhase) return runtime.journeyPhase();
-    if (client) return typeof client.read === 'function' ? (await client.read()).phase : undefined;
     return await runtime.journeyReviewPending?.() ? 'reviewing' : undefined;
   };
 

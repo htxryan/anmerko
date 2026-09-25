@@ -133,7 +133,7 @@ test('journey archives hold the copied prompt, journeys document, and PNG bytes,
   const first = Buffer.from(journeyArchive(draft()));
   const second = Buffer.from(journeyArchive(draft()));
   assert.deepEqual(first, second);
-  assert.equal(journeyArchiveName(draft().id), 'anmerko-journey-9f8a.zip');
+  assert.equal(journeyArchiveName(draft().id, draft().revision), 'anmerko-journey-9f8a-r2.zip');
 
   const texts = readTexts(first);
   assert.deepEqual([...texts.keys()], ['prompt.md', 'journeys.md', 'journey-9f8a-step-01.png']);

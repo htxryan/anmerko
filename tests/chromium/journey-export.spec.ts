@@ -136,6 +136,12 @@ test('preserves full URL text, step order, sequence gaps, and explicit image sta
   expect(markdown.indexOf('### Step 2')).toBeLessThan(markdown.indexOf('### Step 5'));
   expect(markdown.indexOf('### Step 5')).toBeLessThan(markdown.indexOf('### Step 7'));
   expect(markdown).not.toContain('### Step 3');
+  // journeys.md explains the gaps the step count leaves, as the prompt does.
+  expect(markdown).toContain('Retained steps: 5\nMissing step numbers are steps removed during review.\n\nExpected:');
+  const contiguous = manifest();
+  contiguous.steps.forEach((step, index) => { step.seq = index + 1; });
+  expect(formatJourneyMarkdown(contiguous)).toContain('Retained steps: 5\n\nExpected:');
+  expect(journeyPrompt(contiguous)).not.toContain('Missing step numbers');
   expect(markdown).toContain('Screenshot: unavailable (`superseded`)');
   expect(markdown).toContain('Screenshot: removed during review');
   expect(markdown).toContain('Observation only: no network timing, raw keyboard stream, or replay state.');
@@ -154,12 +160,17 @@ test('names each screenshot for its journey and first step, once across shared r
   const recorded = 'journey-3f1c2a9e-0b7d-4c1e-9a55-2f8e6d4b1c00';
   expect(journeyImageFilename(recorded, 7)).toBe('journey-3f1c2a9e-step-07.png');
   expect(journeyImageFilename(recorded, 30)).toBe('journey-3f1c2a9e-step-30.png');
-  expect(journeyArchiveName(recorded)).toBe('anmerko-journey-3f1c2a9e.zip');
+  // The archive also names the saved revision, so a download after a later
+  // save cannot be mistaken for the earlier one.
+  expect(journeyArchiveName(recorded, 4)).toBe('anmerko-journey-3f1c2a9e-r4.zip');
+  expect(journeyArchiveName(recorded, 5)).toBe('anmerko-journey-3f1c2a9e-r5.zip');
+  expect(journeyArchiveName('J1', 0)).toBe('anmerko-journey-J1-r0.zip');
   for (const invalid of ['', '../private', 'https://example.com/x', 'a/b', `x${'y'.repeat(128)}`]) {
     expect(() => journeyImageFilename(invalid, 2)).toThrow(TypeError);
-    expect(() => journeyArchiveName(invalid)).toThrow(TypeError);
+    expect(() => journeyArchiveName(invalid, 1)).toThrow(TypeError);
   }
   for (const invalid of [0, -1, 1.5, Number.NaN]) expect(() => journeyImageFilename('J1', invalid)).toThrow(TypeError);
+  for (const invalid of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) expect(() => journeyArchiveName('J1', invalid)).toThrow(TypeError);
 });
 
 test('renders reviewed value and redaction metadata without omitting retained eligible fields', () => {
