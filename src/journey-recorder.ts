@@ -1,5 +1,8 @@
 import { createUuid } from './uuid';
-import { stripUrlCredentials, type JourneyClickEvent, type JourneyEventBatchV1, type JourneyFieldChangeEvent } from './journey-events';
+import {
+  stripUrlCredentials, type JourneyClickEvent, type JourneyEventBatchV1, type JourneyFieldChangeEvent, type JourneyInputEvent,
+} from './journey-events';
+import { JOURNEY_LIMITS } from './journey-limits';
 
 export type JourneyRecorderOptions = {
   sessionId: string;
@@ -163,6 +166,29 @@ export interface JourneyRecorder {
   flushFieldCommits(): void;
 }
 
+const encoder = new TextEncoder();
+function jsonBytes(value: unknown): number { return encoder.encode(JSON.stringify(value)).byteLength }
+
+// A value too large to travel even in a batch of its own keeps what fits,
+// marked truncated; the journey could not have kept more of it anyway.
+function fitEventAlone(event: JourneyInputEvent, room: number): JourneyInputEvent {
+  let fitted = event;
+  let overflow = jsonBytes(fitted) - room;
+  while (overflow > 0 && fitted.kind === 'field-change') {
+    const value = fitted.enteredValue;
+    if (value.kind === 'text' && value.value) {
+      // Every character costs at least one byte, so this cut always suffices.
+      const characters = Array.from(value.value);
+      const text = characters.slice(0, Math.max(0, characters.length - overflow)).join('');
+      fitted = { ...fitted, enteredValue: { ...value, value: text, truncated: true } };
+    } else if (value.kind === 'selection' && value.values.length > 0) {
+      fitted = { ...fitted, enteredValue: { ...value, values: value.values.slice(0, -1), truncated: true } };
+    } else break;
+    overflow = jsonBytes(fitted) - room;
+  }
+  return fitted;
+}
+
 export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyRecorder {
   if (window.top !== window) return { dispose: () => {}, flushFieldCommits: () => {} };
   const startedAt = Date.parse(options.startedAt);
@@ -190,18 +216,41 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
       catch { return false; }
     });
   };
+  const batchOf = (events: JourneyInputEvent[], counter: number): JourneyEventBatchV1 => ({
+    schemaVersion: 1,
+    sessionId: options.sessionId,
+    epoch: options.epoch,
+    documentToken: options.documentToken,
+    localCounter: counter,
+    events,
+  });
+  // The background refuses a batch past its payload or event-count limit
+  // whole, click included. A long form's commits therefore travel in order,
+  // in as many batches as they need, and the click that carried them last.
+  const postEvents = (events: JourneyInputEvent[]) => {
+    const envelope = jsonBytes(batchOf([], Number.MAX_SAFE_INTEGER));
+    const room = JOURNEY_LIMITS.maxEventPayloadBytes - envelope;
+    let chunk: JourneyInputEvent[] = [];
+    let used = 0;
+    for (const event of events) {
+      const fitted = fitEventAlone(event, room);
+      const size = jsonBytes(fitted);
+      // Events after the first are joined by a comma inside the array.
+      if (chunk.length > 0 && (used + 1 + size > room || chunk.length >= JOURNEY_LIMITS.maxSteps)) {
+        postBatch(batchOf(chunk, ++localCounter));
+        chunk = [];
+        used = 0;
+      }
+      used += (chunk.length > 0 ? 1 : 0) + size;
+      chunk.push(fitted);
+    }
+    if (chunk.length > 0) postBatch(batchOf(chunk, ++localCounter));
+  };
   const flushFieldCommits = () => {
     if (disposed) return;
     const pending = drainFieldCommits();
     if (pending.length === 0) return;
-    postBatch({
-      schemaVersion: 1,
-      sessionId: options.sessionId,
-      epoch: options.epoch,
-      documentToken: options.documentToken,
-      localCounter: ++localCounter,
-      events: pending,
-    });
+    postEvents(pending);
   };
   const click = (event: MouseEvent) => {
     if (disposed || !event.isTrusted || event.button !== 0) return;
@@ -230,15 +279,7 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
       },
       image: { status: 'pending', captureId: createUuid() },
     };
-    const batch: JourneyEventBatchV1 = {
-      schemaVersion: 1,
-      sessionId: options.sessionId,
-      epoch: options.epoch,
-      documentToken: options.documentToken,
-      localCounter: ++localCounter,
-      events: [...drainFieldCommits(), input],
-    };
-    postBatch(batch);
+    postEvents([...drainFieldCommits(), input]);
   };
   document.addEventListener('click', click, { capture: true, passive: true });
   const dispose = () => {

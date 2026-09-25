@@ -548,6 +548,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     const current = controller.getState();
     if ('sessionId' in failedState && (current.phase === 'reviewing' || current.phase === 'saving')
       && current.sessionId === failedState.sessionId && current.epoch === failedState.epoch) {
+      // Recording had already finished, and the draft in memory still holds
+      // every step and edit; only the stored copy is behind. The storage stop
+      // reason makes review urge an immediate save, but no limitation is
+      // added: nothing is missing from a journey saved from this draft.
       const marked = {
         ...current,
         draft: { ...current.draft, stopReason: 'session-storage-limit' as const },

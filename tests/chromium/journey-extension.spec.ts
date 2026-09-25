@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { JOURNEY_LIMITATIONS } from '../../src/journey-limits';
 
 type Sender = { id?: string; url?: string; frameId?: number; tab?: { id?: number; windowId: number; active?: boolean; url?: string } };
 type Harness = {
@@ -754,6 +755,42 @@ test('entered values stay off unless the start request opts in, and saved journe
   expect(started).toMatchObject({ ok: true });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.includeEnteredValues).toBe(true);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+});
+
+test('a submit click carrying more entered text than a journey keeps is recorded with what fits', async ({ page }) => {
+  await usePatternedCapture(page);
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7, includeEnteredValues: true });
+  const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  await page.evaluate(({ owner, state }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const port = harness.connectPort('anmerko-journey-events-v1', owner);
+    const observedAt = new Date().toISOString();
+    const sourceUrl = 'https://example.test/path?item=1#top';
+    const field = { tag: 'textarea', selectorPath: ['textarea'], label: 'text field', editable: true,
+      viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 } };
+    // Nine 2,000-character fields filled, then one click on Submit.
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [
+        ...Array.from({ length: 9 }, (_, index) => ({
+          kind: 'field-change', id: `form-${index}`, observedAt, elapsedMs: 20, sourceUrl, target: field,
+          enteredValue: { kind: 'text', value: String.fromCharCode(97 + index).repeat(2_000), truncated: false },
+          image: { status: 'pending', captureId: `form-capture-${index}` },
+        })),
+        { kind: 'click', id: 'submit-click', observedAt, elapsedMs: 20, sourceUrl,
+          target: { tag: 'button', selectorPath: ['button'], label: 'Submit', editable: false,
+            viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 }, point: { x: 20, y: 20 } },
+          image: { status: 'pending', captureId: 'submit-capture' } },
+      ],
+    } });
+  }, { owner: ownerPage, state: recording });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+    .slice(1).map((step: any) => step.id)).toEqual([...Array.from({ length: 9 }, (_, index) => `form-${index}`), 'submit-click']);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped.draft.steps.at(-2).enteredValue).toEqual({ kind: 'text', value: 'i'.repeat(384), truncated: true });
+  expect(stopped.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
 });
 
 test('a save into a full saved-journey store keeps the review and evicts nothing', async ({ page }) => {

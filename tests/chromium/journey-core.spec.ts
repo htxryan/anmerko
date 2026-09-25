@@ -962,6 +962,85 @@ test('a late batch after a same-document navigation shares the field-text budget
   expect(updateJourneySummary(stopped, { ...reviewGuards(stopped), expected: 'Kept.', actual: 'Cut.' })).not.toBe(stopped);
 });
 
+// A long form filled and then submitted: every commit rides on one click.
+function longFormBatch(localCounter: number, observedAt: (elapsedMs: number) => string) {
+  const fills = Array.from({ length: 9 }, (_, index) => ({
+    ...textFieldEvent(`form-${index}`, 2_000 + index, String.fromCharCode(97 + index).repeat(2_000)),
+    observedAt: observedAt(2_000 + index),
+  }));
+  const click = { ...clickBatch(localCounter, 'capture-submit').events[0], id: 'submit-click', observedAt: observedAt(2_100), elapsedMs: 2_100 };
+  return eventBatch(localCounter, [...fills, click]);
+}
+
+test('one click carrying more than the whole text budget is kept, on the live path', () => {
+  const recording = recordingSession();
+  const batch = longFormBatch(1, elapsedMs => new Date(Date.parse('2026-09-20T12:00:00.000Z') + elapsedMs).toISOString());
+  // 18,000 bytes of text in one batch: over the journey's budget on its own,
+  // but a batch is only bounded by its payload.
+  expect(validateJourneyEventBatch(batch).ok).toBe(true);
+  const accepted = acceptJourneyEventBatch(recording, batch);
+  if (accepted.phase !== 'recording') throw new Error('expected recording state');
+  expect(accepted.draft.steps.map(step => step.id)).toEqual([
+    'step-initial', ...Array.from({ length: 9 }, (_, index) => `form-${index}`), 'submit-click',
+  ]);
+  expect(accepted.draft.steps.at(-1)).toMatchObject({ kind: 'click', image: { status: 'pending', captureId: 'capture-submit' } });
+  // Eight values fit whole; the ninth keeps the 384 bytes left.
+  expect(accepted.draft.steps.at(-3)).toMatchObject({ enteredValue: { kind: 'text', value: 'h'.repeat(2_000), truncated: false } });
+  expect(accepted.draft.steps.at(-2)).toMatchObject({ enteredValue: { kind: 'text', value: 'i'.repeat(384), truncated: true } });
+  expect(accepted.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  expect(validateJourneyDraft(accepted.draft).ok).toBe(true);
+});
+
+test('one click carrying more than the whole text budget is kept, on the late path', () => {
+  const recording = recordingSession();
+  const navigated = commitJourneyNavigation(recording, {
+    epoch: 1, id: 'step-route', observedAt: '2026-09-20T12:00:03.000Z', elapsedMs: 3_000,
+    sourceUrl: 'https://example.com/start', toUrl: 'https://example.com/start#done',
+    previousDocumentToken: 'document-1', documentToken: 'document-1',
+    image: { status: 'pending', captureId: 'capture-route' },
+  });
+  const batch = longFormBatch(1, elapsedMs => new Date(Date.parse('2026-09-20T12:00:00.000Z') + elapsedMs).toISOString());
+  const late = acceptLateJourneyEventBatch(navigated, batch);
+  if (late.phase !== 'recording') throw new Error('expected recording state');
+  expect(late.draft.steps.map(step => step.id)).toEqual([
+    'step-initial', ...Array.from({ length: 9 }, (_, index) => `form-${index}`), 'submit-click', 'step-route',
+  ]);
+  expect(late.draft.steps.at(-3)).toMatchObject({ enteredValue: { kind: 'text', value: 'i'.repeat(384), truncated: true } });
+  expect(late.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  expect(validateJourneyDraft(late.draft).ok).toBe(true);
+});
+
+test('a value the page already cut to the field limit is a limitation too, until review rewrites or removes it', () => {
+  const recording = recordingSession();
+  const cut = { ...textFieldEvent('page-cut', 1_000, 'p'.repeat(2_000)), enteredValue: { kind: 'text' as const, value: 'p'.repeat(2_000), truncated: true } };
+  const second = { ...textFieldEvent('also-cut', 1_100, 'q'.repeat(2_000)), enteredValue: { kind: 'text' as const, value: 'q'.repeat(2_000), truncated: true } };
+  const accepted = acceptJourneyEventBatch(recording, eventBatch(1, [cut, second]));
+  if (accepted.phase !== 'recording') throw new Error('expected recording state');
+  expect(accepted.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+
+  const stopped = stopJourney(accepted, { epoch: 1, stoppedAt: '2026-09-20T12:00:02.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  // One truncated value remains after each of these edits: the limitation stays.
+  const edited = editJourneyValue(stopped, { ...reviewGuards(stopped), stepId: 'page-cut', value: { kind: 'text', value: 'Rewritten', truncated: false } });
+  if (edited.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(edited.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  // Removing the last truncated value withdraws it; other limitations stay.
+  const withOther = { ...edited, draft: { ...edited.draft, limitations: [...edited.draft.limitations, JOURNEY_LIMITATIONS.pageAccessLost] } };
+  const removed = removeJourneyStep(withOther, { ...reviewGuards(withOther), updatedAt: '2026-09-20T12:01:40.000Z', stepId: 'also-cut' });
+  if (removed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(removed.draft.limitations).toEqual([JOURNEY_LIMITATIONS.pageAccessLost]);
+
+  // Rewriting the last truncated value withdraws it as well.
+  const rewritten = editJourneyValue(stopped, { ...reviewGuards(stopped), stepId: 'page-cut', value: { kind: 'text', value: 'A', truncated: false } });
+  if (rewritten.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const cleared = editJourneyValue(rewritten, {
+    ...reviewGuards(rewritten), updatedAt: '2026-09-20T12:01:40.000Z', stepId: 'also-cut', value: { kind: 'text', value: '', truncated: false },
+  });
+  if (cleared.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(cleared.draft.limitations).toEqual([]);
+  expect(validateJourneyDraft(cleared.draft).ok).toBe(true);
+});
+
 test('lossy stops record what is missing once, and ordinary stops record nothing', () => {
   const recording = recordingSession();
   const stoppedAt = '2026-09-20T12:00:02.000Z';

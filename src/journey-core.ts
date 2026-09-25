@@ -828,9 +828,15 @@ function utf8Prefix(value: string, budget: number): string {
   return value.slice(0, end);
 }
 
+function truncatedValue(value: DraftFieldValue): boolean {
+  return value.kind !== 'checked' && value.truncated;
+}
+
 // Entered text shares one budget per journey. A value that no longer fits
 // keeps what does and is marked truncated, so the action that carried it is
 // still recorded and no step claims a complete value it does not have.
+// `truncated` also reports values the page already shortened to the
+// per-field limit: the draft says so either way.
 function fitFieldTextBudget(
   steps: JourneyDraftStep[],
   events: JourneyInputEvent[],
@@ -843,6 +849,7 @@ function fitFieldTextBudget(
     const size = fieldTextBytes(value);
     if (size <= remaining) {
       remaining -= size;
+      if (truncatedValue(value)) truncated = true;
       return event;
     }
     truncated = true;
@@ -1035,11 +1042,20 @@ export function removeJourneyStep(state: JourneySession, input: JourneyRemoveSte
   });
   const images = Object.fromEntries(Object.entries(state.draft.images)
     .filter(([imageId]) => references.has(imageId)));
-  const draft = pruneJourneyRedactions({
+  const draft = pruneTruncationLimitation(pruneJourneyRedactions({
     ...state.draft, steps, images, revision: state.draft.revision + 1, updatedAt: input.updatedAt,
-  });
+  }));
   if (validateJourneyDraft(draft).ok === false) return state;
   return editedJourneyReview(state, draft);
+}
+
+// The truncation limitation describes values still marked truncated. Once
+// the reviewer removes or rewrites every one, it no longer applies.
+function pruneTruncationLimitation(draft: JourneyDraftV1): JourneyDraftV1 {
+  const limitation = JOURNEY_LIMITATIONS.enteredValuesTruncated;
+  if (!draft.limitations.includes(limitation)
+    || draft.steps.some(step => step.kind === 'field-change' && truncatedValue(step.enteredValue))) return draft;
+  return { ...draft, limitations: draft.limitations.filter(item => item !== limitation) };
 }
 
 // Redaction flags describe markers still in the draft. Removing a step or a
@@ -1194,9 +1210,9 @@ export function editJourneyValue(state: JourneySession, input: JourneyEditValueI
   const steps = reviewing.draft.steps.map(candidate => candidate.id === input.stepId
     ? { ...candidate, target: candidate.target, enteredValue } as JourneyDraftStep
     : candidate);
-  const draft = {
+  const draft = pruneTruncationLimitation({
     ...reviewing.draft, steps, revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
-  };
+  });
   if (validateJourneyDraft(draft).ok === false) return state;
   return editedJourneyReview(reviewing, draft);
 }

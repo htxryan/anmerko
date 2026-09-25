@@ -167,6 +167,65 @@ test('drained field commits merge ahead of the click and stale URLs are dropped'
   expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
 });
 
+test('a long form travels in batches within the payload and event limits, its click last', async ({ page }) => {
+  await page.setContent('<button type="button">Submit</button>');
+  await page.addScriptTag({ content: bundle });
+  await page.evaluate(() => {
+    const state = globalThis as RecorderWindow;
+    state.journeyBatches = [];
+    const commit = (index: number, enteredValue: unknown) => ({
+      kind: 'field-change', id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      observedAt: new Date(Date.now() - 50).toISOString(), elapsedMs: 50,
+      sourceUrl: location.href,
+      target: {
+        tag: 'textarea', selectorPath: ['textarea'], label: 'text field', editable: true,
+        viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+      },
+      enteredValue,
+      image: { status: 'pending', captureId: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}` },
+    });
+    // Eleven 2,000-character CJK values are 66 KB on their own; forty
+    // checkboxes more make more events than one batch may carry.
+    const commits = [
+      ...Array.from({ length: 11 }, (_, index) => commit(index + 1, { kind: 'text', value: '漢'.repeat(2_000), truncated: false })),
+      ...Array.from({ length: 40 }, (_, index) => commit(index + 20, { kind: 'checked', checked: true })),
+      // A selection too large to travel even alone keeps what fits.
+      commit(90, { kind: 'selection', values: Array.from({ length: 100 }, () => '選'.repeat(2_000)), multiple: true, truncated: false }),
+    ];
+    let drained = false;
+    state.disposeJourneyRecorder = state.anmerkoJourneyRecorder.attachJourneyRecorder({
+      sessionId: 'session-1', epoch: 3, documentToken: 'document-1',
+      startedAt: new Date(Date.now() - 100).toISOString(),
+      onBatch: batch => { state.journeyBatches.push(batch); },
+      drainFieldCommits: () => {
+        if (drained) return [];
+        drained = true;
+        return commits;
+      },
+    });
+  });
+
+  await page.getByRole('button', { name: 'Submit' }).click();
+  const recorded = await batches(page);
+  expect(recorded.length).toBeGreaterThan(2);
+  expect(recorded.map(batch => batch.localCounter)).toEqual(recorded.map((_, index) => index + 1));
+  for (const batch of recorded) {
+    expect(validateJourneyEventBatch(batch).ok).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(batch))).toBeLessThanOrEqual(64 * 1_024);
+    expect(batch.events.length).toBeLessThanOrEqual(30);
+  }
+  const events = recorded.flatMap(batch => batch.events);
+  expect(events.map((event: any) => event.kind)).toEqual([...Array(52).fill('field-change'), 'click']);
+  expect(recorded.at(-1).events.at(-1).kind).toBe('click');
+  // Every value arrives whole, except the selection that could not.
+  expect(events.slice(0, 11).every((event: any) => event.enteredValue.value === '漢'.repeat(2_000) && !event.enteredValue.truncated)).toBe(true);
+  const selection = events[51].enteredValue;
+  expect(selection.truncated).toBe(true);
+  expect(selection.values.length).toBeGreaterThan(0);
+  expect(selection.values.length).toBeLessThan(100);
+  expect(selection.values.every((value: string) => value === '選'.repeat(2_000))).toBe(true);
+});
+
 test('dispose flushes orphaned field commits without a click', async ({ page }) => {
   await page.setContent('<button type="button">Later</button>');
   await page.addScriptTag({ content: bundle });
