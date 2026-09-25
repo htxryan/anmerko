@@ -245,6 +245,8 @@ test('production action, native docking, comments, capture, export and restart',
   await expect(panel().locator('.note')).toHaveCount(1);
   await page.goto(`${session.origin}/pricing`); await session.activate();
   dock = await sidebar(session.context, page); await dock.click('.dock');
+  // A failed Float also shows no notes; report it here instead.
+  await expect(panel()).toBeVisible();
   await expect(panel().locator('.note')).toHaveCount(0);
   await panel().getByLabel('Comment scope').selectOption('all');
   await expect(panel().locator('.note')).toHaveCount(1);
