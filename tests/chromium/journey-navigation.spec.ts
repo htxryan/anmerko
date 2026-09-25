@@ -1041,3 +1041,169 @@ test('a late field commit before a route change leaves it uncaused, as it would 
   ]);
   expect(await record('late')).toEqual(inOrder);
 });
+
+test('a history update that keeps the URL is not a step and leaves the pending screenshot alone', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL, 'capture-click'), 42);
+  const afterClick = controller.getState();
+  const published = fixture.calls.changed.length;
+  const delays = fixture.pendingDelays();
+
+  // The click's handler stamps history.state with history.replaceState, and
+  // the browser reports that as a same-document navigation to the same URL,
+  // which may carry the credentials the journey never keeps.
+  fixture.nowMs = START_MS + 250;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'same-document' });
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://user:secret@example.com/start', kind: 'same-document' });
+  expect(controller.getState()).toBe(afterClick);
+  expect(fixture.calls.changed).toHaveLength(published);
+  expect(fixture.pendingDelays()).toEqual(delays);
+  expect(fixture.calls.connect).toHaveLength(0);
+
+  fixture.nowMs = START_MS + 700;
+  fixture.resolveDelay(delays[0], 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.map(step => [step.kind, step.image.status]))
+    .toEqual([['initial', 'retained'], ['click', 'retained']]));
+
+  // Stamped after every click, it still costs no steps.
+  for (let index = 2; index <= 4; index += 1) {
+    state = recording(controller.getState());
+    controller.acceptBatch(clickBatch(state, index, START_URL), 42);
+    controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'same-document' });
+  }
+  state = recording(controller.getState());
+  expect(state.draft.steps.map(step => step.kind)).toEqual(['initial', 'click', 'click', 'click', 'click']);
+
+  // A fragment or path change is still a step.
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#details`, kind: 'same-document' });
+  expect(recording(controller.getState()).draft.steps.at(-1)?.navigation).toMatchObject({ toUrl: `${START_URL}#details` });
+});
+
+test('a router stamping history.state as a new page loads keeps the page load\'s step and screenshot', async () => {
+  const appUrl = 'https://example.com/app';
+  const fixture = navigationFixture({ connect: async (_tabId, expectedUrl) => identity('document-app', expectedUrl, 2) });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 20_000;
+  controller.observeNavigation({ ownerTabId: 42, url: appUrl, kind: 'document' });
+  // React Router's replaceState({ idx: 0 }) on boot, before and after the
+  // new document connected.
+  controller.observeNavigation({ ownerTabId: 42, url: appUrl, kind: 'same-document' });
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-app'));
+  fixture.current = identity('document-app', appUrl, 2);
+  fixture.nowMs = START_MS + 20_150;
+  controller.observeNavigation({ ownerTabId: 42, url: appUrl, kind: 'same-document' });
+  expect(fixture.calls.connect.map(call => call.expectedUrl)).toEqual([appUrl]);
+
+  fixture.nowMs = START_MS + 20_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  const state = recording(controller.getState());
+  expect(state.draft.steps.map(step => step.kind === 'navigation' ? [step.sourceUrl, step.navigation.toUrl] : step.kind))
+    .toEqual(['initial', [START_URL, appUrl]]);
+});
+
+test('a click into a text field never causes the navigation that typing and Enter make, while acting controls do', async () => {
+  const targets = {
+    'text input': { tag: 'input', role: 'textbox', editable: true, label: 'text field' },
+    'search box': { tag: 'input', role: 'searchbox', editable: true, label: 'text field' },
+    'combo box input': { tag: 'input', role: 'combobox', editable: true, label: 'text field' },
+    textarea: { tag: 'textarea', role: 'textbox', editable: true, label: 'text field' },
+    'contenteditable region': { tag: 'div', role: 'textbox', editable: true, label: 'text field' },
+    'text inside a contenteditable region': { tag: 'p', editable: true, label: 'text field' },
+    'submit input': { tag: 'input', role: 'button', editable: true, label: 'button' },
+    'image input': { tag: 'input', role: 'button', editable: true, label: 'button' },
+    button: { tag: 'button', role: 'button', editable: false, label: 'Search' },
+    'button inside a contenteditable region': { tag: 'button', role: 'button', editable: true, label: 'Bold' },
+    link: { tag: 'a', role: 'link', editable: false, label: 'Pricing' },
+    checkbox: { tag: 'input', role: 'checkbox', editable: true, label: 'checkbox' },
+    radio: { tag: 'input', role: 'radio', editable: true, label: 'radio button' },
+    select: { tag: 'select', role: 'combobox', editable: true, label: 'select field' },
+  } as const;
+  const causes: Record<string, boolean> = {};
+  const windows: Record<string, number[]> = {};
+  for (const [name, target] of Object.entries(targets)) {
+    for (const order of ['in-order', 'late'] as const) {
+      const fixture = navigationFixture();
+      const controller = createJourneyController(fixture.adapter);
+      await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+      let state = recording(controller.getState());
+      const batch = clickBatch(state, 1, START_URL, 'capture-click');
+      batch.events[0] = { ...batch.events[0], target: { ...batch.events[0].target, ...target } } as typeof batch.events[0];
+      const clickMs = Date.parse(batch.events[0].observedAt);
+      if (order === 'in-order') controller.acceptBatch(batch, 42);
+      // Typing takes 4.8 seconds before Enter changes the route.
+      fixture.nowMs = clickMs + 4_800;
+      controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search?q=shoes', kind: 'same-document' });
+      if (order === 'in-order') windows[name] = fixture.pendingDelays().slice(-2);
+      else controller.acceptBatch(batch, 42);
+      state = recording(controller.getState());
+      expect(state.draft.steps.map(step => step.kind), `${name} ${order}`).toEqual(['initial', 'click', 'navigation']);
+      expect(validateJourneyDraft(state.draft).ok, `${name} ${order}`).toBe(true);
+      const caused = state.draft.steps[2].navigation?.causedByStepId === state.draft.steps[1].id;
+      if (order === 'in-order') causes[name] = caused;
+      else expect(caused, `${name}: a late click is linked as it would be in order`).toBe(causes[name]);
+    }
+  }
+  expect(causes).toEqual({
+    'text input': false, 'search box': false, 'combo box input': false, textarea: false,
+    'contenteditable region': false, 'text inside a contenteditable region': false,
+    'submit input': true, 'image input': true, button: true, 'button inside a contenteditable region': true,
+    link: true, checkbox: true, radio: true, select: true,
+  });
+  // The navigation after a click into a text field gets a full window of its
+  // own, not the 200 ms left of the click's.
+  expect(windows['text input']).toEqual([500, 5_000]);
+  expect(windows.button).toEqual([0, 200]);
+});
+
+test('entered values that arrive after the page changed twice are noted as missing, never dropped silently', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+  let state = recording(controller.getState());
+  const commit: JourneyEventBatchV1 = {
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch, documentToken: state.documentToken, localCounter: 1,
+    events: [{
+      kind: 'field-change', id: 'field-1', observedAt: new Date(START_MS + 400).toISOString(), elapsedMs: 400,
+      sourceUrl: START_URL,
+      target: { tag: 'input', role: 'textbox', selectorPath: ['input'], label: 'text field', editable: true, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 } },
+      enteredValue: { kind: 'text', value: 'shoes', truncated: false },
+      image: { status: 'pending', captureId: 'capture-field' },
+    }],
+  };
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search', kind: 'same-document' });
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search?q=shoes', kind: 'same-document' });
+  const before = recording(controller.getState());
+  // A stale or replayed batch changes nothing.
+  controller.acceptBatch({ ...commit, localCounter: 0 }, 42);
+  controller.acceptBatch({ ...commit, documentToken: 'document-other' }, 42);
+  expect(controller.getState()).toBe(before);
+
+  controller.acceptBatch(commit, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps).toHaveLength(before.draft.steps.length);
+  expect(state.draft.limitations).toHaveLength(1);
+  expect(state.draft.limitations[0]).toMatch(/^Some entered values arrived only after the page had moved on/);
+  expect(state.draft.limitations).toStrictEqual([JOURNEY_LIMITATIONS.enteredValuesUnplaced]);
+  controller.acceptBatch({ ...commit, localCounter: 2, events: [{ ...commit.events[0], id: 'field-2' }] }, 42);
+  expect(recording(controller.getState()).draft.limitations).toStrictEqual([JOURNEY_LIMITATIONS.enteredValuesUnplaced]);
+  expect(validateJourneyDraft(recording(controller.getState()).draft).ok).toBe(true);
+
+  // Placed values, and journeys without entered values, record no such note.
+  const placed = navigationFixture();
+  const placing = createJourneyController(placed.adapter);
+  await placing.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+  state = recording(placing.getState());
+  placed.nowMs = START_MS + 1_000;
+  placing.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search', kind: 'same-document' });
+  placing.acceptBatch({ ...commit, sessionId: state.sessionId, epoch: state.epoch, documentToken: state.documentToken }, 42);
+  state = recording(placing.getState());
+  expect(state.draft.steps.map(step => step.kind)).toEqual(['initial', 'field-change', 'navigation']);
+  expect(state.draft.limitations).toEqual([]);
+});

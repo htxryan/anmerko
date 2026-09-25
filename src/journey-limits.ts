@@ -73,6 +73,7 @@ export const JOURNEY_LIMITATIONS = {
   pageAccessLost: 'The browser withdrew page access when a new page loaded, so recording stopped there. That page has no screenshot, and nothing done on it was recorded.',
   imageBudget: `Screenshots reached the journey's ${JOURNEY_LIMITS.maxJourneyImageBytes / (1_024 * 1_024)} MB storage limit, so recording stopped and the last screenshot was not kept.`,
   captureFailed: 'anmerko lost track of the page after it changed, so recording stopped early. The latest page change or action may be missing.',
+  enteredValuesUnplaced: 'Some entered values arrived only after the page had moved on, so they could not be placed in order and are missing.',
 } as const;
 
 // A storage failure after recording had stopped relabels the draft's stop

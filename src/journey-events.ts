@@ -38,6 +38,22 @@ export interface JourneyEventBatchV1 {
 
 const encoder = new TextEncoder();
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+// Roles of controls that act when clicked. Anywhere else in an editable
+// target a click only places the caret.
+const ACTING_ROLES = new Set([
+  'button', 'link', 'checkbox', 'radio', 'switch', 'slider', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+  'tab', 'option', 'treeitem',
+]);
+
+// Whether a click target takes typed text: a text-like input, a textarea, or
+// anything in an editable region, but not a button of any kind (submit,
+// reset, and image inputs included), a link, a checkable control, or a
+// select. A click there focuses the field; the typing and Enter that may
+// follow are what load a next page, so the click is never recorded as that
+// navigation's cause.
+export function journeyTextEntryTarget(target: Pick<DraftSafeTarget, 'tag' | 'role' | 'editable'>): boolean {
+  return target.editable && target.tag !== 'select' && !(target.role !== undefined && ACTING_ROLES.has(target.role));
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
