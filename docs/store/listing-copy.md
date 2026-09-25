@@ -13,7 +13,7 @@ This is ready-to-enter draft copy for the existing Chrome Web Store and Firefox 
 | Homepage | `https://anmerko.com` |
 | Support | `https://anmerko.com/support/` |
 | Privacy | `https://anmerko.com/support/privacy/` |
-| Release note | New: record a journey of clicks and page changes on one website, with a screenshot per step, review it locally, then copy or export it for your AI agent. Journeys aren't available on iPhone. They add a navigation permission that your browser asks you to approve when anmerko updates. anmerko is available for Chrome, Edge, and Firefox. Visit anmerko.com for installation instructions and documentation. |
+| Release note | New: record a journey of clicks and page changes on one website, with a screenshot per step, review it locally, then copy or export it for your AI agent. Journeys aren't available on iPhone or iPad. They add a navigation permission that your browser asks you to approve when anmerko updates. anmerko is available for Chrome, Edge, and Firefox. Visit anmerko.com for installation instructions and documentation. |
 
 ### Detailed description
 
@@ -43,7 +43,7 @@ With anmerko, you can attach comments to webpage elements, capture a region of t
 | `storage` | Save comments and settings in the current browser profile, and hold an in-progress journey in session storage. |
 | `clipboardWrite` | Copy the structured prompt when the user chooses Copy Prompt. |
 | `sidePanel` | Open the Chrome or Edge sidebar. Not requested in Firefox. |
-| `alarms` | End a recording at the five-minute limit, warn before an unsaved journey review expires, and discard it 30 minutes after the review opens, even if the background was suspended. |
+| `alarms` | End a recording at the five-minute limit, warn before an unsaved journey review expires, and discard it after 30 minutes without changes, even if the background was suspended. |
 | `webNavigation` | While a user-started journey records, order same-origin page loads, route changes, and hash changes in the recorded tab, and end the journey when that tab leaves the starting website. anmerko never reads browser history. Events from other tabs and frames are ignored, and only the same-origin page URLs that become journey steps are kept, locally, with that journey. |
 
 The extension requests no host permissions or persistent all-sites access. It makes no analytics, AI, or cloud-sync requests. Journey steps, screenshots, and saved journeys stay in the browser and leave it only when the user copies or exports them. Its required Firefox data-collection declaration remains `none` only while that statement matches the submitted package and dashboard answers.
