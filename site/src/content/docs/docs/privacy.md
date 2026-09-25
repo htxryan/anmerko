@@ -11,9 +11,9 @@ anmerko stores comments, page titles/full URLs, selected element context and sel
 
 Element capture excludes form values and editable text. Other captured text and URLs may still be private; screenshots include all visible pixels within the crop, including form contents. Review exports before sharing.
 
-A journey records only after you choose **Start journey**, only in that tab, and only until it stops. It records clicks with target context, same-origin page URLs, a screenshot per step, your expected and actual results, and — only when you turn on **Include entered values** for that journey — finished field changes, never keystrokes. Password inputs are always skipped, as are fields whose autocomplete, name, or ID marks them as payment, one-time code, or other secret fields; other fields are recorded even when they hold private data. Screenshots and full URLs can still show visible values, so before saving you can mask or remove any screenshot, redact any URL, and edit or clear any entered value. Masks flatten pixels irreversibly; redacted and edited text leaves the journey entirely.
+A journey records only after you choose **Start journey**, only in that tab, and only until it stops. It records clicks with target context, same-origin page URLs, a screenshot per step, your expected and actual results, and — only when you turn on **Include entered values** for that journey — finished field changes, never keystrokes. It skips password inputs, including ones a show-password control switches to plain text during the journey, and fields whose name, ID, autocomplete, label, or placeholder marks them as payment, banking, one-time code, or other secret fields. Other fields are recorded even when they hold private data. Click labels come from the page's text, never from what you type into a field, but can repeat typed text such as a search suggestion. Screenshots and full URLs can still show visible values, so before saving you can mask or remove any screenshot, redact any URL or click label, and edit or clear any entered value. Masks flatten pixels irreversibly; redacted and edited text leaves the journey entirely.
 
-An unsaved journey is held in the browser's session storage. It is cleared when you discard it, when the browser closes, or 30 minutes after its review opens. Saved journeys stay in the browser profile until you delete them or remove the extension; deleting a journey removes its steps and screenshots.
+An unsaved journey is held in the browser's session storage. It is deleted when you discard it, after 30 minutes of review without changes, or when the browser closes or anmerko updates. Saved journeys stay in the browser profile until you delete them or remove the extension; anmerko never deletes one to make room. Deleting a journey removes its steps and screenshots.
 
 Optional **Capture component context** is off by default. When enabled, new element comments may include a bounded path of React, Vue, Angular, or Preact component names and a framework-metadata label. Names may reveal application structure; Vue's inferred names can match source filename basenames. The reader does not collect props, state, event handlers, inputs, signals, source paths, source files, stacks, or full framework objects. Angular's own inspection helpers may populate its debug cache while finding ownership.
 
@@ -32,7 +32,7 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 | `storage` | Save feedback and settings locally, and hold an unsaved journey for the browser session |
 | `clipboardWrite` | Copy the requested prompt |
 | `sidePanel` | Open the Chrome or Edge sidebar |
-| `alarms` | End a recording at 5 minutes and discard an unsaved journey 30 minutes after its review opens |
+| `alarms` | End a recording at 5 minutes, and warn before deleting an unsaved journey review after 30 minutes without changes |
 | `webNavigation` | Order page changes in the tab you record |
 
 Chrome and Edge show `webNavigation` as “Read your browsing history” and Firefox as “Access browser activity during navigation”. anmerko never reads your browser history. Navigation events are used only for the tab being recorded, and only the same-origin page URLs that become journey steps are kept, locally, with that journey.
@@ -41,7 +41,7 @@ Firefox packages omit `sidePanel`. When anmerko updates from a version without j
 
 anmerko holds no host permissions and no optional permissions, and never prompts for site access. `activeTab` covers only the website address where you activate it — in Firefox, only until that page reloads or opens another page — so a journey records only where you started it. A different domain, subdomain, port, or protocol ends the journey, and in Firefox so does any page load.
 
-Journeys aren't available on iPhone. Edge on iPhone installs the desktop Edge package and lists the same permissions; Orion's package omits `alarms`, `sidePanel`, and `webNavigation`.
+Journeys aren't available on iPhone or iPad. Edge there installs the desktop Edge package, so it lists the same permissions, including `webNavigation`, but anmerko never records a journey there. Orion's package omits `alarms`, `sidePanel`, and `webNavigation`.
 
 ## Limits
 

@@ -29,13 +29,13 @@ The sidebar follows the active tab. Activate anmerko from the toolbar on each ne
 
 ## Record a journey
 
-A journey captures a problem that takes several actions to reproduce: ordered clicks, page changes, a screenshot per step, and your expected and actual results for a coding agent. Journeys are kept separately from comments. They aren't available on iPhone (Edge or Orion).
+A journey captures a problem that takes several actions to reproduce: ordered clicks, page changes, a screenshot per step, and your expected and actual results for a coding agent. Journeys are kept separately from comments. They aren't available on iPhone or iPad (Edge or Orion).
 
-Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access you granted when you activated anmerko there. In the sidebar, the journey opens in the sidebar. With the floating panel, it opens in a journey tab; choose **Start journey** there and anmerko returns to the website tab and minimizes the panel until recording ends. Each journey tab starts one journey.
+Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access you granted when you activated anmerko there. In the sidebar, the journey opens in the sidebar. With the floating panel, and always on Android, it opens in a journey tab; choose **Start journey** there and anmerko returns to the website tab and minimizes the panel until recording ends. Each journey tab starts one journey.
 
-Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar.
+Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. The strip moves to the top while an on-screen keyboard is open or when the field you're typing in would sit under it. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar. With the floating panel, switching to the journey tab also stops recording.
 
-**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. Password inputs are always skipped, as are fields whose autocomplete, name, or ID marks them as payment, one-time code, or other secret fields. Other fields are recorded even when they hold private data, and screenshots and full URLs can still show values either way; review everything before sharing.
+**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. It skips password inputs, including ones a show-password control switches to plain text during the journey, and fields whose name, ID, autocomplete, label, or placeholder marks them as payment, banking, one-time code, or other secret fields. Other fields are recorded even when they hold private data. Each value keeps up to 2,000 characters and a journey up to 16 KB of entered text; shortened values are marked truncated. Screenshots, full URLs, and click labels can still show values either way; review everything before sharing.
 
 ### When recording ends
 
@@ -47,33 +47,35 @@ A journey records one tab on the website address where it started: the same doma
 - Going to a different domain, subdomain, or port, or switching between `http` and `https`, ends the journey. The click that left is recorded; the new page is not.
 - Switching to another tab, window, or app, closing the tab, or opening a browser page also ends it.
 
-Steps recorded before the stop are kept, and review explains why recording ended. Review appears in the sidebar or journey tab where you started; clicking anmerko in the toolbar opens it in a journey tab. Save or discard the review before you record again, then activate anmerko from the toolbar on the page you want to record.
+Steps recorded before the stop are kept, and review explains why recording ended. A journey started in the sidebar is reviewed there. One started in a journey tab brings that tab forward for review, unless you switched to another tab, window, or app. While a review waits, anmerko's panel shows **Review journey**, which also replaces **Record journey** in **More Comment Options**. Clicking anmerko in the toolbar opens the review in a journey tab. Save or discard the review before you record again, then activate anmerko from the toolbar on the page you want to record.
 
 ## Review a journey
 
-Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none.
+Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. If recording lost anything, such as part of an entered value or a page's screenshot, **Limitations** says what. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none.
 
 - **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step.
-- **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider.
-- **Redact** replaces a source, destination, or screenshot URL with `[redacted]`, and a note names what was redacted.
+- **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider. **View full-size screenshot** opens it at actual size; scroll or use the arrow keys to move around, choose **Fit to window** to see all of it, and **Close** or Esc to return.
+- **Redact** replaces a source, destination, or screenshot URL, or a click's label, with `[redacted]`, and a note names what was redacted. A click label comes from the page's text and can repeat what you typed, such as a search suggestion, even with entered values off. Clicks on fields are labelled only by field type, such as “text field”, so they offer no label redaction.
 - **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
 
 To save, enter both results, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.
 
-A review lasts 30 minutes from when it opens; anmerko then discards unsaved changes, and a reopened journey keeps its saved copy. Two minutes before, anmerko's toolbar button shows **!** on the recorded tab. Closing the browser also discards unsaved journeys.
+Unsaved reviews are deleted after 30 minutes without changes, and when the browser closes or anmerko updates. Every change restarts the 30 minutes. Two minutes before the deadline, the review shows a warning with **Go to Save**, and anmerko's toolbar button shows **!** on the recorded tab. Saving keeps the journey; for a reopened journey, only unsaved changes are deleted and the saved copy stays.
 
 After saving, choose **Copy Prompt**, **Download Markdown + Images**, or **Record another journey** (**Done** in a journey tab).
 
 ### Saved journeys
 
-**Saved journeys** in the journey view lists each journey by its expected result or starting page, with its save time, step count, and a **Spans pages** label when it covers more than one page. The sidebar's comment list shows them too.
+**Saved journeys** in the journey view lists each journey by its expected result or starting page, with its save time, step count, and a **Spans pages** label when it covers more than one page. The sidebar's comment list shows them too, with **Reopen** and **Manage saved journeys**, which opens this list. Both are unavailable while a journey records or waits for review.
 
 - **Reopen** opens a saved journey for editing. Saving again replaces the saved copy; **Discard journey** closes an unchanged one without confirmation.
 - **Delete** and **Delete all journeys** ask for confirmation. Deleting never removes files you exported, and **Delete All Comments** does not remove journeys.
 
+anmerko keeps up to 100 saved journeys and 50 MB of their screenshots, and never deletes one to make room. When they're full, review says so and lists your other saved journeys under **Save journey**; delete some, then save again.
+
 ## Share a journey
 
-Copy or download from a saved review. Saving comes first, and unsaved changes are never exported: after editing a reopened journey, save again. See [Send to your agent](/docs/send-to-your-agent/#share-a-recorded-journey).
+Copy or download from a saved review. Saving comes first, and unsaved changes are never exported: after editing a reopened journey, save again. To share a journey you saved earlier, reopen it. See [Send to your agent](/docs/send-to-your-agent/#share-a-recorded-journey).
 
 ## Try the demo
 

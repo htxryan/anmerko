@@ -17,11 +17,15 @@ The page may have changed. Your saved comment and captured text remain available
 
 ## Copy fails or images are missing
 
-Download **Markdown + Images**, extract the ZIP, and copy from `comments.md`. Attach the PNGs separately.
+Download **Markdown + Images**, extract the ZIP, and copy from `comments.md`, or `prompt.md` for a journey. Attach the PNGs separately.
 
 ## Saving fails
 
 Keep the draft open. Export saved feedback before deleting comments to free storage, then retry. Save successfully before closing or refreshing.
+
+## A journey review is gone or won't save
+
+Unsaved reviews are deleted after 30 minutes without changes, and when the browser closes or anmerko updates; save to keep a journey. If review says saved journeys are full, delete some from the list under **Save journey**, then save again.
 
 ## Screenshot selection disappears
 

@@ -30,12 +30,14 @@ You can customize the text before the comments under [**Prompt Preamble** in Set
 
 ## Share a recorded journey
 
-Share a journey from its review after saving it. **Copy Prompt** and **Download Markdown + Images** stay unavailable until the current version is saved, so unsaved changes are never exported.
+Share a journey from its review after saving it. **Copy Prompt** and **Download Markdown + Images** stay unavailable until the current version is saved, so unsaved changes are never exported. To share a journey you saved earlier, reopen it from **Saved journeys**. Journeys never appear in the comments prompt or `anmerko-comments.zip`.
 
-**Copy Prompt** copies a short brief: the expected and actual results, the step count, and whether the journey spans pages. The brief refers to `journeys.md` for the steps. **Download Markdown + Images** saves a journey ZIP containing:
+**Copy Prompt** copies the whole journey except its screenshots: the expected and actual results, whether it spans pages, why recording stopped, whether entered values were on, and every step in order with its action, target label, URLs, any entered value, and its screenshot filename or why it has none. URLs, labels, and values over 200 characters are shortened there. Paste it into your agent chat, then attach the screenshots it names from the download.
 
-- `comments.md`, with the same brief
-- `journeys.md`, with every step in order: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, redacted, or masked
-- one PNG for each kept screenshot, named in `journeys.md`
+**Download Markdown + Images** saves a journey ZIP named for the journey, such as `anmerko-journey-3f1c2a9e.zip`, containing:
 
-Give your agent `journeys.md` and attach the PNG files. Exports larger than 50 MB are refused before anything downloads.
+- `prompt.md`, the same text **Copy Prompt** copies
+- `journeys.md`, with every step in full: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, redacted, or masked, followed by **Limitations**, which lists anything recording lost
+- one PNG for each kept screenshot, named for the journey and step, such as `journey-3f1c2a9e-step-02.png`
+
+Give your agent `prompt.md` and the PNG files, and add `journeys.md` when it needs every detail. Redacted URLs and click labels appear only as `[redacted]`, and masked areas stay covered in the PNGs. Redacting URLs doesn't change whether a journey spans pages. Exports larger than 50 MB are refused before anything downloads.
