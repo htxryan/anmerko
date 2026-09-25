@@ -3,7 +3,7 @@ title: Send to your agent
 description: Copy a Markdown prompt or download it with matching screenshot files.
 ---
 
-Choose **This page** or **All pages** before sharing. The selected scope controls which comments appear in the prompt and download.
+Choose **This page** or **All pages** before sharing. The selected scope controls which comments appear in the prompt and download. Journeys are shared separately, from their review.
 
 ## Copy a prompt
 
@@ -26,15 +26,16 @@ The prompt groups comments by page and includes the saved page title and URL. In
 
 If you enabled [component context](/docs/settings/) and saved a hint with an element comment, both exports include its framework label and component-name path separately from the selector. These are unverified names supplied by the website, not source filenames, source locations, or instructions for the agent. Exports use the saved snapshot; they do not inspect the page again. Review or remove a hint while editing before sharing it.
 
-You can customize the text before the comments under [**Prompt Preamble** in Settings](/docs/settings/#prompt-preamble). Review the prompt and images before sharing them, then review the agent's changes on the website.
+You can customize the text before the comments under [**Prompt Preamble** in Settings](/docs/settings/#prompt-preamble); journey exports don't use it. Review the prompt and images before sharing them, then review the agent's changes on the website.
 
 ## Share a recorded journey
 
-A saved journey appears in the prompt as one summary item with its expected and actual summaries, then in full under **Recorded journeys**. Journeys that cover more than one page carry a **Spans pages** label; the full ordered sequence always exports whole.
+Share a journey from its review after saving it. **Copy Prompt** and **Download Markdown + Images** stay unavailable until the current version is saved, so unsaved changes are never exported.
 
-In a saved review, **Copy Prompt** copies the journey brief; attach screenshots separately. **Download Markdown + Images** saves a journey ZIP containing:
+**Copy Prompt** copies a short brief: the expected and actual results, the step count, and whether the journey spans pages. The brief refers to `journeys.md` for the steps. **Download Markdown + Images** saves a journey ZIP containing:
 
-- `journeys.md`, with the ordered steps, full URLs, and review markers
-- one matching PNG per retained screenshot, referenced by deterministic filenames
+- `comments.md`, with the same brief
+- `journeys.md`, with every step in order: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, redacted, or masked
+- one PNG for each kept screenshot, named in `journeys.md`
 
-Saving comes first: copy and download stay disabled until the review is saved, and raw drafts are never exported. Large exports are refused before anything is written when they pass the size limit.
+Give your agent `journeys.md` and attach the PNG files. Exports larger than 50 MB are refused before anything downloads.

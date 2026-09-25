@@ -29,24 +29,52 @@ The sidebar follows the active tab. Activate anmerko from the toolbar on each ne
 
 ## Record a journey
 
-A journey captures a failure that unfolds over several actions: ordered clicks, page changes, a screenshot per step, and your expected-versus-actual summary for a coding agent. Static comments stay unchanged. Orion on iPhone does not include journeys.
+A journey captures a problem that takes several actions to reproduce: ordered clicks, page changes, a screenshot per step, and your expected and actual results for a coding agent. Journeys are kept separately from comments. They aren't available on iPhone (Edge or Orion).
 
-Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access granted when you activated anmerko on that site. Recording starts only after an initial screenshot succeeds — wait for the recording indicator before interacting. With the floating panel, **Record journey** opens a journey tab where you choose **Start journey**; the panel minimizes while you record and returns when recording ends; use **Stop** on the recording strip to finish. Each journey tab starts one journey; to record another, choose **Record journey** again on the website tab. A journey records the website address where it started: the same domain, subdomain, port, and `http` or `https`. SPA route changes and hash changes keep recording in every browser. In Chrome and Edge, reloads and links to other pages at that address keep recording too. Firefox withdraws anmerko's page access whenever a new page loads, even at the same address, so a reload or link there ends the journey; the navigation and earlier steps are kept. The Firefox journey view says so before you start. Going to a different domain, subdomain, or port, or switching between `http` and `https`, ends the journey and opens review — the click that left is recorded, but the departure is not. Up to 5 minutes or 30 steps in one tab. **Stop journey** ends recording and opens review; closing the tab, switching windows, or losing the page ends it for review instead. Review explains why recording stopped. To record again, save or discard that review first — until then the toolbar reopens it — then activate anmerko from the toolbar on the page you want to record.
+Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access you granted when you activated anmerko there. In the sidebar, the journey opens in the sidebar. With the floating panel, it opens in a journey tab; choose **Start journey** there and anmerko returns to the website tab and minimizes the panel until recording ends. Each journey tab starts one journey.
 
-**Include entered values** is off for every launch, even if the last journey enabled it. When on, anmerko records committed field changes only — never keystrokes — and skips passwords, payment and secret fields. Screenshots and full URLs can still show visible values either way; review everything before sharing.
+Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar.
 
-Reloading the page records a navigation step. Chrome and Edge continue recording; Firefox ends the journey there. A suspended browser session recovers the recording; the first click and its navigation stay ordered.
+**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. It always skips password, payment, one-time code, and other secret fields. Screenshots and full URLs can still show values either way; review everything before sharing.
+
+### When recording ends
+
+A journey records one tab on the website address where it started: the same domain, subdomain, port, and `http` or `https`. It stops after 5 minutes or 30 steps, counting the starting view, or when its screenshots reach their storage limit.
+
+- Single-page app route changes and `#` changes keep recording in every browser.
+- In Chrome and Edge, reloads and links to other pages at the same address keep recording and add a navigation step.
+- Firefox withdraws anmerko's page access whenever a new page loads, even at the same address. A reload or link ends the journey there; the navigation step and earlier steps are kept, but the new page has no screenshot. The Firefox journey view says so before you start.
+- Going to a different domain, subdomain, or port, or switching between `http` and `https`, ends the journey. The click that left is recorded; the new page is not.
+- Switching to another tab, window, or app, closing the tab, or opening a browser page also ends it.
+
+Steps recorded before the stop are kept, and review explains why recording ended. Review appears in the sidebar or journey tab where you started; clicking anmerko in the toolbar also opens it. Save or discard the review before you record again, then activate anmerko from the toolbar on the page you want to record.
 
 ## Review a journey
 
-Review starts with **Expected result** and **Actual result** — both are required to save, up to 4,000 characters each. Every step shows its action, timing, full source URL, and screenshot state. Tall screenshots show whole; **Enlarge screenshot** shows one larger. Remove steps you don't need; sequence numbers stay stable. Screenshots are kept unless you **Mask** or **Remove** them: drag or enter a region to cover it with an opaque block, which flattens permanently and cannot be undone. A step's **Remove screenshot** asks for confirmation; the mask editor's **Remove screenshot** removes it at once. When steps share one screenshot, the change applies to all of them. **Redact** source, navigation destination, and image URLs to `[redacted]` without breaking step and image links; a note beside each field names what was redacted. Edit or clear captured values; edited values are marked and originals leave the draft. **Discard journey** asks for confirmation before it deletes unsaved steps and screenshots. A reopened journey you haven't changed closes at once; its saved copy stays.
+Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none.
 
-Acknowledge that full URLs, entered values, and kept screenshots are retained, then **Save journey**. The confirmation offers **Copy Prompt**, **Download Markdown + Images**, and **Record another journey**, or **Done** in a journey tab. Saved journeys appear once each in **Saved journeys**, named by their expected result or starting page, with the local save time, step count, and a **Spans pages** label when they cover more than one page on that site. Reopen a saved journey to keep editing; saving again stores a new revision. Delete one journey or all of them with confirmation; deletion removes the snapshots but never exported files.
+- **Remove step** asks for confirmation. Other steps keep their numbers, and the last step cannot be removed.
+- **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider.
+- **Redact** replaces a source, destination, or screenshot URL with `[redacted]`, and a note names what was redacted.
+- **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
+
+To save, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.
+
+A review lasts 30 minutes from when it opens; anmerko then discards unsaved changes, and a reopened journey keeps its saved copy. Two minutes before, the anmerko toolbar button shows **!**. Closing the browser also discards unsaved journeys.
+
+After saving, choose **Copy Prompt**, **Download Markdown + Images**, or **Record another journey** (**Done** in a journey tab).
+
+### Saved journeys
+
+**Saved journeys** in the journey view lists each journey by its expected result or starting page, with its save time, step count, and a **Spans pages** label when it covers more than one page. The sidebar's comment list shows them too.
+
+- **Reopen** opens a saved journey for editing. Saving again replaces the saved copy; **Discard journey** closes an unchanged one without confirmation.
+- **Delete** and **Delete all journeys** ask for confirmation. Deleting never removes files you exported, and **Delete All Comments** does not remove journeys.
 
 ## Share a journey
 
-Copy or download from a saved review — saving comes first, and raw drafts are never exported. A reopened journey you haven't changed shares right away; after edits, save again. See [Send to your agent](/docs/send-to-your-agent/).
+Copy or download from a saved review. Saving comes first, and unsaved changes are never exported: after editing a reopened journey, save again. See [Send to your agent](/docs/send-to-your-agent/#share-a-recorded-journey).
 
 ## Try the demo
 
-Choose **Try the Demo** on the [home page](/). It uses the same comment controls; screenshots require the extension. Demo comments/settings survive close/reopen but clear on reload or navigation. Copy anything you want to keep.
+Choose **Try the Demo** on the [home page](/). It uses the same comment controls; screenshots and journeys require the extension. Demo comments/settings survive close/reopen but clear on reload or navigation. Copy anything you want to keep.
