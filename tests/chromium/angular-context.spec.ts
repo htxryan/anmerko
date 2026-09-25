@@ -164,7 +164,7 @@ test('rejects malformed selectors, tags, markers, and selector controls', async 
     target(['#selected'], 'BUTTON'),
     { ...target(['#selected']), markerName: 'data-anmerko-context-not-a-token' },
     target(['#selected\n']),
-  ]) await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  ]) await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('turns accessors, malformed APIs, and API throws into only the fixed failure token', async ({ page }) => {
@@ -178,7 +178,7 @@ test('turns accessors, malformed APIs, and API throws into only the fixed failur
       get() { (window as any).__forbiddenReads += 1; throw new Error('page secret'); },
     });
   });
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__forbiddenReads)).toBe(0);
 
   await page.evaluate(() => Object.defineProperty(window, 'ng', {
@@ -191,11 +191,11 @@ test('turns accessors, malformed APIs, and API throws into only the fixed failur
       get() { (window as any).__forbiddenReads += 1; throw new Error('method secret'); },
     }),
   }));
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__forbiddenReads)).toBe(0);
 
   await page.evaluate(() => Object.defineProperty(window, 'ng', { configurable: true, value: 1 }));
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 
   await page.evaluate(() => Object.defineProperty(window, 'ng', {
     configurable: true,
@@ -205,7 +205,7 @@ test('turns accessors, malformed APIs, and API throws into only the fixed failur
       getHostElement() { return null; },
     },
   }));
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.not.toThrow('private page failure');
 });
 
@@ -237,7 +237,7 @@ test('fails closed without invoking constructor or function-name accessors', asy
     });
     Object.defineProperty(window, '__angularAccessorReads', { configurable: true, value: reads });
   });
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__angularAccessorReads)).toEqual({ constructor: 0 });
 
   const nameTarget = await installFakeAngular(page, ['_AppComponent']);
@@ -251,7 +251,7 @@ test('fails closed without invoking constructor or function-name accessors', asy
     });
     Object.defineProperty(window, '__angularAccessorReads', { configurable: true, value: reads });
   });
-  await expect(page.evaluate(angularComponentContextProbe, nameTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, nameTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__angularAccessorReads)).toEqual({ name: 0 });
 });
 
@@ -266,7 +266,7 @@ test('rejects contradictory direct hosts, detached hosts, non-elements, and prox
     ng.getComponent = (element: Element) => element === selected ? component : originalGetComponent(element);
     ng.getOwningComponent = (element: Element) => element === selected ? null : originalGetOwningComponent(element);
   });
-  await expect(page.evaluate(angularComponentContextProbe, directTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, directTarget)).resolves.toBe(FAILURE_TOKEN);
 
   const detachedTarget = await installFakeAngular(page, ['_DetachedComponent']);
   await page.evaluate(() => {
@@ -274,11 +274,11 @@ test('rejects contradictory direct hosts, detached hosts, non-elements, and prox
     const component = ng.getOwningComponent(document.querySelector('#selected'));
     ng.getHostElement(component).remove();
   });
-  await expect(page.evaluate(angularComponentContextProbe, detachedTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, detachedTarget)).resolves.toBe(FAILURE_TOKEN);
 
   const nonElementTarget = await installFakeAngular(page, ['_NonElementComponent']);
   await page.evaluate(() => { (window as any).ng.getHostElement = () => ({}); });
-  await expect(page.evaluate(angularComponentContextProbe, nonElementTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, nonElementTarget)).resolves.toBe(FAILURE_TOKEN);
 
   const proxyTarget = await installFakeAngular(page, ['_ProxyComponent']);
   await page.evaluate(() => {
@@ -286,7 +286,7 @@ test('rejects contradictory direct hosts, detached hosts, non-elements, and prox
     const proxy = new Proxy({}, { getPrototypeOf() { throw new Error('proxy secret'); } });
     (window as any).ng.getOwningComponent = (element: Element) => element === selected ? proxy : null;
   });
-  await expect(page.evaluate(angularComponentContextProbe, proxyTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, proxyTarget)).resolves.toBe(FAILURE_TOKEN);
   await expect(page.evaluate(angularComponentContextProbe, proxyTarget)).rejects.not.toThrow('proxy secret');
 });
 
@@ -331,10 +331,10 @@ test('rejects cycles and stops at exactly 64 links and 194 allowlisted calls', a
     ng.getOwningComponent = (element: Element) => element === document.querySelector('#selected') || element === host
       ? component : null;
   });
-  await expect(page.evaluate(angularComponentContextProbe, cycleTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, cycleTarget)).resolves.toBe(FAILURE_TOKEN);
 
   const depthTarget = await installFakeAngular(page, Array(65).fill('_DeepComponent'));
-  await expect(page.evaluate(angularComponentContextProbe, depthTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, depthTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__angularProbeCalls)).toEqual({
     getComponent: 65,
     getOwningComponent: 65,
@@ -348,7 +348,7 @@ test('enforces cooperative clock checks around framework calls', async ({ page }
     let calls = 0;
     Object.defineProperty(performance, 'now', { configurable: true, value: () => (++calls <= 4 ? 0 : 11) });
   });
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__angularProbeCalls)).toEqual({
     getComponent: 1,
     getOwningComponent: 0,
@@ -361,7 +361,7 @@ test('rejects a non-finite initial cooperative clock before framework calls', as
   await page.evaluate(() => {
     Object.defineProperty(performance, 'now', { configurable: true, value: () => Number.NaN });
   });
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   expect(await page.evaluate(() => (window as any).__angularProbeCalls)).toEqual({
     getComponent: 0,
     getOwningComponent: 0,
@@ -381,7 +381,7 @@ test('rejects a result when final UTF-8 serialization exhausts the clock budget'
       return result;
     };
   });
-  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(angularComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('uses the cooperative 25 ms Android clock cap', async ({ page }) => {
