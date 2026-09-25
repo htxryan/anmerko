@@ -12,6 +12,9 @@ export interface JourneyImageReviewInput {
   height: number;
   // Extra context under the instructions, such as steps sharing this image.
   note?: string;
+  // Told whether a valid region is drawn or entered but not applied yet, so
+  // an editor closed by another surface's save can say whether a mask was lost.
+  regionChanged?(chosen: boolean): void;
 }
 
 export type JourneyImageReviewResult =
@@ -270,6 +273,7 @@ export function reviewJourneyImage(
 
     function render() {
       const valid = validRect(draft, input);
+      input.regionChanged?.(valid);
       apply.disabled = applying || !valid;
       view.setAttribute('aria-busy', applying ? 'true' : 'false');
       for (const control of Object.values(inputs)) {

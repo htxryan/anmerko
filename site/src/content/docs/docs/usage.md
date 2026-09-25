@@ -53,8 +53,8 @@ Steps recorded before the stop are kept, and review explains why recording ended
 
 Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none.
 
-- **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step.
-- **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider.
+- **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step; discard the journey instead.
+- **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider, and **View full-size screenshot** opens any screenshot at its actual size, which helps in a narrow sidebar or on a phone.
 - **Redact** replaces a source, destination, or screenshot URL with `[redacted]`, and a note names what was redacted.
 - **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
 

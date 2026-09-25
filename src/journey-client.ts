@@ -56,8 +56,13 @@ export function createJourneyClient(
     return response.value;
   }
 
-  async function reviewing(): Promise<ReviewingSession> {
+  // journeyId, when given, is the review the edit was made in; any other
+  // journey is refused as another tab's change, even while it saves.
+  async function reviewing(journeyId?: string): Promise<ReviewingSession> {
     const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+    if (journeyId !== undefined && current.phase !== 'idle' && current.journeyId !== journeyId) {
+      throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
+    }
     if (current.phase === 'saving') throw savingError();
     if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
     return current;
@@ -84,8 +89,8 @@ export function createJourneyClient(
     supportsEnteredValues: true,
     pageLoadsEndJourney: firefoxExtension(),
     read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
-    updateSummary: async (expected: string, actual: string): Promise<void> => {
-      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
+    updateSummary: async (expected: string, actual: string, journeyId?: string): Promise<void> => {
+      await reviewEdit(await reviewing(journeyId), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
         updatedAt: new Date().toISOString(), expected, actual,
       });
     },

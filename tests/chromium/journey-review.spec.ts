@@ -13,6 +13,8 @@ const bundle = () => buildSync({ stdin: { contents: `
   let state = { phase: 'idle', epoch: 0 };
   let changed = () => {};
   const summaryCalls = [];
+  // [phase, journey under review, journey the text was typed in] per summary write.
+  const summaryTargets = [];
   const removeCalls = [];
   const startCalls = [];
   const editCalls = [];
@@ -46,6 +48,8 @@ const bundle = () => buildSync({ stdin: { contents: `
   let failingDeleteIds = [];
   let startError = null;
   let startHook = null;
+  let startGate = null;
+  let stopCalls = 0;
   let firefox = false;
   let startable = true;
   let reopenInto = null;
@@ -57,13 +61,19 @@ const bundle = () => buildSync({ stdin: { contents: `
     start: async includeEnteredValues => {
       startCalls.push(includeEnteredValues);
       startHook?.();
+      if (startGate) await startGate.promise;
       if (startError) throw new Error(startError);
     },
-    stop: async () => {},
+    stop: async () => { stopCalls += 1; },
     discard: async () => { state = { phase: 'idle', epoch: 9 }; changed(); },
-    updateSummary: async (expected, actual) => {
+    updateSummary: async (expected, actual, journeyId) => {
       summaryCalls.push([expected, actual]);
+      summaryTargets.push([state.phase, state.draft?.id ?? null, journeyId ?? null]);
       if (summaryGate) await summaryGate.promise;
+      // Like the extension client, text typed in another journey is refused.
+      if (journeyId !== undefined && state.journeyId !== journeyId) {
+        throw Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
+      }
       if (state.phase === 'saving') throw savingError();
       if (summaryError) throw summaryError;
       state = { ...state, draft: { ...state.draft, expected, actual, revision: state.draft.revision + 1 } };
@@ -78,11 +88,13 @@ const bundle = () => buildSync({ stdin: { contents: `
     },
     editValue: async (stepId, value) => {
       editCalls.push([stepId, structuredClone(value)]);
+      if (state.phase === 'saving') throw savingError();
       state = { ...state, draft: { ...state.draft, steps: state.draft.steps.map(step => step.id === stepId ? { ...step, enteredValue: { ...structuredClone(value), edited: true } } : step), revision: state.draft.revision + 1 } };
       changed();
     },
     redactUrl: async (stepId, kind) => {
       redactCalls.push([stepId, kind]);
+      if (state.phase === 'saving') throw savingError();
       const draft = state.draft;
       if (kind === 'source') {
         const redactions = draft.redactions ?? { steps: {} };
@@ -269,6 +281,7 @@ const bundle = () => buildSync({ stdin: { contents: `
   mountJourneyUI(document.body, client);
   window.journeyReviewHarness = {
     summaryCalls: () => summaryCalls,
+    summaryTargets: () => summaryTargets,
     removeCalls: () => removeCalls,
     startCalls: () => startCalls,
     editCalls: () => editCalls,
@@ -300,6 +313,9 @@ const bundle = () => buildSync({ stdin: { contents: `
     failStart: message => { startError = message; },
     // Runs inside Start, as the background does when it switches to the website tab.
     onStart: hook => { startHook = hook; },
+    holdStart: () => { startGate = gate(); },
+    releaseStart: () => { const held = startGate; startGate = null; held?.release(); },
+    stopCalls: () => stopCalls,
     setFirefox: value => { firefox = value; changed(); },
     setStartable: value => { startable = value; changed(); },
     // Reopening a saved journey lands in review at its saved revision.
@@ -312,6 +328,17 @@ const bundle = () => buildSync({ stdin: { contents: `
       const draft = reviewingDraft(reviewingSteps().slice(0, count));
       state = { phase: 'recording', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         documentToken: 'D', deadlineAt: '2026-09-21T00:05:00.000Z', documentCounters: {}, draft };
+      changed();
+    },
+    // A different journey under review, as after this one was saved or
+    // discarded elsewhere and another was reopened or recorded.
+    setReviewingOther: () => {
+      const draft = reviewingDraft([
+        step('T1', 1, 'initial', { status: 'retained', imageId: 'I1' }),
+        step('T2', 2, 'click', { status: 'retained', imageId: 'I2' }, { target: { label: 'Pay now' } }),
+      ]);
+      state = { phase: 'reviewing', epoch: 12, sessionId: 'SESS2', journeyId: 'J2', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: { ...draft, id: 'J2' } };
       changed();
     },
     setReviewingSteps: count => {
@@ -1818,14 +1845,148 @@ test('a save that completes elsewhere reports the edits it left out', async ({ p
   await expect(page.getByRole('alert')).toHaveText('This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.');
 });
 
-test('an edit refused by a save in progress says so instead of blaming another tab', async ({ page }) => {
+const SAVE_IN_PROGRESS = 'This journey is being saved. Wait for the save to finish, then try again.';
+const LOST_EDITS = 'This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.';
+const EDITS_NOT_APPLIED = 'The journey you were reviewing was saved or closed before your latest edits here reached it, so they were not applied. If it was saved, reopen it from Saved journeys to make them again.';
+const SAVE_NOT_FINISHED = 'The save did not finish, and your change was not applied while it ran. Try the change again.';
+
+test('an edit refused by a save in progress says so, then reports it missing from the saved copy', async ({ page }) => {
   await openReview(page);
   await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
   const confirm = page.getByRole('button', { name: 'Confirm remove step 2', exact: true });
   // The save starts after this view last rendered the review.
   await page.evaluate('journeyReviewHarness.setSavingSilently()');
   await confirm.click();
-  await expect(page.getByRole('alert')).toHaveText('This journey is being saved. Wait for the save to finish, then try again.');
+  await expect(page.locator('.journey-view h1')).toHaveText('Saving journey');
+  await expect(page.getByRole('alert')).toHaveText(SAVE_IN_PROGRESS);
+  await page.evaluate('journeyReviewHarness.completeSaving()');
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(LOST_EDITS);
+  expect(await page.evaluate('journeyReviewHarness.removeCalls()')).toEqual(['S2']);
+});
+
+test('an edit refused by a save that then fails can be made again', async ({ page }) => {
+  await openReview(page);
+  const redact = page.getByRole('button', { name: 'Redact source URL for step 1', exact: true });
+  await page.evaluate('journeyReviewHarness.setSavingSilently()');
+  await redact.click();
+  await expect(page.getByRole('alert')).toHaveText(SAVE_IN_PROGRESS);
+  await page.evaluate('journeyReviewHarness.failSaving()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(SAVE_NOT_FINISHED);
+  await expect(stepItem(page, 1).getByText('Source URL redacted during review.', { exact: true })).toHaveCount(0);
+  await redact.click();
+  await expect(stepItem(page, 1).getByText('Source URL redacted during review.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(await page.evaluate('journeyReviewHarness.redactCalls()')).toEqual([['S1', 'source'], ['S1', 'source']]);
+});
+
+test('a summary held by a save is never written into the next journey under review', async ({ page }) => {
+  await openReview(page);
+  await page.getByLabel('Expected result').fill('Typed for J1');
+  // Another surface starts saving J1 before the autosave goes out, so it waits.
+  await page.evaluate('journeyReviewHarness.setSaving()');
+  await expect(page.locator('.journey-view h1')).toHaveText('Saving journey');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 600)));
+  // This view never reads J1's save ending: the next state is another journey's review.
+  await page.evaluate('journeyReviewHarness.setReviewingOther()');
+  await expect(page.getByRole('heading', { name: 'Step 2 · Click: Pay now' })).toBeVisible();
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 600)));
+  expect(await page.evaluate('journeyReviewHarness.summaryCalls()')).toEqual([]);
+  expect(await page.evaluate('journeyReviewHarness.state().draft')).toMatchObject({ id: 'J2', expected: '', actual: '' });
+  await expect(page.getByLabel('Expected result')).toHaveValue('');
+  await expect(page.getByRole('alert')).toHaveText(EDITS_NOT_APPLIED);
+  // Text typed into J2's review goes to J2, named as such.
+  await page.getByLabel('Expected result').fill('Typed for J2');
+  await expect.poll(() => page.evaluate('journeyReviewHarness.state().draft.expected'), { timeout: 10_000 }).toBe('Typed for J2');
+  expect(await page.evaluate('journeyReviewHarness.summaryTargets()')).toEqual([['reviewing', 'J2', 'J2']]);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('a summary typed just before another journey takes over the review is never written into it', async ({ page }) => {
+  await openReview(page);
+  await page.getByRole('checkbox', { name: /^I understand this journey retains/ }).check();
+  await page.getByLabel('Expected result').fill('Typed for J1');
+  // Within the autosave delay, this view reads another journey's review.
+  await page.evaluate('journeyReviewHarness.setReviewingOther()');
+  await expect(page.getByRole('heading', { name: 'Step 2 · Click: Pay now' })).toBeVisible();
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 600)));
+  expect(await page.evaluate('journeyReviewHarness.summaryCalls()')).toEqual([]);
+  expect(await page.evaluate('journeyReviewHarness.state().draft')).toMatchObject({ id: 'J2', expected: '', actual: '' });
+  await expect(page.getByLabel('Expected result')).toHaveValue('');
+  await expect(page.getByRole('checkbox', { name: /^I understand this journey retains/ })).not.toBeChecked();
+  await expect(page.getByRole('alert')).toHaveText(EDITS_NOT_APPLIED);
+});
+
+test('a save elsewhere reports an open value editor with unsent input as lost', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setReviewingWithField()');
+  await page.getByRole('button', { name: 'Edit value for step 4', exact: true }).click();
+  await page.getByLabel('Edit entered value for step 4').fill('typed but not saved');
+  await page.evaluate('journeyReviewHarness.setSaving()');
+  await expect(page.locator('.journey-view h1')).toHaveText('Saving journey');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.evaluate('journeyReviewHarness.completeSaving()');
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(LOST_EDITS);
+  expect(await page.evaluate('journeyReviewHarness.editCalls()')).toEqual([]);
+});
+
+test('a save elsewhere reports a drawn mask as lost, but not a mask editor left untouched', async ({ page }) => {
+  for (const drawn of [false, true]) {
+    await openImageReview(page);
+    await page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+    await expect(dialog).toBeVisible();
+    if (drawn) {
+      for (const [name, value] of [['X', '0'], ['Y', '0'], ['Width', '10'], ['Height', '5']]) {
+        await dialog.getByRole('spinbutton', { name, exact: true }).fill(value);
+      }
+      await expect(dialog.getByRole('button', { name: 'Apply mask', exact: true })).toBeEnabled();
+    }
+    await page.evaluate('journeyReviewHarness.setSaving()');
+    await page.evaluate('journeyReviewHarness.completeSaving()');
+    await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+    if (drawn) await expect(page.getByRole('alert')).toHaveText(LOST_EDITS);
+    else await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(await page.evaluate('journeyReviewHarness.reviewImageCalls()')).toEqual([]);
+  }
+});
+
+test('a click on controls held for a press is dropped once their journey is no longer in view', async ({ page }) => {
+  await openReview(page);
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
+  const confirm = page.getByRole('button', { name: 'Confirm discard journey', exact: true });
+  await expect(confirm).toBeFocused();
+  await pressWhile(page, confirm, async () => {
+    const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+    // J1 is closed elsewhere and J2 opened while the pointer is down.
+    await page.evaluate('journeyReviewHarness.setReviewingOther()');
+    await refreshLanded(page, before);
+  });
+  await expect(page.getByRole('heading', { name: 'Step 2 · Click: Pay now' })).toBeVisible();
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 200)));
+  expect(await page.evaluate('journeyReviewHarness.state()')).toMatchObject({ phase: 'reviewing', journeyId: 'J2' });
+  await expect(page.getByRole('button', { name: 'Discard journey', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true })).toHaveCount(0);
+});
+
+test('Cancel start pressed while this surface\'s own start begins recording still cancels it', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate('journeyReviewHarness.holdStart()');
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  const cancel = page.getByRole('button', { name: 'Cancel start', exact: true });
+  await expect(cancel).toBeEnabled();
+  await pressWhile(page, cancel, async () => {
+    const before = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+    await page.evaluate('journeyReviewHarness.setRecording(1)');
+    // Recording reads no saved list, so wait for its read to land instead.
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+    expect(await page.evaluate('journeyReviewHarness.listCalls()')).toBe(before);
+  });
+  await expect.poll(() => page.evaluate('journeyReviewHarness.stopCalls()')).toBe(1);
+  await page.evaluate('journeyReviewHarness.releaseStart()');
 });
 
 test('the only remaining step explains why it cannot be removed', async ({ page }) => {
