@@ -178,6 +178,197 @@ test('a password field switched to text stays excluded when secret cues remain',
   expect(seen).toEqual([]);
 });
 
+test('a password revealed as text stays excluded for the rest of the journey', async ({ page }) => {
+  await page.setContent(`
+    <input type="password" name="field-a" id="field-a">
+    <button type="button" id="toggle-a">Show</button>
+    <input type="text" name="field-b" id="field-b">
+    <input type="text" name="nickname" id="nickname">
+    <button type="button" id="other">Other</button>
+    <section id="later"></section>
+    <script>
+      document.querySelector('#toggle-a').addEventListener('click', () => {
+        const field = document.querySelector('#field-a');
+        field.type = field.type === 'password' ? 'text' : 'password';
+      });
+    </script>
+  `);
+  const seen: unknown[] = [];
+  await attach(page, seen);
+
+  // Reveal, type, then flush while the field is plain text.
+  await page.click('#toggle-a');
+  await page.fill('#field-a', 'revealed-secret-1');
+  await page.click('#other');
+  // Type while revealed, then hide: the click flush runs while it is text.
+  await page.fill('#field-a', 'revealed-secret-2');
+  await page.click('#toggle-a');
+  // Typed while masked, revealed, edited further, then committed by focus exit.
+  await page.fill('#field-a', 'revealed-secret-3');
+  await page.click('#toggle-a');
+  await page.locator('#field-a').press('End');
+  await page.keyboard.type('-more');
+  await page.keyboard.press('Tab');
+
+  // A text field that becomes a password and is revealed again.
+  await page.evaluate(() => { (document.querySelector('#field-b') as HTMLInputElement).type = 'password'; });
+  await page.evaluate(() => { (document.querySelector('#field-b') as HTMLInputElement).type = 'text'; });
+  await page.fill('#field-b', 'revealed-secret-4');
+  await page.click('#other');
+
+  // A password field added later, and one inside an open shadow root added
+  // later, are both revealed within the task that inserted them.
+  await page.evaluate(() => {
+    const late = document.createElement('input');
+    late.type = 'password';
+    late.id = 'late';
+    document.querySelector('#later')!.append(late);
+    late.type = 'text';
+    const host = document.createElement('field-host');
+    const root = host.attachShadow({ mode: 'open' });
+    const shadowField = document.createElement('input');
+    shadowField.type = 'password';
+    shadowField.id = 'shadow-field';
+    root.append(shadowField);
+    document.querySelector('#later')!.append(host);
+  });
+  await page.evaluate(() => {
+    (document.querySelector('field-host')!.shadowRoot!.querySelector('#shadow-field') as HTMLInputElement).type = 'text';
+  });
+  await page.fill('#late', 'revealed-secret-5');
+  await page.click('#other');
+  await page.locator('field-host #shadow-field').fill('revealed-secret-6');
+  await page.click('#other');
+
+  // A shadow root attached after its host was inserted, revealed by a
+  // toggle inside it.
+  await page.evaluate(() => {
+    const host = document.createElement('late-host');
+    document.querySelector('#later')!.append(host);
+    setTimeout(() => {
+      const root = host.attachShadow({ mode: 'open' });
+      root.innerHTML = '<input type="password" id="late-shadow"><button type="button" id="late-toggle">Show</button>';
+      root.querySelector('#late-toggle')!.addEventListener('click', () => {
+        (root.querySelector('#late-shadow') as HTMLInputElement).type = 'text';
+      });
+    }, 0);
+  });
+  await page.locator('late-host #late-toggle').click();
+  await page.locator('late-host #late-shadow').fill('revealed-secret-7');
+  await page.click('#other');
+
+  // Ordinary fields are still recorded.
+  await page.fill('#nickname', 'green otter');
+  await page.click('#other');
+
+  expect(seen).toHaveLength(1);
+  expect((seen[0] as any).enteredValue).toEqual({ kind: 'text', value: 'green otter', truncated: false });
+  expect(JSON.stringify(seen)).not.toContain('revealed-secret');
+  expectAllBatchesValid(seen);
+});
+
+test('labels, aria-label, aria-labelledby, and placeholders are secret cues', async ({ page }) => {
+  await page.setContent(`
+    <label for="c1">Password</label><input type="text" id="c1" name="first">
+    <label>Security code <input type="text" id="c2" name="second"></label>
+    <input type="text" id="c3" name="third" aria-label="Recovery code">
+    <span id="c4-label">Card verification value</span><input type="text" id="c4" name="fourth" aria-labelledby="c4-label">
+    <span id="c5-a">Your</span><span id="c5-b">one-time code</span><input type="text" id="c5" name="fifth" aria-labelledby="c5-a c5-b">
+    <input type="text" id="c6" name="sixth" placeholder="MM / YY">
+    <input type="text" id="c7" name="seventh" placeholder="Enter your PIN">
+    <textarea id="c8" name="eighth" placeholder="Secret recovery phrase"></textarea>
+    <label for="c9">Account number</label><input type="text" id="c9" name="ninth">
+    <label for="c10">IBAN</label><input type="text" id="c10" name="tenth">
+    <input type="checkbox" id="c11" name="eleventh"><label for="c11">Show password</label>
+    <label for="c12">Card title</label><input type="text" id="c12" name="twelfth">
+    <label for="c13">Account name</label><input type="text" id="c13" name="thirteenth">
+    <input type="text" id="c14" name="fourteenth" placeholder="Promo code">
+    <input type="text" id="c15" name="fifteenth" aria-label="Postal code">
+    <span id="c16-label">Display name</span><input type="text" id="c16" name="sixteenth" aria-labelledby="c16-label">
+    <label>Country <select id="c17" name="seventeenth"><option>Secret island</option><option>Norway</option></select></label>
+    <button type="button" id="other">Other</button>
+  `);
+  const seen: unknown[] = [];
+  await attach(page, seen);
+
+  for (let index = 1; index <= 16; index++) {
+    if (index === 11) continue;
+    await page.fill(`#c${index}`, `value-c${index}`);
+    await page.click('#other');
+  }
+  await page.check('#c11');
+  // Real keyboard type-ahead: option text inside a wrapping label is no cue.
+  await page.focus('#c17');
+  await page.keyboard.press('n');
+  await page.keyboard.press('Tab');
+
+  const recorded = seen.map(commit => (commit as any).enteredValue);
+  expect(recorded).toEqual([
+    { kind: 'text', value: 'value-c12', truncated: false },
+    { kind: 'text', value: 'value-c13', truncated: false },
+    { kind: 'text', value: 'value-c14', truncated: false },
+    { kind: 'text', value: 'value-c15', truncated: false },
+    { kind: 'text', value: 'value-c16', truncated: false },
+    { kind: 'selection', values: ['Norway'], multiple: false, truncated: false },
+  ]);
+  expectAllBatchesValid(seen);
+});
+
+test('secret, verification, banking, and card-expiry names are excluded without over-matching ordinary fields', async ({ page }) => {
+  const excluded = [
+    'securityCode', 'security-code', 'verificationCode', 'verification_code', 'mfa_code', 'private_key',
+    'privateKey', 'access_key', 'mnemonic', 'seed_phrase', 'recovery_code', 'backup-code', 'iban',
+    'account_number', 'routing_number', 'exp_month', 'expYear', 'card-expiry', 'expiration_date',
+    'cvv2', 'card_cvc', 'cardCVV', 'cvcCode', 'CVV', 'csc', 'cvn', 'cvd', 'security_answer', 'passphrase',
+    'api-key', 'client_secret', 'authCode', 'twoFactorCode', 'otpCode', 'license_key', 'acctNo', 'sort_code',
+    'SSNField', 'user_pw', 'recovery_phrase', 'bank_account',
+  ];
+  const recordable = [
+    'account_name', 'accountNotes', 'display_name', 'displayName', 'email', 'search', 'comment',
+    'postal_code', 'promo_code', 'coupon-code', 'country_code', 'confirmation_code', 'username',
+    'company', 'passenger', 'keyword', 'product_keyword', 'expected_date', 'experience', 'discard_reason',
+    'spinner_label', 'phone_number', 'order-number',
+  ];
+  await page.setContent('<form id="fields"></form><button type="button" id="other">Other</button>');
+  await page.evaluate(([excluded, recordable]) => {
+    const form = document.querySelector('#fields')!;
+    [...excluded, ...recordable].forEach((name, index) => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.name = name;
+      input.id = `n${index}`;
+      form.append(input);
+    });
+    for (const name of ['exp_month', 'size']) {
+      const select = document.createElement('select');
+      select.name = name;
+      select.id = `select-${name}`;
+      select.innerHTML = '<option>January</option><option>February</option>';
+      form.append(select);
+    }
+  }, [excluded, recordable]);
+  const seen: unknown[] = [];
+  await attach(page, seen);
+
+  const names = [...excluded, ...recordable];
+  for (const [index, name] of names.entries()) {
+    await page.fill(`#n${index}`, `value:${name}`);
+    await page.click('#other');
+  }
+  for (const name of ['exp_month', 'size']) {
+    await page.focus(`#select-${name}`);
+    await page.keyboard.press('f');
+    await page.keyboard.press('Tab');
+  }
+
+  const values = seen.map(commit => {
+    const entered = (commit as any).enteredValue;
+    return entered.kind === 'text' ? entered.value : `selection:${entered.values.join(',')}`;
+  });
+  expect(values).toEqual([...recordable.map(name => `value:${name}`), 'selection:February']);
+  expectAllBatchesValid(seen);
+});
+
 test('IME composition never marks a field dirty; the control input commits', async ({ page }) => {
   await page.setContent('<input type="text" name="city" id="city"><button type="button" id="other">Other</button>');
   const seen: unknown[] = [];
