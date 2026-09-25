@@ -115,13 +115,13 @@ function validateImageState(value: unknown, path: string, errors: string[]): voi
   } else errors.push(`${path}.status is unknown for an incoming event`);
 }
 
-function validateFieldValue(value: unknown, path: string, errors: string[]): number {
-  if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be a field value`); return 0; }
+function validateFieldValue(value: unknown, path: string, errors: string[]): void {
+  if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be a field value`); return; }
   if (value.kind === 'text') {
     exactKeys(value, ['kind', 'value', 'truncated'], [], path, errors);
     if (typeof value.value !== 'string' || characters(value.value) > JOURNEY_LIMITS.maxFieldValueCharacters) errors.push(`${path}.value is invalid`);
     if (typeof value.truncated !== 'boolean') errors.push(`${path}.truncated must be a boolean`);
-    return typeof value.value === 'string' ? bytes(value.value) : 0;
+    return;
   }
   if (value.kind === 'selection') {
     exactKeys(value, ['kind', 'values', 'multiple', 'truncated'], [], path, errors);
@@ -129,23 +129,22 @@ function validateFieldValue(value: unknown, path: string, errors: string[]): num
       || value.values.some(item => typeof item !== 'string' || characters(item) > JOURNEY_LIMITS.maxFieldValueCharacters)) errors.push(`${path}.values is invalid`);
     if (typeof value.multiple !== 'boolean') errors.push(`${path}.multiple must be a boolean`);
     if (typeof value.truncated !== 'boolean') errors.push(`${path}.truncated must be a boolean`);
-    return Array.isArray(value.values) ? value.values.reduce((total, item) => total + (typeof item === 'string' ? bytes(item) : 0), 0) : 0;
+    return;
   }
   if (value.kind === 'checked') {
     exactKeys(value, ['kind', 'checked'], [], path, errors);
     if (typeof value.checked !== 'boolean') errors.push(`${path}.checked must be a boolean`);
-    return 0;
+    return;
   }
   errors.push(`${path}.kind is unknown`);
-  return 0;
 }
 
-function validateEvent(value: unknown, path: string, errors: string[]): number {
-  if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be an event`); return 0; }
+function validateEvent(value: unknown, path: string, errors: string[]): void {
+  if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be an event`); return; }
   const base = ['kind', 'id', 'observedAt', 'elapsedMs', 'sourceUrl', 'target', 'image'];
   if (value.kind === 'click') exactKeys(value, base, [], path, errors);
   else if (value.kind === 'field-change') exactKeys(value, [...base, 'enteredValue'], [], path, errors);
-  else { errors.push(`${path}.kind is unknown`); return 0; }
+  else { errors.push(`${path}.kind is unknown`); return; }
   if (!validId(value.id)) errors.push(`${path}.id is invalid`);
   if (typeof value.observedAt !== 'string' || value.observedAt.length > 40 || !Number.isFinite(Date.parse(value.observedAt))) errors.push(`${path}.observedAt is invalid`);
   if (!Number.isInteger(value.elapsedMs) || (value.elapsedMs as number) < 0 || (value.elapsedMs as number) > JOURNEY_LIMITS.maxDurationMs) errors.push(`${path}.elapsedMs is invalid`);
@@ -154,7 +153,7 @@ function validateEvent(value: unknown, path: string, errors: string[]): number {
   validateTarget(value.target, `${path}.target`, errors);
   if (value.kind === 'field-change' && isObject(value.target) && value.target.editable !== true) errors.push(`${path}.target must be editable`);
   validateImageState(value.image, `${path}.image`, errors);
-  return value.kind === 'field-change' ? validateFieldValue(value.enteredValue, `${path}.enteredValue`, errors) : 0;
+  if (value.kind === 'field-change') validateFieldValue(value.enteredValue, `${path}.enteredValue`, errors);
 }
 
 export function validateJourneyEventBatch(value: unknown): ValidationResult<JourneyEventBatchV1> {
@@ -176,10 +175,9 @@ export function validateJourneyEventBatch(value: unknown): ValidationResult<Jour
   if (!Array.isArray(copy.events) || copy.events.length < 1 || copy.events.length > JOURNEY_LIMITS.maxSteps) errors.push('batch.events has an invalid length');
   const ids = new Set<string>();
   const captureIds = new Set<string>();
-  let fieldBytes = 0;
   let previousElapsed = -1;
   if (Array.isArray(copy.events)) for (const [index, event] of copy.events.entries()) {
-    fieldBytes += validateEvent(event, `batch.events[${index}]`, errors);
+    validateEvent(event, `batch.events[${index}]`, errors);
     if (isObject(event) && typeof event.id === 'string') {
       if (ids.has(event.id)) errors.push(`batch.events[${index}].id is duplicated`);
       ids.add(event.id);
@@ -193,6 +191,8 @@ export function validateJourneyEventBatch(value: unknown): ValidationResult<Jour
       captureIds.add(event.image.captureId);
     }
   }
-  if (fieldBytes > JOURNEY_LIMITS.maxJourneyFieldTextBytes) errors.push('batch field text exceeds its limit');
+  // Entered text is budgeted per journey, not per batch: the draft keeps what
+  // fits and marks the rest truncated, so a click carrying a long form's
+  // commits is never refused for them. The payload cap still bounds a batch.
   return errors.length ? { ok: false, errors } : { ok: true, value: copy as unknown as JourneyEventBatchV1 };
 }

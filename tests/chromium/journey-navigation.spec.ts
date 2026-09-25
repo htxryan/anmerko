@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { createJourneyController, type JourneyControllerAdapter, type JourneyPageIdentity } from '../../src/journey-controller';
 import type { JourneyDraftImage, JourneySession } from '../../src/journey-core';
 import type { JourneyEventBatchV1 } from '../../src/journey-events';
-import { JOURNEY_LIMITS } from '../../src/journey-limits';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
 
 const START_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const START_URL = 'https://example.com/start';
@@ -183,6 +183,52 @@ test('old-document and wrong-URL event batches are rejected after navigation', a
   controller.acceptBatch(clickBatch(current, 1, 'https://wrong.example/'), 42);
   expect(recording(controller.getState()).draft.steps).toHaveLength(2);
   expect(provisional.documentToken).not.toBe(current.documentToken);
+});
+
+test('a navigation keeps the time the browser reports, so a click on the new route made before processing still follows it', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+  const routeUrl = 'https://example.com/route';
+
+  // The route changed at 1 s; the background processed it at 1.3 s, after
+  // the reader had already clicked on the new route at 1.2 s.
+  fixture.nowMs = START_MS + 1_300;
+  fixture.current = identity(token, routeUrl, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: routeUrl, kind: 'same-document', timeStamp: START_MS + 1_000.4 });
+  let state = recording(controller.getState());
+  expect(state.draft.steps.at(-1)).toMatchObject({
+    kind: 'navigation', observedAt: new Date(START_MS + 1_000).toISOString(), elapsedMs: 1_000,
+  });
+
+  const click = clickBatch(state, 1, routeUrl, 'route-click-capture');
+  click.events[0].observedAt = new Date(START_MS + 1_200).toISOString();
+  click.events[0].elapsedMs = 1_200;
+  controller.acceptBatch(click, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps.slice(-2).map(step => [step.kind, step.elapsedMs])).toEqual([['navigation', 1_000], ['click', 1_200]]);
+  expect(state.draft.steps.at(-1)?.image).toEqual({ status: 'pending', captureId: 'route-click-capture' });
+});
+
+test('a reported navigation time never precedes the last step or lies in the future', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const initial = recording(controller.getState()).draft.steps[0];
+  const last = () => recording(controller.getState()).draft.steps.at(-1)!;
+
+  fixture.nowMs = START_MS + 2_000;
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#past`, kind: 'same-document', timeStamp: START_MS - 60_000 });
+  expect(last()).toMatchObject({ observedAt: initial.observedAt, elapsedMs: initial.elapsedMs });
+
+  fixture.nowMs = START_MS + 3_000;
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#future`, kind: 'same-document', timeStamp: START_MS + 60_000 });
+  expect(last()).toMatchObject({ observedAt: new Date(START_MS + 3_000).toISOString(), elapsedMs: 3_000 });
+
+  fixture.nowMs = START_MS + 4_000;
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#unknown`, kind: 'same-document', timeStamp: Number.NaN });
+  expect(last()).toMatchObject({ observedAt: new Date(START_MS + 4_000).toISOString(), elapsedMs: 4_000 });
 });
 
 test('document handshakes fall back to identify for adapters without connect', async () => {
@@ -538,6 +584,8 @@ test('a same-origin document load that withdraws page access stops promptly as p
   const stopped = controller.getState();
   if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
   expect(stopped.draft.stopReason).toBe('page-access-lost');
+  // Review and journeys.md say the new page has no screenshot.
+  expect(stopped.draft.limitations).toEqual([JOURNEY_LIMITATIONS.pageAccessLost]);
   expect(stopped.draft.steps.map(step => step.kind)).toEqual(['initial', 'navigation']);
   expect(stopped.draft.steps[0].image.status).toBe('retained');
   expect(stopped.draft.steps[1]).toMatchObject({

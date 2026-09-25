@@ -12,7 +12,7 @@ import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourne
 import type { StopReason } from './journey-limits';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
-import { deleteJourneySnapshot, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
+import { deleteJourneySnapshot, JourneyStoreError, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
 import { extensionApi, firefoxExtension } from './platform';
 
 export interface JourneyScreenshotService {
@@ -30,7 +30,7 @@ export interface JourneyExtensionBinding {
 type Message = Record<string, unknown> & { type?: unknown };
 type ActiveState = Extract<JourneySession, { phase: 'starting' | 'recording' }>;
 type JourneyCommandErrorCode = 'busy' | 'owner-unavailable' | 'initial-capture-failed'
-  | 'launch-expired' | 'session-storage-failed' | 'stale-review';
+  | 'launch-expired' | 'session-storage-failed' | 'stale-review' | 'saved-journeys-full';
 type TrustedSurface =
   | { kind: 'sidebar' }
   | { kind: 'review'; tabId: number }
@@ -78,6 +78,7 @@ function failure(error?: unknown) {
   let code: JourneyCommandErrorCode | undefined;
   if (error instanceof JourneyCommandError) code = error.code;
   else if (error instanceof JourneySessionStorageError) code = 'session-storage-failed';
+  else if (error instanceof JourneyStoreError && error.code === 'quota-exceeded') code = 'saved-journeys-full';
   else if (error instanceof JourneyControllerError) {
     code = error.code === 'invalid-start' ? 'owner-unavailable' : error.code;
   }
@@ -187,6 +188,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const windowsApi = api.windows as typeof chrome.windows | undefined;
   const launchIntents = new Map<string, LaunchIntent>();
   let decoratedTabId: number | undefined;
+  let reviewWarningTabId: number | undefined;
   let launchGeneration = 0;
   let launchOpening = false;
   let reviewTabId: number | undefined;
@@ -213,9 +215,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let imageReviewsInFlight = 0;
   let normalizationTurn: Promise<void> = Promise.resolve();
   let releaseNormalizationTurn: () => void = () => {};
+  type NavigationDetails = { tabId: number; frameId: number; url: string; documentLifecycle?: string; timeStamp?: number };
   type PendingWakeEvent = {
     type: 'navigation';
-    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string };
+    details: NavigationDetails;
     kind: 'document' | 'same-document';
   } | {
     type: 'batch';
@@ -240,6 +243,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return true;
   };
   const wakeEventsWaiting = () => wakeQueueOverflowedTabs.size > 0 || pendingWakeEvents.length > 0;
+  // Only events routing could act on wait for initialization: top-frame
+  // navigations and batches of any tab until the persisted journey is read,
+  // then only its owner's. Subframe commits alone would otherwise fill the
+  // buffer and stop a journey that nothing had disturbed.
+  let persistedStateRead = false;
+  const wakeEventRelevant = (tabId: number, frameId = 0, documentLifecycle?: string): boolean => {
+    if (frameId !== 0 || (documentLifecycle !== undefined && documentLifecycle !== 'active')) return false;
+    if (!persistedStateRead) return true;
+    const state = controller.getState();
+    return activeState(state) && tabId === state.ownerTabId;
+  };
 
   const enqueueRoutedEvent = (operation: () => Promise<void> | void, runAfterInitializationError = false) => {
     routedEvents = routedEvents.then(async () => {
@@ -534,6 +548,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     const current = controller.getState();
     if ('sessionId' in failedState && (current.phase === 'reviewing' || current.phase === 'saving')
       && current.sessionId === failedState.sessionId && current.epoch === failedState.epoch) {
+      // Recording had already finished, and the draft in memory still holds
+      // every step and edit; only the stored copy is behind. The storage stop
+      // reason makes review urge an immediate save, but no limitation is
+      // added: nothing is missing from a journey saved from this draft.
       const marked = {
         ...current,
         draft: { ...current.draft, stopReason: 'session-storage-limit' as const },
@@ -575,6 +593,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   const changed = (state: JourneySession) => {
     decorateForState(state);
+    // A review edit restarts the idle window, so an expiry warning no longer
+    // applies; nor does it once the review is saved or discarded.
+    if (reviewWarningTabId !== undefined && (state.phase === 'idle' || state.phase === 'saved'
+      || (state.phase === 'reviewing' && Date.now() < Date.parse(state.warningAt)))) {
+      if (reviewWarningTabId !== decoratedTabId) resetAction(reviewWarningTabId);
+      reviewWarningTabId = undefined;
+    }
     if (state.phase === 'recording') {
       void pageCommand(state.ownerTabId, {
         type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: state.sessionId,
@@ -646,10 +671,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   controller = makeController();
 
-  const routeNavigationNow = (
-    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
-    kind: 'document' | 'same-document',
-  ) => {
+  const routeNavigationNow = (details: NavigationDetails, kind: 'document' | 'same-document') => {
     const state = controller.getState();
     if (!activeState(state) || details.tabId !== state.ownerTabId || details.frameId !== 0
       || (details.documentLifecycle !== undefined && details.documentLifecycle !== 'active')) return;
@@ -659,16 +681,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       void controller.stop('protected-page');
       return;
     }
-    controller.observeNavigation({ ownerTabId: details.tabId, url, kind });
+    controller.observeNavigation({ ownerTabId: details.tabId, url, kind, timeStamp: details.timeStamp });
   };
-  const routeNavigation = (
-    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
-    kind: 'document' | 'same-document',
-  ) => {
+  const routeNavigation = (details: NavigationDetails, kind: 'document' | 'same-document') => {
     if (!initialized) {
-      const state = controller.getState();
-      if (activeState(state) && (details.tabId !== state.ownerTabId || details.frameId !== 0)) return;
-      bufferWakeEvent({ type: 'navigation', details: { ...details }, kind });
+      if (wakeEventRelevant(details.tabId, details.frameId, details.documentLifecycle)) {
+        bufferWakeEvent({ type: 'navigation', details: { ...details }, kind });
+      }
       return;
     }
     enqueueRoutedEvent(async () => { routeNavigationNow(details, kind); });
@@ -840,6 +859,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
 
   const showReviewWarning = (state: Extract<JourneySession, { phase: 'reviewing' }>) => {
+    reviewWarningTabId = state.ownerTabId;
     void api.action.setBadgeText({ tabId: state.ownerTabId, text: '!' }).catch(() => {});
     void api.action.setTitle({ tabId: state.ownerTabId, title: 'Journey review expires soon' }).catch(() => {});
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
@@ -969,6 +989,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const initialize = async () => {
     const restored = await sessionStore.read(Date.now());
     controller = makeController(restored);
+    persistedStateRead = true;
     const state = controller.getState();
     decorateForState(state);
     if (JSON.stringify(state) !== JSON.stringify(restored)) await persistState(state);
@@ -1364,7 +1385,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         finally { discard(); }
       };
       if (!initialized) {
-        if (!bufferWakeEvent({ type: 'batch', tabId: senderTabId, run, discard })) disconnectPort(port);
+        if (!wakeEventRelevant(senderTabId)) discard();
+        else if (!bufferWakeEvent({ type: 'batch', tabId: senderTabId, run, discard })) disconnectPort(port);
         return;
       }
       enqueueRoutedEvent(run);

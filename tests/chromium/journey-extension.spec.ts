@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { JOURNEY_LIMITATIONS } from '../../src/journey-limits';
 
 type Sender = { id?: string; url?: string; frameId?: number; tab?: { id?: number; windowId: number; active?: boolean; url?: string } };
 type Harness = {
@@ -508,6 +509,62 @@ test('persists lifecycle state and enforces recording and review deadlines from 
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('idle');
 });
 
+test('a review edit restarts the idle window and its alarms, so the review outlives its first expiry', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped.phase).toBe('reviewing');
+
+  // The expiry warning shows on the toolbar two minutes before the window ends.
+  await page.evaluate(warningAt => {
+    const harness = (globalThis as HarnessWindow).harness;
+    Date.now = () => Date.parse(warningAt);
+    harness.events.alarm.emit({ name: 'anmerko-journey-review-warning' });
+  }, stopped.warningAt);
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.actions.at(-1)))
+    .toEqual({ method: 'title', details: { tabId: 1, title: 'Journey review expires soon' } });
+
+  // A minute before that window ends, the reviewer edits the summary.
+  const editMs = Date.parse(stopped.expiresAt) - 60_000;
+  await page.evaluate(ms => { Date.now = () => ms; }, editMs);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId,
+    revision: stopped.draft.revision, updatedAt: new Date(editMs).toISOString(),
+    expected: 'The review stays open.', actual: 'It was discarded mid-edit.',
+  })).toEqual({ ok: true });
+  const edited = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(edited).toMatchObject({
+    phase: 'reviewing',
+    warningAt: new Date(editMs + 28 * 60_000).toISOString(),
+    expiresAt: new Date(editMs + 30 * 60_000).toISOString(),
+  });
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.alarmCreates.slice(-2))).toEqual([
+    { name: 'anmerko-journey-review-warning', info: { when: Date.parse(edited.warningAt) } },
+    { name: 'anmerko-journey-review-expiry', info: { when: Date.parse(edited.expiresAt) } },
+  ]);
+  // The warning no longer applies.
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.actions.slice(-2))).toEqual([
+    { method: 'badge', details: { tabId: 1, text: '' } },
+    { method: 'title', details: { tabId: 1, title: 'Annotate with anmerko' } },
+  ]);
+
+  // The expiry the review had after Stop passes without discarding it.
+  await page.evaluate(expiresAt => {
+    Date.now = () => Date.parse(expiresAt);
+    (globalThis as HarnessWindow).harness.events.alarm.emit({ name: 'anmerko-journey-review-expiry' });
+  }, stopped.expiresAt);
+  await page.waitForTimeout(50);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({
+    phase: 'reviewing', draft: { expected: 'The review stays open.' },
+  });
+
+  await page.evaluate(expiresAt => {
+    Date.now = () => Date.parse(expiresAt);
+    (globalThis as HarnessWindow).harness.events.alarm.emit({ name: 'anmerko-journey-review-expiry' });
+  }, edited.expiresAt);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('idle');
+});
+
 test('recovers a recorder across background reboot and accepts a port batch posted before initialization', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
@@ -591,6 +648,26 @@ for (const wake of [
     expect(recovered.draft.steps.at(-1)).toMatchObject({ navigation: { toUrl: wake.url } });
   });
 }
+
+for (const noise of [
+  { name: 'subframe commits', details: (index: number) => ({ tabId: 1, frameId: index + 1, url: `https://ads.example/slot-${index}`, documentLifecycle: 'active' }) },
+  { name: 'prerendered commits', details: (index: number) => ({ tabId: 1, frameId: 0, url: `https://example.test/prerender-${index}`, documentLifecycle: 'prerender' }) },
+]) test(`${noise.name} during a cold wake are not buffered and cannot stop the journey`, async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const commits = Array.from({ length: 20 }, (_, index) => noise.details(index));
+  await page.evaluate(commits => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.reboot();
+    // More commits routing ignores than the wake buffer holds, all before
+    // the persisted journey is read.
+    for (const details of commits) harness.events.committed.emit(details);
+  }, commits);
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  const after = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(after).toMatchObject({ phase: 'recording', sessionId: before.sessionId, epoch: before.epoch });
+  expect(after.draft.steps).toEqual(before.draft.steps);
+});
 
 test('rejects a cold-wake click observed after its same-document navigation', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
@@ -678,6 +755,84 @@ test('entered values stay off unless the start request opts in, and saved journe
   expect(started).toMatchObject({ ok: true });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.includeEnteredValues).toBe(true);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+});
+
+test('a submit click carrying more entered text than a journey keeps is recorded with what fits', async ({ page }) => {
+  await usePatternedCapture(page);
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7, includeEnteredValues: true });
+  const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  await page.evaluate(({ owner, state }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const port = harness.connectPort('anmerko-journey-events-v1', owner);
+    const observedAt = new Date().toISOString();
+    const sourceUrl = 'https://example.test/path?item=1#top';
+    const field = { tag: 'textarea', selectorPath: ['textarea'], label: 'text field', editable: true,
+      viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 } };
+    // Nine 2,000-character fields filled, then one click on Submit.
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [
+        ...Array.from({ length: 9 }, (_, index) => ({
+          kind: 'field-change', id: `form-${index}`, observedAt, elapsedMs: 20, sourceUrl, target: field,
+          enteredValue: { kind: 'text', value: String.fromCharCode(97 + index).repeat(2_000), truncated: false },
+          image: { status: 'pending', captureId: `form-capture-${index}` },
+        })),
+        { kind: 'click', id: 'submit-click', observedAt, elapsedMs: 20, sourceUrl,
+          target: { tag: 'button', selectorPath: ['button'], label: 'Submit', editable: false,
+            viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 }, point: { x: 20, y: 20 } },
+          image: { status: 'pending', captureId: 'submit-capture' } },
+      ],
+    } });
+  }, { owner: ownerPage, state: recording });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+    .slice(1).map((step: any) => step.id)).toEqual([...Array.from({ length: 9 }, (_, index) => `form-${index}`), 'submit-click']);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped.draft.steps.at(-2).enteredValue).toEqual({ kind: 'text', value: 'i'.repeat(384), truncated: true });
+  expect(stopped.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+});
+
+test('a save into a full saved-journey store keeps the review and evicts nothing', async ({ page }) => {
+  // Another hundred journeys are already saved: the most anmerko keeps.
+  await page.evaluate(async count => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('anmerko:journey-store:v1', 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('snapshots', { keyPath: 'journeyId' });
+        request.result.createObjectStore('blobs', { keyPath: 'key' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('snapshots', 'readwrite');
+      for (let index = 0; index < count; index += 1) {
+        tx.objectStore('snapshots').put({
+          schemaVersion: 1, journeyId: `saved-${index}`, revision: 1, updatedAt: '2026-09-20T12:00:00.000Z',
+          stepCount: 1, manifestBytes: 2, imageBytes: 69, blobIds: [], draft: {},
+        });
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }, 100);
+  const stopped = await reviewWithClickScreenshot(page);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId,
+    revision: stopped.draft.revision, updatedAt: new Date().toISOString(),
+    expected: 'The journey is saved.', actual: 'Storage is full.',
+  })).toEqual({ ok: true });
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'saved-journeys-full' });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({
+    phase: 'reviewing', journeyId: stopped.journeyId, draft: { expected: 'The journey is saved.' },
+  });
+  const listed = (await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).value;
+  expect(listed).toHaveLength(100);
+  expect(listed.some((item: any) => item.journeyId === stopped.journeyId)).toBe(false);
 });
 
 test('review summaries and step removal apply with revision guards', async ({ page }) => {
@@ -2095,6 +2250,39 @@ test('keeps an authenticated document port across a same-document URL change', a
   }, { port, state: { sessionId: before.sessionId, epoch: before.epoch, documentToken: before.documentToken }, url: nextUrl });
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
     .toBe(stepsBefore + 1);
+});
+
+test('a click on a new route made before the background processed the route change still follows it', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const port = await page.evaluate(owner => (globalThis as HarnessWindow).harness
+    .connectPort('anmerko-journey-events-v1', owner), ownerPage);
+  await page.waitForTimeout(400);
+  const routeUrl = 'https://example.test/path?item=5#route';
+  await page.evaluate(({ port, state, url }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    // The route changed 300 ms ago and the reader clicked on it 100 ms later;
+    // the background only now processes the route change.
+    const navigatedAt = Date.now() - 300;
+    const clickedAt = navigatedAt + 100;
+    harness.tabs[1].url = url;
+    harness.identity.url = url;
+    harness.events.history.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active', timeStamp: navigatedAt });
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: 'route-click', observedAt: new Date(clickedAt).toISOString(),
+        elapsedMs: clickedAt - Date.parse(state.draft.startedAt), sourceUrl: url,
+        target: { tag: 'button', selectorPath: ['button'], label: 'Details', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: 'route-click-capture' },
+      }],
+    } });
+  }, { port, state: before, url: routeUrl });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+    .slice(1).map((step: any) => step.kind === 'navigation' ? step.navigation.toUrl : step.id))
+    .toEqual([routeUrl, 'route-click']);
 });
 
 test('authenticates event ports, allows the initial starting connection, and rejects stale or unrelated messages', async ({ page }) => {

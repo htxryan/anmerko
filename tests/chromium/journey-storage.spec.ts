@@ -489,6 +489,59 @@ test('failed writes leave the prior snapshot and the caller draft intact', async
   ).toBe(MINIMAL_PNG);
 });
 
+const STORE_FULL = 'Saved journeys are full. Delete saved journeys to make room for this one, then save again.';
+
+function listedIds(result: { value?: unknown }): string[] {
+  return (result.value as Array<{ journeyId: string }>).map(item => item.journeyId).sort();
+}
+
+test('a new journey past the saved-journey limit is refused without evicting any, while saved ones still revise', async ({ page }) => {
+  await openStore(page);
+  const limits = { maxJourneys: 2 };
+  expect((await invoke(page, 'save', { input: snapshotInput(baseDraft()), shrinkLimits: limits })).ok).toBe(true);
+  expect((await invoke(page, 'save', { input: snapshotInput({ ...baseDraft(), id: 'journey-2' }), shrinkLimits: limits })).ok).toBe(true);
+
+  const refused = await invoke(page, 'save', { input: snapshotInput({ ...baseDraft(), id: 'journey-3' }), shrinkLimits: limits });
+  expect(refused).toEqual({ ok: false, code: 'quota-exceeded', message: STORE_FULL });
+  expect(listedIds(await invoke(page, 'list'))).toEqual(['journey-1', 'journey-2']);
+
+  const revised = { ...baseDraft(), revision: 1, updatedAt: UPDATED_V2_AT, expected: 'Revised at the limit' };
+  expect(await invoke(page, 'save', { input: snapshotInput(revised), shrinkLimits: limits }))
+    .toEqual({ ok: true, value: { journeyId: 'journey-1', revision: 1 } });
+
+  await invoke(page, 'delete', { journeyId: 'journey-2' });
+  expect((await invoke(page, 'save', { input: snapshotInput({ ...baseDraft(), id: 'journey-3' }), shrinkLimits: limits })).ok).toBe(true);
+  expect(listedIds(await invoke(page, 'list'))).toEqual(['journey-1', 'journey-3']);
+});
+
+test('every saved journey shares one screenshot byte budget', async ({ page }) => {
+  await openStore(page);
+  // Each fixture journey keeps two 69-byte screenshots.
+  const limits = { maxReviewedImageBytes: 200 };
+  expect((await invoke(page, 'save', { input: snapshotInput(baseDraft()), shrinkLimits: limits })).ok).toBe(true);
+
+  const refused = await invoke(page, 'save', { input: snapshotInput({ ...baseDraft(), id: 'journey-2' }), shrinkLimits: limits });
+  expect(refused).toEqual({ ok: false, code: 'quota-exceeded', message: STORE_FULL });
+  expect(listedIds(await invoke(page, 'list'))).toEqual(['journey-1']);
+
+  // A revision replaces its own screenshots rather than adding to them.
+  const revised = { ...baseDraft(), revision: 1, updatedAt: UPDATED_V2_AT };
+  expect((await invoke(page, 'save', { input: snapshotInput(revised), shrinkLimits: limits })).ok).toBe(true);
+});
+
+test('a browser storage quota error asks for the same deletion', async ({ page }) => {
+  await openStore(page);
+  await page.evaluate(() => {
+    const put = IDBObjectStore.prototype.put;
+    (globalThis as any).restorePut = () => { IDBObjectStore.prototype.put = put; };
+    IDBObjectStore.prototype.put = function () { throw new DOMException('The quota has been exceeded.', 'QuotaExceededError'); };
+  });
+  const refused = await invoke(page, 'save', { input: snapshotInput(baseDraft()) });
+  await page.evaluate(() => (globalThis as any).restorePut());
+  expect(refused).toEqual({ ok: false, code: 'quota-exceeded', message: STORE_FULL });
+  expect(await invoke(page, 'list')).toEqual({ ok: true, value: [] });
+});
+
 test('deleted snapshots stay deleted and missing snapshots are safe', async ({ page }) => {
   await openStore(page);
   await invoke(page, 'save', { input: snapshotInput(baseDraft()) });

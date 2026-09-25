@@ -1,4 +1,4 @@
-import { JOURNEY_LIMITS, STOP_REASONS, type CaptureFailure, type StopReason } from './journey-limits';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS, STOP_REASONS, type CaptureFailure, type StopReason } from './journey-limits';
 import {
   stripUrlCredentials,
   validateJourneyEventBatch,
@@ -336,6 +336,38 @@ function readUint32(binary: string, offset: number): number {
 function boundedIsoAfter(baseMs: number, deltaMs: number): string {
   return new Date(Math.min(MAX_DATE_MS, baseMs + deltaMs)).toISOString();
 }
+
+// An unsaved review is discarded after maxReviewIdleMs without an accepted
+// change. Stop, reopen, and every review edit restart the window from their
+// own time, so a reviewer who keeps editing never loses the draft.
+export function journeyReviewWindow(baseMs: number): { warningAt: string; expiresAt: string } {
+  return {
+    warningAt: boundedIsoAfter(baseMs, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs),
+    expiresAt: boundedIsoAfter(baseMs, JOURNEY_LIMITS.maxReviewIdleMs),
+  };
+}
+
+// The reviewing state after an accepted edit, whose draft carries its time.
+function editedJourneyReview(state: ReviewingJourneySession, draft: JourneyDraftV1): ReviewingJourneySession {
+  return { ...state, ...journeyReviewWindow(Date.parse(draft.updatedAt)), draft };
+}
+
+// Limitations are recorded once each and never crowd out earlier ones.
+function withLimitation(limitations: string[], limitation: string | undefined): string[] {
+  if (!limitation || limitations.includes(limitation) || limitations.length >= JOURNEY_LIMITS.maxLimitations) return limitations;
+  return [...limitations, limitation];
+}
+
+// Stops that lose recorded information say what is missing.
+const STOP_LIMITATIONS: Partial<Record<StopReason, string>> = {
+  'session-storage-limit': JOURNEY_LIMITATIONS.sessionStorage,
+  'page-access-lost': JOURNEY_LIMITATIONS.pageAccessLost,
+  'image-budget': JOURNEY_LIMITATIONS.imageBudget,
+  'capture-failed': JOURNEY_LIMITATIONS.captureFailed,
+};
+// How much longer than the storage stop's limitation another stop's can be.
+const STOP_LIMITATION_HEADROOM_BYTES = Math.max(...Object.values(STOP_LIMITATIONS).map(text => bytes(text ?? '')))
+  - bytes(JOURNEY_LIMITATIONS.sessionStorage);
 
 function validateUrl(value: unknown, path: string, errors: string[]): string | undefined {
   if (typeof value !== 'string') {
@@ -766,14 +798,74 @@ function draftStep(event: JourneyInputEvent, seq: number): JourneyDraftStep {
   return { ...base, kind: 'field-change', target: cloneJson(event.target), enteredValue: cloneJson(event.enteredValue) };
 }
 
+function fieldTextBytes(value: DraftFieldValue): number {
+  if (value.kind === 'text') return bytes(value.value);
+  if (value.kind === 'selection') return value.values.reduce((sum, item) => sum + bytes(item), 0);
+  return 0;
+}
+
 function draftFieldTextBytes(steps: JourneyDraftStep[]): number {
   let total = 0;
-  for (const step of steps) {
-    if (step.kind !== 'field-change') continue;
-    if (step.enteredValue.kind === 'text') total += bytes(step.enteredValue.value);
-    else if (step.enteredValue.kind === 'selection') total += step.enteredValue.values.reduce((sum, value) => sum + bytes(value), 0);
-  }
+  for (const step of steps) if (step.kind === 'field-change') total += fieldTextBytes(step.enteredValue);
   return total;
+}
+
+// The longest run of whole characters from the start of `value` that fits in
+// `budget` UTF-8 bytes.
+function utf8Prefix(value: string, budget: number): string {
+  let used = 0;
+  let end = 0;
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    const size = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    if (used + size > budget) break;
+    used += size;
+    end += character.length;
+  }
+  return value.slice(0, end);
+}
+
+function truncatedValue(value: DraftFieldValue): boolean {
+  return value.kind !== 'checked' && value.truncated;
+}
+
+// Entered text shares one budget per journey. A value that no longer fits
+// keeps what does and is marked truncated, so the action that carried it is
+// still recorded and no step claims a complete value it does not have.
+// `truncated` also reports values the page already shortened to the
+// per-field limit: the draft says so either way.
+function fitFieldTextBudget(
+  steps: JourneyDraftStep[],
+  events: JourneyInputEvent[],
+): { events: JourneyInputEvent[]; truncated: boolean } {
+  let remaining = Math.max(0, JOURNEY_LIMITS.maxJourneyFieldTextBytes - draftFieldTextBytes(steps));
+  let truncated = false;
+  const fitted = events.map((event): JourneyInputEvent => {
+    if (event.kind !== 'field-change') return event;
+    const value = event.enteredValue;
+    const size = fieldTextBytes(value);
+    if (size <= remaining) {
+      remaining -= size;
+      if (truncatedValue(value)) truncated = true;
+      return event;
+    }
+    truncated = true;
+    if (value.kind === 'text') {
+      const text = utf8Prefix(value.value, remaining);
+      remaining -= bytes(text);
+      return { ...event, enteredValue: { ...value, value: text, truncated: true } };
+    }
+    if (value.kind !== 'selection') return event;
+    const values: string[] = [];
+    for (const item of value.values) {
+      const itemBytes = bytes(item);
+      if (itemBytes > remaining) break;
+      values.push(item);
+      remaining -= itemBytes;
+    }
+    return { ...event, enteredValue: { ...value, values, truncated: true } };
+  });
+  return { events: fitted, truncated };
 }
 
 export function acceptJourneyEventBatch(state: JourneySession, input: JourneyEventBatchV1): JourneySession {
@@ -792,12 +884,6 @@ export function acceptJourneyEventBatch(state: JourneySession, input: JourneyEve
   if (batch.events.some(event => existingIds.has(event.id))) return state;
   const pendingCaptureIds = new Set(state.draft.steps.flatMap(step => step.image.status === 'pending' ? [step.image.captureId] : []));
   if (batch.events.some(event => event.image.status === 'pending' && pendingCaptureIds.has(event.image.captureId))) return state;
-  const incomingFieldBytes = batch.events.reduce((total, event) => {
-    if (event.kind !== 'field-change' || event.enteredValue.kind === 'checked') return total;
-    if (event.enteredValue.kind === 'text') return total + bytes(event.enteredValue.value);
-    return total + event.enteredValue.values.reduce((sum, value) => sum + bytes(value), 0);
-  }, 0);
-  if (draftFieldTextBytes(state.draft.steps) + incomingFieldBytes > JOURNEY_LIMITS.maxJourneyFieldTextBytes) return state;
   let elapsed = state.draft.steps.at(-1)?.elapsedMs ?? -1;
   for (const event of batch.events) {
     if (event.elapsedMs < elapsed) return state;
@@ -805,15 +891,18 @@ export function acceptJourneyEventBatch(state: JourneySession, input: JourneyEve
   }
   const remaining = JOURNEY_LIMITS.maxSteps - state.draft.steps.length;
   if (remaining <= 0) return stopJourney(state, { epoch: state.epoch, stoppedAt: state.draft.updatedAt, reason: 'step-limit' });
-  const accepted = batch.events.slice(0, remaining);
+  const fitted = fitFieldTextBudget(state.draft.steps, batch.events.slice(0, remaining));
   const lastSeq = state.draft.steps.at(-1)?.seq ?? 0;
-  const steps = accepted.map((event, index) => draftStep(event, lastSeq + index + 1));
+  const steps = fitted.events.map((event, index) => draftStep(event, lastSeq + index + 1));
   const lastObservedAt = steps.at(-1)?.observedAt ?? state.draft.updatedAt;
   const updatedAt = Date.parse(lastObservedAt) > Date.parse(state.draft.updatedAt) ? lastObservedAt : state.draft.updatedAt;
+  const limitations = fitted.truncated
+    ? withLimitation(state.draft.limitations, JOURNEY_LIMITATIONS.enteredValuesTruncated)
+    : state.draft.limitations;
   const next: RecordingJourneySession = {
     ...state,
     documentCounters: { ...state.documentCounters, [batch.documentToken]: batch.localCounter },
-    draft: { ...state.draft, updatedAt, steps: [...state.draft.steps, ...steps] },
+    draft: { ...state.draft, updatedAt, steps: [...state.draft.steps, ...steps], limitations },
   };
   if (!recordingSessionFits(next)) {
     return stopJourney(state, {
@@ -856,9 +945,9 @@ export function acceptLateJourneyEventBatch(state: JourneySession, input: Journe
   }
   const remaining = JOURNEY_LIMITS.maxSteps - state.draft.steps.length;
   if (remaining <= 0) return stopJourney(state, { epoch: state.epoch, stoppedAt: state.draft.updatedAt, reason: 'step-limit' });
-  const accepted = batch.events.slice(0, remaining);
+  const fitted = fitFieldTextBudget(state.draft.steps, batch.events.slice(0, remaining));
   const baseSeq = predecessor?.seq ?? 0;
-  const steps = accepted.map((event, index) => ({
+  const steps = fitted.events.map((event, index) => ({
     ...draftStep(event, baseSeq + index + 1),
     image: { status: 'unavailable', reason: 'superseded' } as const,
   }));
@@ -868,6 +957,9 @@ export function acceptLateJourneyEventBatch(state: JourneySession, input: Journe
     draft: {
       ...state.draft,
       steps: [...state.draft.steps.slice(0, -1), ...steps, { ...trailing, seq: baseSeq + steps.length + 1 }],
+      limitations: fitted.truncated
+        ? withLimitation(state.draft.limitations, JOURNEY_LIMITATIONS.enteredValuesTruncated)
+        : state.draft.limitations,
     },
   };
   if (!recordingSessionFits(next)) {
@@ -907,7 +999,7 @@ export function updateJourneySummary(state: JourneySession, input: JourneySummar
     ...state.draft, expected, actual, revision: state.draft.revision + 1, updatedAt: input.updatedAt,
   };
   if (validateJourneyDraft(draft).ok === false) return state;
-  return { ...state, draft };
+  return editedJourneyReview(state, draft);
 }
 
 export interface JourneyRemoveStepInput {
@@ -947,11 +1039,20 @@ export function removeJourneyStep(state: JourneySession, input: JourneyRemoveSte
   });
   const images = Object.fromEntries(Object.entries(state.draft.images)
     .filter(([imageId]) => references.has(imageId)));
-  const draft = pruneJourneyRedactions({
+  const draft = pruneTruncationLimitation(pruneJourneyRedactions({
     ...state.draft, steps, images, revision: state.draft.revision + 1, updatedAt: input.updatedAt,
-  });
+  }));
   if (validateJourneyDraft(draft).ok === false) return state;
-  return { ...state, draft };
+  return editedJourneyReview(state, draft);
+}
+
+// The truncation limitation describes values still marked truncated. Once
+// the reviewer removes or rewrites every one, it no longer applies.
+function pruneTruncationLimitation(draft: JourneyDraftV1): JourneyDraftV1 {
+  const limitation = JOURNEY_LIMITATIONS.enteredValuesTruncated;
+  if (!draft.limitations.includes(limitation)
+    || draft.steps.some(step => step.kind === 'field-change' && truncatedValue(step.enteredValue))) return draft;
+  return { ...draft, limitations: draft.limitations.filter(item => item !== limitation) };
 }
 
 // Redaction flags describe markers still in the draft. Removing a step or a
@@ -1000,8 +1101,7 @@ export function reopenJourneySnapshot(
     if (!isObject(record) || typeof record.dataUrl !== 'string') return state;
     images[step.image.imageId] = { ...record } as JourneyDraftImage;
   }
-  const warningAt = boundedIsoAfter(input.nowMs, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs);
-  const expiresAt = boundedIsoAfter(input.nowMs, JOURNEY_LIMITS.maxReviewIdleMs);
+  const { warningAt, expiresAt } = journeyReviewWindow(input.nowMs);
   const updatedAt = new Date(Math.min(input.nowMs, MAX_DATE_MS)).toISOString();
   const draft = {
     ...input.draft,
@@ -1030,13 +1130,7 @@ export function reopenJourneySnapshot(
 // A save that never finished returns to review. Saving refuses edits, so the
 // draft is the reviewed one; its idle window restarts from its last edit.
 export function resumeSavingReview(state: SavingJourneySession): ReviewingJourneySession {
-  const base = Date.parse(state.draft.updatedAt);
-  return {
-    ...state,
-    phase: 'reviewing',
-    warningAt: boundedIsoAfter(base, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs),
-    expiresAt: boundedIsoAfter(base, JOURNEY_LIMITS.maxReviewIdleMs),
-  };
+  return { ...state, phase: 'reviewing', ...journeyReviewWindow(Date.parse(state.draft.updatedAt)) };
 }
 
 export type ReviewBlockReason = 'summaries-required' | 'retained-step-required' | 'images-pending' | 'invalid-draft';
@@ -1113,11 +1207,11 @@ export function editJourneyValue(state: JourneySession, input: JourneyEditValueI
   const steps = reviewing.draft.steps.map(candidate => candidate.id === input.stepId
     ? { ...candidate, target: candidate.target, enteredValue } as JourneyDraftStep
     : candidate);
-  const draft = {
+  const draft = pruneTruncationLimitation({
     ...reviewing.draft, steps, revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
-  };
+  });
   if (validateJourneyDraft(draft).ok === false) return state;
-  return { ...reviewing, draft };
+  return editedJourneyReview(reviewing, draft);
 }
 
 export interface JourneyRedactUrlInput extends JourneyReviewEdit {
@@ -1162,7 +1256,7 @@ export function redactJourneyUrl(state: JourneySession, input: JourneyRedactUrlI
     revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
   };
   if (validateJourneyDraft(draft).ok === false) return state;
-  return { ...reviewing, draft };
+  return editedJourneyReview(reviewing, draft);
 }
 
 export function commitJourneyNavigation(state: JourneySession, input: NavigationInput): JourneySession {
@@ -1315,14 +1409,14 @@ export function stopJourney(state: JourneySession, input: { epoch: number; stopp
   return {
     phase: 'reviewing', sessionId: state.sessionId, journeyId: state.journeyId,
     epoch: state.epoch + 1, ownerTabId: state.ownerTabId, ownerWindowId: state.ownerWindowId,
-    warningAt: boundedIsoAfter(stoppedMs, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs),
-    expiresAt: boundedIsoAfter(stoppedMs, JOURNEY_LIMITS.maxReviewIdleMs),
+    ...journeyReviewWindow(stoppedMs),
     draft: {
       ...state.draft,
       stoppedAt: input.stoppedAt,
       updatedAt: Date.parse(input.stoppedAt) > Date.parse(state.draft.updatedAt) ? input.stoppedAt : state.draft.updatedAt,
       stopReason: input.reason,
       steps,
+      limitations: withLimitation(state.draft.limitations, STOP_LIMITATIONS[input.reason]),
     },
   };
 }
@@ -1335,12 +1429,16 @@ function chronologicalTimestamp(state: RecordingJourneySession, candidate: strin
   )).toISOString();
 }
 
+// Both the recording and any review a stop would leave behind must be
+// storable: session storage refuses either past the cap. The storage stop is
+// measured, with room for the longest limitation any stop can add instead.
 export function recordingSessionFits(state: RecordingJourneySession): boolean {
-  if (bytes(JSON.stringify(state)) > JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes) return false;
+  const cap = JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes;
+  if (bytes(JSON.stringify(state)) > cap) return false;
   const terminal = stopJourney(state, {
     epoch: state.epoch,
     stoppedAt: chronologicalTimestamp(state, state.deadlineAt),
     reason: 'session-storage-limit',
   });
-  return bytes(JSON.stringify(terminal)) <= JOURNEY_LIMITS.maxSessionBytes;
+  return bytes(JSON.stringify(terminal)) + STOP_LIMITATION_HEADROOM_BYTES <= cap;
 }

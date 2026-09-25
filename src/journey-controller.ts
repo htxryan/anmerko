@@ -73,10 +73,19 @@ export type JourneyImageReviewRequest =
   | { operation: 'replace'; epoch: number; journeyId: string; revision: number; imageId: string; image: NormalizedJourneyPng }
   | { operation: 'remove'; epoch: number; journeyId: string; revision: number; imageId: string };
 
+export interface JourneyNavigationObservation {
+  ownerTabId: number;
+  url: string;
+  kind: 'document' | 'same-document';
+  // When the browser reports the navigation happened (webNavigation's
+  // timeStamp, in epoch milliseconds), which can precede its processing.
+  timeStamp?: number;
+}
+
 export interface JourneyController {
   getState(): JourneySession;
   start(input: { ownerTabId: number; ownerWindowId: number; includeEnteredValues?: boolean }): Promise<void>;
-  observeNavigation(input: { ownerTabId: number; url: string; kind: 'document' | 'same-document' }): void;
+  observeNavigation(input: JourneyNavigationObservation): void;
   acceptBatch(batch: unknown, senderTabId: number): void;
   stop(reason?: StopReason): Promise<void>;
   discard(): Promise<void>;
@@ -260,7 +269,7 @@ export function createJourneyController(
     if (latestCaptureId) void captureAfterAction(generation, latestCaptureId);
   }
 
-  function observeNavigation(input: { ownerTabId: number; url: string; kind: 'document' | 'same-document' }): void {
+  function observeNavigation(input: JourneyNavigationObservation): void {
     if (state.phase !== 'recording' || input.ownerTabId !== state.ownerTabId) return;
     let toUrl: string;
     try {
@@ -283,8 +292,15 @@ export function createJourneyController(
     const sourceUrl = committedUrl(state);
     if (!sourceUrl) return;
     const previous = state;
-    const receiptMs = Math.max(now(), Date.parse(previous.draft.steps.at(-1)?.observedAt ?? previous.draft.startedAt));
-    const observedAt = new Date(receiptMs).toISOString();
+    const lastObservedMs = Date.parse(previous.draft.steps.at(-1)?.observedAt ?? previous.draft.startedAt);
+    const receiptMs = Math.max(now(), lastObservedMs);
+    // The step keeps when the browser says the navigation happened, not when
+    // it was processed: a click on the new route can arrive in between and
+    // must still follow it. That time never precedes the last step or lies
+    // in the future. Capture windows still run from receipt.
+    const reportedMs = typeof input.timeStamp === 'number' && Number.isFinite(input.timeStamp)
+      ? Math.min(input.timeStamp, receiptMs) : receiptMs;
+    const observedAt = new Date(Math.max(reportedMs, lastObservedMs)).toISOString();
     const lastElapsed = previous.draft.steps.at(-1)?.elapsedMs ?? 0;
     const elapsedMs = Math.max(lastElapsed, elapsed(Date.parse(previous.draft.startedAt), observedAt));
     const generation = invalidateWork();

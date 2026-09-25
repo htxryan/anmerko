@@ -1,4 +1,5 @@
 import {
+  journeyReviewWindow,
   pruneJourneyRedactions,
   validateJourneyDraft,
   type JourneyDraftImage,
@@ -125,6 +126,7 @@ export function applyJourneyImageReview(
   const validatedDraft = validateJourneyDraft(draft);
   if (!validatedDraft.ok) return failure('image review candidate is invalid');
 
+  // A screenshot change is a review edit, so it restarts the idle window.
   const next: ReviewingJourneySession = {
     phase: 'reviewing',
     sessionId: state.sessionId,
@@ -132,8 +134,7 @@ export function applyJourneyImageReview(
     epoch: state.epoch,
     ownerTabId: state.ownerTabId,
     ownerWindowId: state.ownerWindowId,
-    warningAt: state.warningAt,
-    expiresAt: state.expiresAt,
+    ...journeyReviewWindow(updateMs),
     draft: validatedDraft.value,
   };
   if (encoder.encode(JSON.stringify(next)).byteLength > JOURNEY_LIMITS.maxSessionBytes) {
