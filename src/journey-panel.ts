@@ -297,8 +297,14 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
           const current = await readPhase().catch(() => undefined);
           if (inProgress(current)) throw Object.assign(new Error(SAVED_HELD), { code: 'busy' });
           // The view lists saved journeys once no journey is in progress, so a
-          // save's confirmation closes first; the snapshot stays saved.
-          if (current === 'saved') await client.discard();
+          // save's confirmation closes first; the snapshot stays saved. The
+          // discard names that confirmation's journey, so a journey another
+          // view reopened or started since is refused as stale.
+          if (current === 'saved') {
+            const session = await client.read();
+            if (inProgress(session.phase)) throw Object.assign(new Error(SAVED_HELD), { code: 'busy' });
+            if (session.phase === 'saved') await client.discard({ phase: 'saved', journeyId: session.journeyId });
+          }
         })().then(() => {
           managing = false;
           if (!host.state().alive) return;
@@ -307,7 +313,8 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
         }, error => {
           managing = false;
           if (!host.state().alive) return;
-          host.status(errorCode(error) === 'busy' ? SAVED_HELD : MANAGE_ERROR, true);
+          // A refused discard means another journey is now in progress.
+          host.status(errorCode(error) === 'busy' || errorCode(error) === 'stale-review' ? SAVED_HELD : MANAGE_ERROR, true);
           refreshReview();
           render();
         });

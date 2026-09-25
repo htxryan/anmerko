@@ -88,7 +88,13 @@ test('review lists what recording lost before the summaries, and nothing when it
 
   const section = page.getByRole('region', { name: 'Limitations' });
   await expect(section.getByRole('heading', { name: 'Limitations' })).toBeVisible();
-  await expect(section.getByRole('listitem')).toHaveText(limitations);
+  // The section is named by its heading, not by a repeated label.
+  await expect(section).toHaveAttribute('aria-labelledby', 'journey-limitations-heading');
+  await expect(section).not.toHaveAttribute('aria-label', /./);
+  // The stop notice already says what the page-access stop lost; the list
+  // adds only what else recording lost.
+  await expect(section.getByRole('listitem')).toHaveText([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  await expect(page.locator('.journey-stop-reason')).toContainText('The new page has no screenshot, and nothing done on it was recorded.');
   // Read before the summaries and steps a reviewer shares.
   expect(await page.evaluate(() => {
     const limits = document.querySelector('.journey-limitations')!;
@@ -103,6 +109,39 @@ test('review lists what recording lost before the summaries, and nothing when it
   });
   await expect(page.getByRole('region', { name: 'Limitations' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+});
+
+test('a stop that cut recording short states its loss once, in its notice, and Limitations lists only other losses', async ({ page }) => {
+  const losses: Array<[string, string, string]> = [
+    ['page-access-lost', JOURNEY_LIMITATIONS.pageAccessLost, 'The new page has no screenshot, and nothing done on it was recorded.'],
+    ['image-budget', JOURNEY_LIMITATIONS.imageBudget, 'reached their 5 MB storage limit, so the last screenshot was not kept.'],
+    ['capture-failed', JOURNEY_LIMITATIONS.captureFailed, 'so the latest page change or action may be missing.'],
+    ['session-storage-limit', JOURNEY_LIMITATIONS.sessionStorage, 'so recording stopped early and the latest action or screenshot may be missing.'],
+  ];
+  await mountReview(page, reviewing([]));
+  const set = (stopReason: string, limitations: string[]) => page.evaluate(({ stopReason, limitations }) => {
+    const background = (globalThis as any).background;
+    background.state = { ...background.state, draft: { ...background.state.draft, stopReason, limitations } };
+    background.changed();
+  }, { stopReason, limitations });
+  const notice = page.locator('.journey-stop-reason');
+  const section = page.getByRole('region', { name: 'Limitations' });
+  for (const [reason, limitation, loss] of losses) {
+    await set(reason, [limitation]);
+    await expect(notice, reason).toContainText(loss);
+    await expect(section, reason).toHaveCount(0);
+    await expect(page.getByText(limitation, { exact: true }), reason).toHaveCount(0);
+    // A loss the stop did not cause is listed on its own.
+    await set(reason, [limitation, JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+    await expect(section.getByRole('listitem'), reason).toHaveText([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+    await expect(notice, reason).toContainText(loss);
+  }
+  // Storage that fails after recording finished lost nothing recorded, so its
+  // notice claims no missing action, and another stop's limitation is still listed.
+  await set('session-storage-limit', []);
+  await expect(notice).toHaveText('Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.');
+  await set('user', [JOURNEY_LIMITATIONS.captureFailed]);
+  await expect(section.getByRole('listitem')).toHaveText([JOURNEY_LIMITATIONS.captureFailed]);
 });
 
 test('a save into full saved-journey storage lists saved journeys to delete, then saves', async ({ page }) => {

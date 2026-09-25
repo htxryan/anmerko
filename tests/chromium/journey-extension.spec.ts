@@ -1409,6 +1409,101 @@ test('removing a screenshot or step whose URLs were redacted succeeds through th
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.revision).toBe(state.draft.revision);
 });
 
+test('review commands and discards name their review, so one sent after another view reopened the journey is refused', async ({ page }) => {
+  const state = async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const guards = (current: any, sessionId = current.sessionId) => ({
+    epoch: current.epoch, journeyId: current.journeyId, sessionId, revision: current.draft.revision,
+    updatedAt: new Date().toISOString(),
+  });
+  let first = await reviewWithClickScreenshot(page);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(first), expected: 'Paying opens checkout.', actual: 'Nothing happens.',
+  })).toEqual({ ok: true });
+  first = await state();
+  const firstReview = { journeyId: first.journeyId, sessionId: first.sessionId };
+  // A Save names its review; another review is never saved from it.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: first.journeyId, sessionId: 'session-other' }))
+    .toEqual(staleReview);
+  expect((await state()).phase).toBe('reviewing');
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, ...firstReview })).ok).toBe(true);
+  const saved = await state();
+  expect(saved.phase).toBe('saved');
+  // The saved confirmation is closed only by a discard that names it.
+  for (const message of [
+    { phase: 'reviewing', ...firstReview },
+    { phase: 'saved', journeyId: 'journey-other' },
+    { phase: 'saved', journeyId: saved.journeyId, revision: saved.revision + 1 },
+  ]) {
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD', ...message }), JSON.stringify(message)).toEqual(staleReview);
+    expect(await state()).toEqual(saved);
+  }
+
+  // Another view reopens the saved journey: the same journey, in a new review session.
+  await page.evaluate(() => {
+    (globalThis as HarnessWindow).harness.tabs[80] = {
+      id: 80, windowId: 7, active: true, url: 'chrome-extension://test-extension/journey.html',
+    };
+  });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_REOPEN', journeyId: saved.journeyId }, reviewPage)).ok).toBe(true);
+  const reopened = await state();
+  expect(reopened).toMatchObject({ phase: 'reviewing', journeyId: first.journeyId });
+  expect(reopened.sessionId).not.toBe(first.sessionId);
+
+  // Controls still showing the first review name it. Every command is
+  // refused, even with the reopened review's own epoch and revision.
+  const late = guards(reopened, first.sessionId);
+  const [initial, click] = reopened.draft.steps;
+  const imageId = click.image.imageId;
+  const masked = await maskedPng(page, reopened.draft.images[imageId].dataUrl, { x: 0, y: 0, width: 2, height: 2 });
+  const commands: Array<Record<string, unknown>> = [
+    { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...late, expected: 'Stale.', actual: 'Stale.' },
+    { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...late, stepId: click.id },
+    { type: 'ANMERKO_JOURNEY_EDIT_VALUE', ...late, stepId: click.id, value: { kind: 'text', value: 'x', truncated: false } },
+    { type: 'ANMERKO_JOURNEY_REDACT_URL', ...late, stepId: initial.id, url: 'source' },
+    { type: 'ANMERKO_JOURNEY_REDACT_LABEL', ...late, stepId: click.id },
+    { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', epoch: late.epoch, journeyId: late.journeyId, sessionId: late.sessionId,
+      revision: late.revision, imageId, operation: 'remove' },
+    { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', epoch: late.epoch, journeyId: late.journeyId, sessionId: late.sessionId,
+      revision: late.revision, imageId, operation: 'replace', dataUrl: masked },
+    { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: late.journeyId, sessionId: late.sessionId },
+    { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: late.journeyId, sessionId: late.sessionId },
+    // The saved confirmation it replaced, too.
+    { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'saved', journeyId: saved.journeyId },
+    // A one-step discard offered for a revision that has since changed.
+    { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: reopened.journeyId, sessionId: reopened.sessionId,
+      revision: reopened.draft.revision - 1 },
+  ];
+  for (const command of commands) {
+    expect(await dispatch(page, command), `${command.type} ${command.operation ?? command.phase ?? ''}`).toEqual(staleReview);
+    expect(await state()).toEqual(reopened);
+  }
+  // Malformed targets are refused outright.
+  for (const command of [
+    { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'recording' },
+    { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: reopened.journeyId },
+    { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'saved', revision: 'one' },
+    { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards(reopened), sessionId: 7, stepId: click.id },
+    { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: reopened.journeyId },
+  ]) {
+    expect(await dispatch(page, command), JSON.stringify(command)).toEqual(unavailable);
+    expect(await state()).toEqual(reopened);
+  }
+
+  // The reopened review's own controls act on it.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REDACT_LABEL', ...guards(reopened), stepId: click.id })).toEqual({ ok: true });
+  const redacted = await state();
+  expect(redacted.draft.steps[1].target.label).toBe('[redacted]');
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: redacted.journeyId, sessionId: redacted.sessionId,
+    revision: redacted.draft.revision,
+  })).toEqual({ ok: true });
+  expect((await state()).phase).toBe('idle');
+  // A journey already closed leaves nothing to refuse.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', ...firstReview })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'saved' })).toEqual({ ok: true });
+  expect((await state()).phase).toBe('idle');
+});
+
 test('a click label redacted through the command channel stays redacted in the saved journey', async ({ page }) => {
   let state = await reviewWithClickScreenshot(page);
   const guards = (current: any) => ({
@@ -1540,6 +1635,9 @@ test('allows a trusted explicit reset after session initialization fails without
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }))
     .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
   await page.evaluate(() => { (globalThis as HarnessWindow).harness.failStorageGet = false; });
+  // Only the explicit reset clears failed storage, never a discard that names a journey.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD', phase: 'saved' }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toEqual({ phase: 'idle', epoch: 0 });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands

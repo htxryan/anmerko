@@ -62,6 +62,14 @@ const bundle = () => buildSync({ stdin: { contents: `
   let firefox = false;
   let startable = true;
   let reopenInto = null;
+  // [command, the review or view it named] per review command and discard.
+  const reviewTargets = [];
+  const staleError = () => Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
+  // Like the background, a command naming another review than the current
+  // one, even the same journey reopened since, is refused as stale.
+  const refuseStale = review => {
+    if (review && (state.journeyId !== review.journeyId || state.sessionId !== review.sessionId)) throw staleError();
+  };
   const client = {
     supportsEnteredValues: true,
     get pageLoadsEndJourney() { return firefox; },
@@ -74,40 +82,57 @@ const bundle = () => buildSync({ stdin: { contents: `
       if (startError) throw new Error(startError);
     },
     stop: async () => { stopCalls += 1; },
-    discard: async () => { state = { phase: 'idle', epoch: 9 }; changed(); },
-    updateSummary: async (expected, actual, journeyId) => {
-      summaryCalls.push([expected, actual]);
-      summaryTargets.push([state.phase, state.draft?.id ?? null, journeyId ?? null]);
-      if (summaryGate) await summaryGate.promise;
-      // Like the extension client, text typed in another journey is refused.
-      if (journeyId !== undefined && state.journeyId !== journeyId) {
-        throw Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
+    // Like the background, a discard names its view: an already-closed journey
+    // is left alone, and any other journey or review refuses it.
+    discard: async expected => {
+      reviewTargets.push(['discard', expected ?? null]);
+      if (expected && state.phase !== 'idle') {
+        const matches = expected.phase === 'saved'
+          ? state.phase === 'saved' && (expected.journeyId === undefined || state.journeyId === expected.journeyId)
+          : state.phase === 'reviewing' && state.journeyId === expected.journeyId && state.sessionId === expected.sessionId
+            && (expected.revision === undefined || state.draft.revision === expected.revision);
+        if (!matches) throw staleError();
       }
+      state = { phase: 'idle', epoch: 9 }; changed();
+    },
+    updateSummary: async (expected, actual, review) => {
+      summaryCalls.push([expected, actual]);
+      summaryTargets.push([state.phase, state.draft?.id ?? null, review?.journeyId ?? null]);
+      reviewTargets.push(['updateSummary', review ?? null]);
+      if (summaryGate) await summaryGate.promise;
+      // Like the extension client, text typed in another review is refused.
+      refuseStale(review);
       if (state.phase === 'saving') throw savingError();
       if (summaryError) throw summaryError;
       state = { ...state, draft: { ...state.draft, expected, actual, revision: state.draft.revision + 1 } };
       changed();
     },
-    removeStep: async stepId => {
+    removeStep: async (stepId, review) => {
       removeCalls.push(stepId);
+      reviewTargets.push(['removeStep', review ?? null]);
       if (editGate) await editGate.promise;
+      refuseStale(review);
       if (state.phase === 'saving') throw savingError();
       if (removeError) throw removeError;
       if (editError) throw editError;
       state = { ...state, draft: { ...state.draft, steps: state.draft.steps.filter(step => step.id !== stepId), revision: state.draft.revision + 1 } };
       changed();
     },
-    editValue: async (stepId, value) => {
+    editValue: async (stepId, value, review) => {
       editCalls.push([stepId, structuredClone(value)]);
+      reviewTargets.push(['editValue', review ?? null]);
       if (editGate) await editGate.promise;
+      refuseStale(review);
       if (state.phase === 'saving') throw savingError();
       if (editError) throw editError;
       state = { ...state, draft: { ...state.draft, steps: state.draft.steps.map(step => step.id === stepId ? { ...step, enteredValue: { ...structuredClone(value), edited: true } } : step), revision: state.draft.revision + 1 } };
       changed();
     },
-    redactUrl: async (stepId, kind) => {
+    redactUrl: async (stepId, kind, review) => {
       redactCalls.push([stepId, kind]);
+      reviewTargets.push(['redactUrl', review ?? null]);
       if (editGate) await editGate.promise;
+      refuseStale(review);
       if (state.phase === 'saving') throw savingError();
       if (editError) throw editError;
       const draft = state.draft;
@@ -125,19 +150,23 @@ const bundle = () => buildSync({ stdin: { contents: `
       }
       changed();
     },
-    redactLabel: async stepId => {
+    redactLabel: async (stepId, review) => {
       redactCalls.push([stepId, 'label']);
+      reviewTargets.push(['redactLabel', review ?? null]);
+      refuseStale(review);
       const draft = state.draft;
       const redactions = draft.redactions ?? { steps: {} };
       state = { ...state, draft: { ...draft, steps: draft.steps.map(step => step.id === stepId ? { ...step, target: { ...step.target, label: '[redacted]' } } : step), redactions: { steps: { ...redactions.steps, [stepId]: { ...redactions.steps[stepId], label: true } } }, revision: draft.revision + 1 } };
       changed();
     },
-    reviewImage: async (imageId, change) => {
+    reviewImage: async (imageId, change, review) => {
+      reviewTargets.push(['reviewImage', review ?? null]);
       reviewImageCalls.push(change.operation === 'replace'
         ? { imageId, operation: 'replace', width: change.image.width, height: change.image.height,
           maskedCurrent: change.maskedFrom === state.draft.images[imageId]?.dataUrl }
         : { imageId, operation: 'remove' });
       if (reviewImageGate) await reviewImageGate.promise;
+      refuseStale(review);
       if (state.phase === 'saving') { reviewImageCalls.pop(); throw savingError(); }
       if (reviewImageError) throw reviewImageError;
       const draft = state.draft;
@@ -154,9 +183,11 @@ const bundle = () => buildSync({ stdin: { contents: `
       }
       changed();
     },
-    save: async acknowledged => {
+    save: async (acknowledged, review) => {
       saveCalls.push(acknowledged);
+      reviewTargets.push(['save', review ?? null]);
       if (saveGate) await saveGate.promise;
+      refuseStale(review);
       if (saveError) throw saveError;
       const draft = state.draft;
       savedSummaries.push([draft.expected, draft.actual]);
@@ -304,6 +335,21 @@ const bundle = () => buildSync({ stdin: { contents: `
   window.journeyReviewHarness = {
     summaryCalls: () => summaryCalls,
     summaryTargets: () => summaryTargets,
+    reviewTargets: () => reviewTargets,
+    // Another surface closed this review and reopened the same saved journey,
+    // before this view heard of it.
+    reopenElsewhereSilently: () => {
+      state = { ...state, sessionId: 'SESS-REOPENED', epoch: 1 };
+    },
+    // Another surface changed this review, before this view heard of it.
+    editElsewhereSilently: () => {
+      state = { ...state, draft: { ...state.draft, revision: state.draft.revision + 1 } };
+    },
+    // Another surface reopened the saved journey this view confirms, before this view heard of it.
+    reviewElsewhereSilently: () => {
+      state = { phase: 'reviewing', epoch: 1, sessionId: 'SESS-REOPENED', journeyId: state.journeyId, ownerTabId: 1, ownerWindowId: 1,
+        ...reviewTimes(), draft: { ...reviewingDraft(reviewingSteps()), id: state.journeyId } };
+    },
     removeCalls: () => removeCalls,
     startCalls: () => startCalls,
     editCalls: () => editCalls,
@@ -750,7 +796,7 @@ test('review explains a stop that left the starting origin and how to record els
 test('review explains withdrawn page access after a page load', async ({ page }) => {
   await openReview(page);
   await page.evaluate('journeyReviewHarness.setStopReason("page-access-lost")');
-  const text = "Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. Steps recorded before then are kept. The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.";
+  const text = "Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. Steps recorded before then are kept. The new page has no screenshot, and nothing done on it was recorded. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.";
   await expect(page.locator('.journey-stop-reason')).toHaveText(text);
   await expect(page.locator('.journey-live [aria-live="polite"]')).toHaveText(text);
 });
@@ -1620,9 +1666,13 @@ test('save and export wait while a change to an unchanged saved journey is in fl
   await page.getByRole('button', { name: 'Redact source URL for step 1', exact: true }).click();
   await expect(copy).toBeDisabled();
   await expect(download).toBeDisabled();
+  // Whether the change leaves a revision to save first is not known yet.
+  await expect(copy).toHaveAccessibleDescription('Finishing your change…');
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toHaveCount(0);
   await page.evaluate('journeyReviewHarness.releaseEdits()');
   await expect(page.getByRole('alert')).not.toBeEmpty();
   await expect(copy).toBeEnabled();
+  await expect(page.getByText('Finishing your change…', { exact: true })).toHaveCount(0);
   // Removing a step: export never offers the copy it is about to replace.
   await page.evaluate('journeyReviewHarness.failEdits(null)');
   await page.evaluate('journeyReviewHarness.holdEdits()');
@@ -1630,6 +1680,7 @@ test('save and export wait while a change to an unchanged saved journey is in fl
   await page.getByRole('button', { name: 'Confirm remove step 2', exact: true }).click();
   await expect(copy).toBeDisabled();
   await expect(download).toBeDisabled();
+  await expect(page.getByText('Finishing your change…', { exact: true })).toBeVisible();
   await page.evaluate('journeyReviewHarness.releaseEdits()');
   await expect(page.getByRole('heading', { name: /^Step 2 / })).toHaveCount(0);
   await expect(copy).toBeDisabled();
@@ -2154,12 +2205,14 @@ test('a save that completes elsewhere reports the edits it left out', async ({ p
   await expect.poll(() => page.evaluate('journeyReviewHarness.summaryCalls().length')).toBe(1);
   await page.evaluate('journeyReviewHarness.completeSaving()');
   await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
-  await expect(page.getByRole('alert')).toHaveText('This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.');
+  // Remove step 2 only asked for confirmation, so the typed summary alone is missing.
+  await expect(page.getByRole('alert')).toHaveText(savedWithout('the summary text you typed'));
 });
 
 const SAVE_IN_PROGRESS = 'This journey is being saved. Wait for the save to finish, then try again.';
-const LOST_EDITS = 'This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.';
-const EDITS_NOT_APPLIED = 'The journey you were reviewing was saved or closed before your latest edits here reached it, so they were not applied. If it was saved, reopen it from Saved journeys to make them again.';
+// Each names exactly what this view had not sent when another surface saved or closed the review.
+const savedWithout = (lost: string) => `This journey was saved without ${lost}. Reopen it from Saved journeys to make that change again.`;
+const notApplied = (lost: string) => `The journey you were reviewing was saved or closed elsewhere, so ${lost} was not applied. If it was saved, reopen it from Saved journeys to make that change again.`;
 const SAVE_NOT_FINISHED = 'The save did not finish, and your change was not applied while it ran. Try the change again.';
 
 test('an edit refused by a save in progress says so, then reports it missing from the saved copy', async ({ page }) => {
@@ -2173,7 +2226,7 @@ test('an edit refused by a save in progress says so, then reports it missing fro
   await expect(page.getByRole('alert')).toHaveText(SAVE_IN_PROGRESS);
   await page.evaluate('journeyReviewHarness.completeSaving()');
   await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
-  await expect(page.getByRole('alert')).toHaveText(LOST_EDITS);
+  await expect(page.getByRole('alert')).toHaveText(savedWithout('your removal of step 2'));
   expect(await page.evaluate('journeyReviewHarness.removeCalls()')).toEqual(['S2']);
 });
 
@@ -2207,7 +2260,7 @@ test('a summary held by a save is never written into the next journey under revi
   expect(await page.evaluate('journeyReviewHarness.summaryCalls()')).toEqual([]);
   expect(await page.evaluate('journeyReviewHarness.state().draft')).toMatchObject({ id: 'J2', expected: '', actual: '' });
   await expect(page.getByLabel('Expected result')).toHaveValue('');
-  await expect(page.getByRole('alert')).toHaveText(EDITS_NOT_APPLIED);
+  await expect(page.getByRole('alert')).toHaveText(notApplied('the summary text you typed'));
   // Text typed into J2's review goes to J2, named as such.
   await page.getByLabel('Expected result').fill('Typed for J2');
   await expect.poll(() => page.evaluate('journeyReviewHarness.state().draft.expected'), { timeout: 10_000 }).toBe('Typed for J2');
@@ -2227,7 +2280,7 @@ test('a summary typed just before another journey takes over the review is never
   expect(await page.evaluate('journeyReviewHarness.state().draft')).toMatchObject({ id: 'J2', expected: '', actual: '' });
   await expect(page.getByLabel('Expected result')).toHaveValue('');
   await expect(page.getByRole('checkbox', { name: /^I understand this journey retains/ })).not.toBeChecked();
-  await expect(page.getByRole('alert')).toHaveText(EDITS_NOT_APPLIED);
+  await expect(page.getByRole('alert')).toHaveText(notApplied('the summary text you typed'));
 });
 
 test('a save elsewhere reports an open value editor with unsent input as lost', async ({ page }) => {
@@ -2240,7 +2293,7 @@ test('a save elsewhere reports an open value editor with unsent input as lost', 
   await expect(page.getByRole('alert')).toBeEmpty();
   await page.evaluate('journeyReviewHarness.completeSaving()');
   await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
-  await expect(page.getByRole('alert')).toHaveText(LOST_EDITS);
+  await expect(page.getByRole('alert')).toHaveText(savedWithout('the new value you entered for step 4'));
   expect(await page.evaluate('journeyReviewHarness.editCalls()')).toEqual([]);
 });
 
@@ -2260,7 +2313,7 @@ test('a save elsewhere reports a drawn mask as lost, but not a mask editor left 
     await page.evaluate('journeyReviewHarness.completeSaving()');
     await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
     await expect(dialog).toHaveCount(0);
-    if (drawn) await expect(page.getByRole('alert')).toHaveText(LOST_EDITS);
+    if (drawn) await expect(page.getByRole('alert')).toHaveText(savedWithout('the mask you were drawing on the screenshot for step 1'));
     else await expect(page.getByRole('alert')).toBeEmpty();
     expect(await page.evaluate('journeyReviewHarness.reviewImageCalls()')).toEqual([]);
   }
@@ -2432,4 +2485,180 @@ test('screenshots show whole at every width and tall ones can be enlarged', asyn
     await fit.click();
     await expect(enlarge).toBeFocused();
   }
+});
+
+const STALE = 'Another review tab changed this journey. Reload the review and try again.';
+
+test('every review command from a view another surface replaced names its review and is refused, leaving the new review alone', async ({ page }) => {
+  const review = { journeyId: 'J1', sessionId: 'SESS' };
+  type Case = {
+    name: string; command: string; state?: string; target?: Record<string, unknown>; alert?: string;
+    ready?: () => Promise<void>; press: () => Promise<void>;
+  };
+  const click = (name: string) => page.getByRole('button', { name, exact: true }).click();
+  const cases: Case[] = [
+    { name: 'remove step', command: 'removeStep', ready: () => click('Remove step 2'), press: () => click('Confirm remove step 2') },
+    { name: 'save value', command: 'editValue', state: 'setReviewingWithField',
+      ready: async () => { await click('Edit value for step 4'); await page.getByLabel('Edit entered value for step 4').fill('typed'); },
+      press: () => click('Save value for step 4'),
+      // The editor still holds the refused value when the view moves to the reopened review.
+      alert: notApplied('the new value you entered for step 4') },
+    { name: 'remove value', command: 'editValue', state: 'setReviewingWithField', press: () => click('Remove value for step 4') },
+    { name: 'redact URL', command: 'redactUrl', press: () => click('Redact source URL for step 1') },
+    { name: 'redact label', command: 'redactLabel', press: () => click('Redact click label for step 2') },
+    { name: 'remove screenshot', command: 'reviewImage', state: 'setReviewingWithImages',
+      ready: () => click('Remove screenshot for step 1'), press: () => click('Confirm remove screenshot for step 1') },
+    { name: 'discard', command: 'discard', target: { phase: 'reviewing', ...review },
+      ready: () => click('Discard journey'), press: () => click('Confirm discard journey') },
+    { name: 'save', command: 'save',
+      ready: async () => {
+        await page.getByLabel('Expected result').fill('Shows checkout');
+        await page.getByLabel('Actual result').fill('Opens on time');
+        await page.getByRole('checkbox', { name: /^I understand this journey retains/ }).check();
+        await expect.poll(() => page.evaluate('journeyReviewHarness.state().draft.actual'), { timeout: 10_000 }).toBe('Opens on time');
+        await expect(page.getByRole('button', { name: 'Save journey', exact: true })).toBeEnabled();
+      },
+      press: () => click('Save journey') },
+  ];
+  for (const { name, command, state, target, alert, ready, press } of cases) {
+    await openReview(page);
+    if (state) {
+      await page.evaluate(`journeyReviewHarness.${state}()`);
+      await expect(page.getByRole('heading', { name: /^Step 1 / })).toBeVisible();
+    }
+    await ready?.();
+    // Another surface saves this review and reopens the same journey before this view hears of it.
+    await page.evaluate('journeyReviewHarness.reopenElsewhereSilently()');
+    const reopened = await page.evaluate('journeyReviewHarness.state()');
+    await press();
+    await expect(page.locator('.journey-view .journey-error'), name).toHaveText(alert ?? STALE);
+    expect((await page.evaluate('journeyReviewHarness.reviewTargets()') as unknown[]).at(-1), name).toEqual([command, target ?? review]);
+    expect(await page.evaluate('journeyReviewHarness.state()'), name).toEqual(reopened);
+  }
+});
+
+test('a one-step discard is refused once another surface changed the saved revision it offered to close', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate(`journeyReviewHarness.setList([
+    { journeyId: 'J1', revision: 0, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' },
+  ])`);
+  const discard = page.getByRole('button', { name: 'Discard journey', exact: true });
+  await expect(discard).toHaveAccessibleDescription('Discarding closes this review. The saved copy stays in Saved journeys.');
+  await page.evaluate('journeyReviewHarness.editElsewhereSilently()');
+  await discard.click();
+  await expect(page.locator('.journey-view .journey-error')).toHaveText(STALE);
+  expect(await page.evaluate('journeyReviewHarness.reviewTargets().at(-1)'))
+    .toEqual(['discard', { phase: 'reviewing', journeyId: 'J1', sessionId: 'SESS', revision: 0 }]);
+  expect(await page.evaluate('journeyReviewHarness.state()')).toMatchObject({ phase: 'reviewing', draft: { revision: 1 } });
+  // The changed revision is unsaved, so discarding it now asks first.
+  await expect(page.getByRole('button', { name: 'Discard journey', exact: true })).not.toHaveAccessibleDescription(/saved copy stays/);
+});
+
+test('a saved confirmation closed after another surface reopened the journey leaves that review alone', async ({ page }) => {
+  await readyToSave(page);
+  await page.getByRole('button', { name: 'Save journey', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  await page.evaluate('journeyReviewHarness.reviewElsewhereSilently()');
+  const reopened = await page.evaluate('journeyReviewHarness.state()');
+  await page.getByRole('button', { name: 'Record another journey', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(STALE);
+  expect(await page.evaluate('journeyReviewHarness.reviewTargets().at(-1)')).toEqual(['discard', { phase: 'saved', journeyId: 'J1' }]);
+  expect(await page.evaluate('journeyReviewHarness.state()')).toEqual(reopened);
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+});
+
+test('each in-view error describes its control, and the hidden alert empties after announcing it', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate(`journeyReviewHarness.failEdits(${JSON.stringify(STALE)})`);
+  const alert = page.getByRole('alert');
+  const redact = page.getByRole('button', { name: 'Redact source URL for step 1', exact: true });
+  await redact.click();
+  await expect(alert).toHaveText(STALE);
+  await expect(page.locator('.journey-view .journey-error')).toHaveId('journey-error');
+  await expect(redact).toHaveAccessibleDescription(STALE);
+  // Announced once, then only beside the control: a reader moving through
+  // the page meets it once.
+  await expect(alert).toBeEmpty({ timeout: 10_000 });
+  await expect(page.locator('.journey-view .journey-error')).toHaveText(STALE);
+  await page.evaluate(`journeyReviewHarness.setList(${JSON.stringify(savedItems().slice(1))})`);
+  await page.getByRole('button', { name: 'Remove step 1', exact: true }).click();
+  await expect(redact).toHaveAccessibleDescription(STALE);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 200)));
+  await expect(alert).toBeEmpty();
+  // An error that moves to another control describes only that control.
+  await page.getByRole('button', { name: 'Keep step 1', exact: true }).click();
+  await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
+  const confirm = page.getByRole('button', { name: 'Confirm remove step 2', exact: true });
+  await confirm.click();
+  await expect(alert).toHaveText(STALE);
+  await expect(page.getByRole('button', { name: 'Remove step 2', exact: true })).toHaveAccessibleDescription(STALE);
+  await expect(redact).toHaveAccessibleDescription('');
+  await expect(page.locator('[aria-describedby~="journey-error"]')).toHaveCount(1);
+  // A failed autosave describes the fields it could not store.
+  await page.evaluate('journeyReviewHarness.failSummary()');
+  await page.getByLabel('Expected result').fill('Typed before a failure');
+  await expect(page.locator('.journey-summary + .journey-error')).toHaveText(STALE, { timeout: 10_000 });
+  for (const field of ['Expected result', 'Actual result']) {
+    await expect(page.getByLabel(field)).toHaveAttribute('aria-describedby', /(^| )journey-error( |$)/);
+  }
+});
+
+test('the same error failing again is announced again', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.failSummary()');
+  const alert = page.getByRole('alert');
+  const expected = page.getByLabel('Expected result');
+  await expected.fill('First try');
+  await expect(alert).toHaveText(STALE, { timeout: 10_000 });
+  await page.evaluate(() => {
+    (window as any).alertTexts = [];
+    new MutationObserver(() => { (window as any).alertTexts.push(document.querySelector('.journey-live [role="alert"]')!.textContent); })
+      .observe(document.querySelector('.journey-live [role="alert"]')!, { childList: true, characterData: true, subtree: true });
+  });
+  // The autosave fails again with the same message: the region empties, then says it again.
+  await expected.fill('Second try');
+  await expect.poll(() => page.evaluate('window.alertTexts'), { timeout: 10_000 }).toEqual(['', STALE]);
+  await expect(page.locator('.journey-view .journey-error')).toHaveCount(1);
+});
+
+test('a deadline warning that fell due while the computer slept appears when the reader returns', async ({ page }) => {
+  await openReview(page);
+  // Due in a minute, so the view's own timer is far off.
+  await page.evaluate('journeyReviewHarness.setReviewDeadline(60_000, 120_000)');
+  const warning = page.locator('.journey-deadline');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+  await expect(warning).toHaveCount(0);
+  // The computer sleeps for 90 seconds: the clock moves on, the timer does not.
+  await page.evaluate(() => {
+    const now = Date.now;
+    Date.now = () => now() + 90_000;
+  });
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+  await expect(warning).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(warning).toContainText(/^This unsaved review will be deleted at .+\. Save now, or make any change to keep reviewing\./);
+  await expect(page.locator('.journey-live [aria-live="assertive"]')).toHaveText(/^This unsaved review will be deleted at /);
+  // Past the deadline, returning to the tab re-reads the review.
+  await page.evaluate(() => {
+    const now = Date.now;
+    Date.now = () => now() + 60_000;
+  });
+  const reads = await page.evaluate('journeyReviewHarness.listCalls()') as number;
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(() => page.evaluate('journeyReviewHarness.listCalls()')).toBeGreaterThan(reads);
+  await expect(warning).toHaveText('This unsaved review went 30 minutes without changes and is being deleted.');
+});
+
+test('an expiry notice names the day when the review closed on another day', async ({ page }) => {
+  await openReview(page);
+  // The review's deadline passed yesterday, as after the computer slept overnight.
+  await page.evaluate('journeyReviewHarness.setReviewDeadline(-26 * 60 * 60_000, -25 * 60 * 60_000)');
+  const expiresAt = Date.parse(await page.evaluate('journeyReviewHarness.state().expiresAt') as string);
+  await page.evaluate('journeyReviewHarness.setIdle()');
+  const [date, time] = await page.evaluate(at => [
+    new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(at),
+    new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(at),
+  ], expiresAt);
+  await expect(page.locator('.journey-view').getByText(/^Your unsaved journey review was deleted /))
+    .toHaveText(`Your unsaved journey review was deleted on ${date} at ${time}, 30 minutes after the last change.`);
 });

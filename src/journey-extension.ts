@@ -1280,6 +1280,41 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     finally { startingFromLaunch = false; }
   };
 
+  // A review command names the review it was made in: its journey and the
+  // session that recorded or reopened it. A click can reach here after another
+  // surface switched journeys or reopened one, so a command for any review but
+  // the current one is refused as stale. The controller then checks the
+  // journey, epoch and revision as it applies the edit, with no wait between.
+  const requireReview = (message: Message): void => {
+    if (message.sessionId === undefined) return;
+    if (typeof message.sessionId !== 'string') throw new Error(GENERIC_ERROR);
+    const current = controller.getState();
+    if (!('sessionId' in current) || current.sessionId !== message.sessionId) throw new JourneyCommandError('stale-review');
+  };
+
+  // A discard pressed in a review or on a saved confirmation names that view
+  // and ends only that journey. One already closed has nothing left to end;
+  // anything else now current refuses it as stale: another journey, another
+  // review of the same one, or a revision changed since a review offered to
+  // close it without confirmation. Only the storage reset names nothing.
+  const targetedDiscard = (message: Message): 'discard' | 'closed' => {
+    const { phase, journeyId, sessionId, revision } = message;
+    if ((phase !== 'reviewing' && phase !== 'saved')
+      || (journeyId !== undefined && typeof journeyId !== 'string')
+      || (sessionId !== undefined && typeof sessionId !== 'string')
+      || (revision !== undefined && !validInteger(revision))
+      || (phase === 'reviewing' && (journeyId === undefined || sessionId === undefined))) throw new Error(GENERIC_ERROR);
+    const current = controller.getState();
+    if (current.phase === 'idle') return 'closed';
+    const matches = phase === 'saved'
+      ? current.phase === 'saved' && (journeyId === undefined || current.journeyId === journeyId)
+        && (revision === undefined || current.revision === revision)
+      : current.phase === 'reviewing' && current.journeyId === journeyId && current.sessionId === sessionId
+        && (revision === undefined || current.draft.revision === revision);
+    if (!matches) throw new JourneyCommandError('stale-review');
+    return 'discard';
+  };
+
   const trustedCommand = async (message: Message, surface: TrustedSurface): Promise<unknown> => {
     if (message.type === 'ANMERKO_JOURNEY_STATE') {
       return controller.getState();
@@ -1325,6 +1360,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       return;
     }
     if (message.type === 'ANMERKO_JOURNEY_DISCARD') {
+      // A refused or needless discard leaves any start in flight alone.
+      if (message.phase !== undefined && targetedDiscard(message) === 'closed') return;
       launchGeneration += 1;
       await withPersistedState(controller.discard());
       return;
@@ -1336,6 +1373,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || typeof message.expected !== 'string' || typeof message.actual !== 'string') {
         throw new Error(GENERIC_ERROR);
       }
+      requireReview(message);
       await withPersistedState(controller.updateSummary({
         epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
         updatedAt: message.updatedAt, expected: message.expected, actual: message.actual,
@@ -1349,6 +1387,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || typeof message.stepId !== 'string') {
         throw new Error(GENERIC_ERROR);
       }
+      requireReview(message);
       await withPersistedState(controller.removeStep({
         epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
         updatedAt: message.updatedAt, stepId: message.stepId,
@@ -1362,6 +1401,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || typeof message.stepId !== 'string' || !isRecord(message.value)) {
         throw new Error(GENERIC_ERROR);
       }
+      requireReview(message);
       await withPersistedState(controller.editValue({
         epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
         updatedAt: message.updatedAt, stepId: message.stepId, value: message.value,
@@ -1376,6 +1416,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || (message.url !== 'source' && message.url !== 'capture' && message.url !== 'destination')) {
         throw new Error(GENERIC_ERROR);
       }
+      requireReview(message);
       await withPersistedState(controller.redactUrl({
         epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
         updatedAt: message.updatedAt, stepId: message.stepId, url: message.url,
@@ -1389,6 +1430,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || typeof message.stepId !== 'string') {
         throw new Error(GENERIC_ERROR);
       }
+      requireReview(message);
       await withPersistedState(controller.redactLabel({
         epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
         updatedAt: message.updatedAt, stepId: message.stepId,
@@ -1403,6 +1445,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         throw new Error(GENERIC_ERROR);
       }
       const guard = { epoch: message.epoch, journeyId: message.journeyId, revision: message.revision, imageId: message.imageId };
+      requireReview(message);
+      const reviewSession = controller.getState();
       imageReviewsInFlight += 1;
       try {
         if (message.operation === 'remove') {
@@ -1412,7 +1456,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         const stillCurrent = () => {
           const current = controller.getState();
           return current.phase === 'reviewing' && current.epoch === guard.epoch
-            && current.journeyId === guard.journeyId && current.draft.revision === guard.revision;
+            && current.journeyId === guard.journeyId && current.draft.revision === guard.revision
+            && 'sessionId' in reviewSession && current.sessionId === reviewSession.sessionId;
         };
         // Fail fast before decoding; the controller re-checks the guards when it applies the image.
         if (!stillCurrent()) throw new JourneyCommandError('stale-review');
@@ -1422,6 +1467,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
           if (!stillCurrent()) throw new JourneyCommandError('stale-review');
           throw error;
         }
+        if (!stillCurrent()) throw new JourneyCommandError('stale-review');
         await withPersistedState(controller.reviewImage({ operation: 'replace', ...guard, image }));
         return;
       } finally {
@@ -1483,6 +1529,14 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       // Another review surface is still masking or removing a screenshot.
       if (imageReviewsInFlight > 0) throw new JourneyCommandError('stale-review');
+      // A Save names the review it was pressed in; another review is never saved from it.
+      if (message.journeyId !== undefined || message.sessionId !== undefined) {
+        if (typeof message.journeyId !== 'string' || typeof message.sessionId !== 'string') throw new Error(GENERIC_ERROR);
+        const current = controller.getState();
+        if (!('sessionId' in current) || current.journeyId !== message.journeyId || current.sessionId !== message.sessionId) {
+          throw new JourneyCommandError('stale-review');
+        }
+      }
       let saved: { journeyId: string; revision: number } | undefined;
       await withPersistedState(controller.save(message.acknowledged).then(result => {
         saved = result;
@@ -1573,7 +1627,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       return reply((async () => {
         await ready;
         if (initializationError) {
-          if (message.type !== 'ANMERKO_JOURNEY_DISCARD') throw initializationError;
+          // Only the explicit reset, which names no journey, clears failed storage.
+          if (message.type !== 'ANMERKO_JOURNEY_DISCARD' || message.phase !== undefined) throw initializationError;
           await resetFailedInitialization();
           return;
         }

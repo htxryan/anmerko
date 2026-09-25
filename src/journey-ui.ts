@@ -1,6 +1,6 @@
 import type { JourneyDraftImage, JourneyDraftStep, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import type { NormalizedJourneyPng } from './journey-image';
-import { JOURNEY_LIMITS, storageFailedAfterRecording, type CaptureFailure, type StopReason } from './journey-limits';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS, storageFailedAfterRecording, type CaptureFailure, type StopReason } from './journey-limits';
 import { downloadFile } from './export';
 import { journeyArchive, journeyArchiveName, journeyDraftToManifest, journeyPrompt } from './journey-export';
 import { reviewJourneyImage, viewJourneyImage } from './journey-image-review';
@@ -23,24 +23,43 @@ export interface JourneySavedSummary {
   startPage?: string;
 }
 
+// The review a control was rendered for: its journey and the session that
+// recorded or reopened it. A click can arrive after another surface closed
+// that review, even to reopen the same saved journey, so every review command
+// names it and the background refuses one meant for any other as stale.
+export interface JourneyReviewTarget {
+  journeyId: string;
+  sessionId: string;
+}
+
+// The view a discard was pressed in. A review sends its revision when it
+// offered discard without confirmation because that revision was saved; a
+// journey's saved confirmation names only the journey, if it knows it. An
+// already-closed journey is not refused: nothing of it is left to discard.
+export type JourneyDiscardTarget =
+  | ({ phase: 'reviewing'; revision?: number } & JourneyReviewTarget)
+  | { phase: 'saved'; journeyId?: string };
+
 // Review edits refused because a save holds the review reject with an error
 // whose code is JOURNEY_SAVE_IN_PROGRESS, so the view can await its outcome.
+// Each edit names the review it was made in (see JourneyReviewTarget).
 export interface JourneyClient {
   read(): Promise<JourneySession>;
   // Called directly from the Start click, so the adapter can request optional
   // permissions before crossing an asynchronous boundary.
   start(includeEnteredValues: boolean): Promise<void>;
   stop(): Promise<void>;
-  discard(): Promise<void>;
-  // An autosave can land after the review moved on, so it names the journey
-  // the text was typed in; a different journey under review refuses it.
-  updateSummary(expected: string, actual: string, journeyId?: string): Promise<void>;
-  removeStep(stepId: string): Promise<void>;
-  editValue(stepId: string, value: unknown): Promise<void>;
-  redactUrl(stepId: string, url: JourneyUrlRedactionTarget): Promise<void>;
-  redactLabel(stepId: string): Promise<void>;
-  reviewImage(imageId: string, change: JourneyImageChange): Promise<void>;
-  save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
+  // Without a target, discards whatever journey is current: the storage reset.
+  discard(expected?: JourneyDiscardTarget): Promise<void>;
+  // An autosave can land after the review moved on, so it names the review
+  // the text was typed in; a different review refuses it.
+  updateSummary(expected: string, actual: string, review?: JourneyReviewTarget): Promise<void>;
+  removeStep(stepId: string, review?: JourneyReviewTarget): Promise<void>;
+  editValue(stepId: string, value: unknown, review?: JourneyReviewTarget): Promise<void>;
+  redactUrl(stepId: string, url: JourneyUrlRedactionTarget, review?: JourneyReviewTarget): Promise<void>;
+  redactLabel(stepId: string, review?: JourneyReviewTarget): Promise<void>;
+  reviewImage(imageId: string, change: JourneyImageChange, review?: JourneyReviewTarget): Promise<void>;
+  save(acknowledged: boolean, review?: JourneyReviewTarget): Promise<{ journeyId: string; revision: number }>;
   openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
   reopen(journeyId: string): Promise<void>;
   deleteSnapshot(journeyId: string, revision?: number): Promise<void>;
@@ -57,9 +76,9 @@ export interface JourneyClient {
 export const JOURNEY_SAVE_IN_PROGRESS = 'save-in-progress';
 export const JOURNEY_SAVE_IN_PROGRESS_ERROR = 'This journey is being saved. Wait for the save to finish, then try again.';
 const JOURNEY_STORAGE_ERROR = 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.';
-const LOST_EDITS = 'This journey was saved before your latest edits here reached it, so the saved copy does not include them. Reopen it from Saved journeys to make them again.';
-const EDITS_NOT_APPLIED = 'The journey you were reviewing was saved or closed before your latest edits here reached it, so they were not applied. If it was saved, reopen it from Saved journeys to make them again.';
 const SAVE_NOT_FINISHED = 'The save did not finish, and your change was not applied while it ran. Try the change again.';
+// Replaces the save-first note while a change here is on its way to the draft.
+const FINISHING_CHANGE = 'Finishing your change…';
 const LAST_STEP = 'A journey keeps at least one step. To remove this one, discard the journey.';
 // A tap's click can follow its pointerup in a later task; a press that makes
 // no click stops holding re-renders after this long.
@@ -71,6 +90,18 @@ const REDACTED = '[redacted]';
 // Previews fit this height so a tall phone capture is shown whole, never cropped.
 const IMAGE_FIT_HEIGHT = 440;
 const TITLE_CHARACTERS = 60;
+// An alert stays in the hidden live region long enough to be announced, then
+// clears, so a reader moving through the page meets it once, beside its control.
+const ALERT_CLEAR_MS = 5_000;
+// A repeated alert is emptied first and set again after this pause, since
+// setting the same text again announces nothing.
+const ALERT_REPEAT_MS = 100;
+// Timers stall while the computer sleeps, so the deadline is re-read at least
+// this often in case the warning fell due meanwhile.
+const DEADLINE_RECHECK_MS = 60_000;
+
+// Whether a review's deadline warning is due, or its deadline has passed.
+type DeadlineStage = 'none' | 'warning' | 'expired';
 
 const failures: Record<CaptureFailure, string> = {
   superseded: 'superseded by a later action',
@@ -87,19 +118,33 @@ const failures: Record<CaptureFailure, string> = {
 
 const KEPT = 'Steps recorded before then are kept.';
 // Review explains every stop in plain language. A journey is bound to its
-// starting origin, so copy spells out what counts as leaving it.
+// starting origin, so copy spells out what counts as leaving it. A stop that
+// loses what was being recorded says what is missing here, so Limitations
+// lists only other losses (see stopLimitations).
 const stopNotices: Record<StopReason, string> = {
   user: 'You stopped the recording.',
   'duration-limit': `Recording stopped at the ${JOURNEY_LIMITS.maxDurationMs / 60_000}-minute limit. ${KEPT}`,
   'step-limit': `Recording stopped at the ${JOURNEY_LIMITS.maxSteps}-step limit. ${KEPT}`,
-  'image-budget': `Recording stopped because the journey's screenshots reached their storage limit. ${KEPT}`,
+  'image-budget': `Recording stopped because the journey's screenshots reached their ${JOURNEY_LIMITS.maxJourneyImageBytes / (1_024 * 1_024)} MB storage limit, so the last screenshot was not kept. ${KEPT}`,
+  // Storage can also fail after recording finished: nothing is missing then.
   'session-storage-limit': 'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.',
   'left-site': `Recording ended because the page left the website you started on. A different domain, subdomain, or port, or a switch between http and https, counts as leaving. ${KEPT} To record the other website, save or discard this review first, then open anmerko from the toolbar there.`,
   'focus-lost': `Recording ended because the recorded tab lost focus: another tab, window, or app became active. ${KEPT}`,
   'tab-lost': `Recording ended because the recorded tab was closed, replaced, or moved to another window. ${KEPT}`,
   'protected-page': `Recording ended because the tab opened a page anmerko cannot record, such as a browser page or a non-web address. ${KEPT}`,
-  'capture-failed': `Recording ended because anmerko lost track of the page after it changed and could not keep recording reliably. ${KEPT}`,
-  'page-access-lost': `Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. ${KEPT} The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.`,
+  'capture-failed': `Recording ended because anmerko lost track of the page after it changed and could not keep recording reliably, so the latest page change or action may be missing. ${KEPT}`,
+  'page-access-lost': `Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. ${KEPT} The new page has no screenshot, and nothing done on it was recorded. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.`,
+};
+// The storage stop that cut recording short says what that cost.
+const STORAGE_LOSS_NOTICE = 'Journey storage filled up or failed while recording, so recording stopped early and the latest action or screenshot may be missing. Review this draft now because the draft may be lost if the extension closes.';
+
+// The limitation each stop adds to the draft (journey-core), which its notice
+// already states. journeys.md still lists it; review shows it once.
+const stopLimitations: Partial<Record<StopReason, string>> = {
+  'session-storage-limit': JOURNEY_LIMITATIONS.sessionStorage,
+  'page-access-lost': JOURNEY_LIMITATIONS.pageAccessLost,
+  'image-budget': JOURNEY_LIMITATIONS.imageBudget,
+  'capture-failed': JOURNEY_LIMITATIONS.captureFailed,
 };
 // Storage that failed after recording stopped lost nothing recorded; only
 // this unsaved draft is at risk.
@@ -142,10 +187,40 @@ function heldBySave(caught: unknown): boolean {
   return caught instanceof Error && (caught as { code?: unknown }).code === JOURNEY_SAVE_IN_PROGRESS;
 }
 
-// Which journey a view's controls act on: one journey from its start through
-// review and saving, then its saved screen, or the launch view.
+// Which journey a view's controls act on: one journey's session from its start
+// or reopening through review and saving, then its saved screen, or the
+// launch view. Reopening the same saved journey starts a new session.
 function viewKey(session: JourneySession): string {
-  return session.phase === 'idle' ? 'idle' : `${session.phase === 'saved' ? 'saved' : 'journey'}:${session.journeyId}`;
+  if (session.phase === 'idle') return 'idle';
+  if (session.phase === 'saved') return `saved:${session.journeyId}`;
+  return `journey:${session.journeyId}:${session.sessionId}`;
+}
+
+// The review a session holds, if it holds one.
+function reviewOf(session: JourneySession): JourneyReviewTarget | undefined {
+  return session.phase === 'reviewing' || session.phase === 'saving'
+    ? { journeyId: session.journeyId, sessionId: session.sessionId }
+    : undefined;
+}
+
+function sameReview(session: JourneySession, review: JourneyReviewTarget | undefined): boolean {
+  const current = reviewOf(session);
+  return current !== undefined && review !== undefined
+    && current.journeyId === review.journeyId && current.sessionId === review.sessionId;
+}
+
+// "a", "a and b", "a, b, and c".
+function listed(items: string[]): string {
+  return items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`;
+}
+
+// What this view had not yet sent to a review when another surface saved or
+// closed it, named item by item so the reader knows exactly what to redo.
+function lostEditsNotice(lost: string[], saved: boolean): string {
+  const redo = lost.length === 1 ? 'that change' : 'those changes';
+  return saved
+    ? `This journey was saved without ${listed(lost)}. Reopen it from Saved journeys to make ${redo} again.`
+    : `The journey you were reviewing was saved or closed elsewhere, so ${listed(lost)} ${lost.length === 1 ? 'was' : 'were'} not applied. If it was saved, reopen it from Saved journeys to make ${redo} again.`;
 }
 
 // A saved journey is named by what its reporter expected, then by the page it
@@ -171,8 +246,12 @@ function capturedTime(capturedAt: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(time);
 }
 
-function clockTime(ms: number): string {
-  return new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(ms);
+// "at 3:45 PM" today, or "on Sep 24, 2026 at 3:45 PM" on another day, as
+// after the computer slept past midnight.
+function deadlineTime(ms: number): string {
+  const time = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(ms);
+  if (new Date(ms).toDateString() === new Date(Date.now()).toDateString()) return `at ${time}`;
+  return `on ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(ms)} at ${time}`;
 }
 
 // Accessible names repeat the title and time; identical ones gain an ordinal.
@@ -209,6 +288,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   live.append(politeLive, urgentLive, alertLive);
   // Which error the alert region holds, so clearing one never withdraws another.
   let alerting: 'start' | 'action' | null = null;
+  let alertTimer: ReturnType<typeof setTimeout> | undefined;
+  // Counts failures, so each is announced once and a repeated message again.
+  let failureCount = 0;
+  let announcedFailure = 0;
   // The mask and full-size dialogs live beside the view so review re-renders never remove them.
   const imageDialog = node('div', undefined, 'journey-image-dialog');
   const viewerDialog = node('div', undefined, 'journey-image-dialog');
@@ -230,8 +313,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let startErrorFocus = false;
   let startInFlight = false;
   let loadFailed = false;
-  // Summaries typed into one journey's review, not yet in its draft.
-  let summaryPending: { journeyId: string; expected: string; actual: string } | null = null;
+  // Summaries typed into one review, not yet in its draft.
+  let summaryPending: { review: JourneyReviewTarget; expected: string; actual: string } | null = null;
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
   let summarySaving = false;
   let summaryFlight: Promise<boolean> | undefined;
@@ -241,13 +324,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   // waits for it: a failed save returns to review and the change is retried.
   let summaryHeld = false;
   let heldImageChange: {
-    journeyId: string; step: { id: string }; imageId: string;
+    review: JourneyReviewTarget; step: { id: string }; imageId: string;
     change: JourneyImageChange; returnTo: string; subject: string;
   } | null = null;
-  // The journey whose other edit a save refused. Once the save ends, the
-  // reader learns whether the saved copy lacks it or it can be tried again.
+  // The journey whose other edits a save refused. Once the save ends, the
+  // reader learns whether the saved copy lacks them or they can be tried again.
   let refusedBySave: string | null = null;
-  // Where the refused edit's control is, for that later report.
+  // What the refused edits were, and where the last one's control is, for that later report.
+  let refusedEdits: string[] = [];
   let refusedAt: string[] = [];
   // Whether the rendered review offers export for a saved revision.
   let renderedSaved = false;
@@ -263,13 +347,18 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   // Save, so the reader can delete some and save again without losing this one.
   let makingRoom = false;
   let acknowledged = false;
-  // The journey whose review this view holds local state for: the
+  // The review (journey and session) this view holds local state for: the
   // acknowledgement, unsent edits, confirmations and open editors. Another
-  // journey under review never inherits any of it.
+  // review, even of the same journey reopened, never inherits any of it.
   let reviewFor = '';
+  let reviewSession = '';
   let rendering = false;
   let renderedPhase: JourneySession['phase'] | undefined;
   let renderedKey = '';
+  // The review the rendered controls act on; every review command names it.
+  let renderedReview: JourneyReviewTarget | undefined;
+  // Whether the rendered review shows its deadline warning, or its expiry.
+  let renderedDeadline: DeadlineStage = 'none';
   let announcedNotice = '';
   let announcedDeadline = '';
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -291,8 +380,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let exportStatus = '';
   let exportStatusFor: string | null = null;
   // regionChosen: a mask region is drawn or entered but not applied yet.
-  let imageEditor: { journeyId: string; imageId: string; abort: AbortController; regionChosen: boolean } | null = null;
-  let imageViewer: { journeyId: string; imageId: string; dataUrl: string; returnTo: string[]; abort: AbortController } | null = null;
+  // subject names the steps whose screenshot it masks.
+  let imageEditor: { review: JourneyReviewTarget; imageId: string; subject: string; abort: AbortController; regionChosen: boolean } | null = null;
+  let imageViewer: { review: JourneyReviewTarget; imageId: string; dataUrl: string; returnTo: string[]; abort: AbortController } | null = null;
   let imageBusy: string | null = null;
   let confirmingImageRemove: string | null = null;
   // Focus targets, in order, for a change that removes or disables the
@@ -362,6 +452,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         expiredNotice = expiryNotice(state.draft, Date.parse(state.expiresAt));
         expiredAnnounced = false;
       }
+      const previous = state;
       state = next;
       // A start error belongs to the launch view it failed in. Any other view
       // makes it stale, except the brief "starting" of the start it reports.
@@ -372,25 +463,28 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       // A save holds the review in its saving phase. What this surface has not
       // sent yet (typed summaries, the acknowledgement, an open editor) stays:
       // a failed save returns to review with it. Any other view ends the
-      // review it belongs to, so it is dropped, never sent to another journey,
+      // review it belongs to, so it is dropped, never sent to another review,
       // and the reader learns which edits did not make it.
       const reviewDraft = next.phase === 'reviewing' || next.phase === 'saving' ? next.draft : undefined;
       const ownReview = reviewDraft !== undefined
-        && (reviewDraft.id === reviewFor || (reviewFor === '' && next.phase === 'reviewing'));
+        && ((reviewDraft.id === reviewFor && sameReview(next, { journeyId: reviewFor, sessionId: reviewSession }))
+          || (reviewFor === '' && next.phase === 'reviewing'));
       if (!ownReview) {
-        const lost = reviewFor !== '' && unsentEdits();
+        const lost = reviewFor !== '' ? unsentEdits(previous) : [];
         if (error === JOURNEY_SAVE_IN_PROGRESS_ERROR) error = '';
         // A discarded journey takes its edits with it; there is nothing to report.
-        if (lost && next.phase === 'saved' && next.journeyId === reviewFor) fail(LOST_EDITS);
-        else if (lost && next.phase !== 'idle') fail(EDITS_NOT_APPLIED);
+        if (lost.length > 0 && next.phase === 'saved' && next.journeyId === reviewFor) fail(lostEditsNotice(lost, true));
+        else if (lost.length > 0 && next.phase !== 'idle') fail(lostEditsNotice(lost, false));
         acknowledged = false;
         reviewFor = '';
+        reviewSession = '';
         makingRoom = false;
         if (summaryTimer !== undefined) { clearTimeout(summaryTimer); summaryTimer = undefined; }
         summaryPending = null;
         summaryHeld = false;
         heldImageChange = null;
         refusedBySave = null;
+        refusedEdits = [];
         confirmingRemove = null;
         confirmingDiscard = null;
         confirmingImageRemove = null;
@@ -408,8 +502,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       }
       if (next.phase === 'reviewing') {
         reviewFor = next.draft.id;
+        reviewSession = next.sessionId;
         // The save that refused an edit here failed and handed the review back.
-        if (refusedBySave === next.draft.id) { refusedBySave = null; fail(SAVE_NOT_FINISHED, ...refusedAt); }
+        if (refusedBySave === next.draft.id) { refusedBySave = null; refusedEdits = []; fail(SAVE_NOT_FINISHED, ...refusedAt); }
         if (confirmingDiscard !== null && confirmingDiscard !== next.draft.id) confirmingDiscard = null;
         if (confirmingRemove !== null && !next.draft.steps.some(step => step.id === confirmingRemove)) confirmingRemove = null;
         if (confirmingImageRemove !== null && !next.draft.steps.some(step => step.id === confirmingImageRemove
@@ -421,10 +516,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const retained = (imageId: string) => reviewDraft?.steps.some(step => step.image.status === 'retained'
         && step.image.imageId === imageId) === true;
       const editor = imageEditor;
-      if (editor && (reviewDraft?.id !== editor.journeyId || !retained(editor.imageId))) editor.abort.abort();
+      if (editor && (!sameReview(next, editor.review) || !retained(editor.imageId))) editor.abort.abort();
       // The full-size view closes once its pixels are no longer the retained screenshot.
       const viewer = imageViewer;
-      if (viewer && (reviewDraft?.id !== viewer.journeyId || !retained(viewer.imageId)
+      if (viewer && (!sameReview(next, viewer.review) || !retained(viewer.imageId)
         || reviewDraft?.images[viewer.imageId]?.dataUrl !== viewer.dataUrl)) {
         // Its opener may be re-rendered away; focus follows once the view settles.
         pendingFocus = viewer.returnTo;
@@ -458,25 +553,53 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       resumeHeldChanges();
     } catch (caught) {
       if (alive && current === version) {
-        loadFailed = true;
-        fail(caught instanceof Error && caught.message === JOURNEY_STORAGE_ERROR
+        const text = caught instanceof Error && caught.message === JOURNEY_STORAGE_ERROR
           ? JOURNEY_STORAGE_ERROR
-          : 'Could not load the journey. Reopen anmerko and try again.');
+          : 'Could not load the journey. Reopen anmerko and try again.';
+        // Each change notice re-reads the journey; a load that keeps failing is announced once.
+        if (!loadFailed || error !== text) fail(text);
+        loadFailed = true;
         update();
       }
     }
   }
 
-  // Edits made here that have not reached the draft under review.
-  function unsentEdits(): boolean {
-    return summaryPending !== null || heldImageChange !== null || refusedBySave !== null
-      || imageEditor?.regionChosen === true || (editingStepId !== null && editingChanged);
+  // What was made or typed here for the review this view held and has not
+  // reached its draft, in words that say what to redo. A mask editor left
+  // open with nothing drawn, or a value editor left unchanged, lost nothing.
+  function unsentEdits(held: JourneySession): string[] {
+    const draft = held.phase === 'reviewing' || held.phase === 'saving' ? held.draft : undefined;
+    const seq = (stepId: string) => draft?.steps.find(step => step.id === stepId)?.seq;
+    const lost: string[] = [];
+    if (summaryPending !== null) lost.push('the summary text you typed');
+    if (editingStepId !== null && editingChanged) {
+      const step = seq(editingStepId);
+      lost.push(step === undefined ? 'the new value you entered' : newValue(step));
+    }
+    if (imageEditor?.regionChosen === true) lost.push(`the mask you were drawing on the screenshot for ${imageEditor.subject}`);
+    if (heldImageChange !== null) {
+      lost.push(heldImageChange.change.operation === 'remove'
+        ? `your removal of the screenshot for ${heldImageChange.subject}`
+        : `the mask you applied to the screenshot for ${heldImageChange.subject}`);
+    }
+    if (refusedBySave !== null) lost.push(...refusedEdits);
+    // A value whose Save the save refused is still in its open editor.
+    return [...new Set(lost)];
+  }
+
+  function newValue(seq: number): string {
+    return `the new value you entered for step ${seq}`;
   }
 
   // An edit a save refused is reported again once that save ends, below the
-  // control it was made with.
-  function editFailed(caught: unknown, journeyId: string, fallback: string, ...at: string[]): void {
-    if (heldBySave(caught)) { refusedBySave = journeyId; refusedAt = at; }
+  // control it was made with. what names the edit for that report.
+  function editFailed(caught: unknown, journeyId: string, what: string, fallback: string, ...at: string[]): void {
+    if (heldBySave(caught)) {
+      if (refusedBySave !== journeyId) refusedEdits = [];
+      refusedBySave = journeyId;
+      if (!refusedEdits.includes(what)) refusedEdits.push(what);
+      refusedAt = at;
+    }
     fail(message(caught, fallback), ...at);
   }
 
@@ -490,8 +613,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const held = heldImageChange;
     if (held && imageBusy === null) {
       heldImageChange = null;
-      if (held.journeyId === state.draft.id) void changeImage(held.step, held.imageId, held.change, held.returnTo, held.subject);
+      if (sameReview(state, held.review)) void changeImage(held.step, held.imageId, held.change, held.returnTo, held.subject, held.review);
     }
+  }
+
+  // The review the rendered controls act on, read when a control is used.
+  function renderedTarget(): JourneyReviewTarget {
+    return renderedReview ?? { journeyId: reviewFor, sessionId: reviewSession };
   }
 
   type Variant = 'primary' | 'secondary' | 'danger';
@@ -536,6 +664,34 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function fail(text: string, ...at: string[]): void {
     error = text;
     errorAt = at;
+    failureCount += 1;
+  }
+
+  // The hidden alert region announces an error once, then empties, so a
+  // screen reader's virtual cursor finds it only beside the control it names.
+  function announceAlert(kind: 'start' | 'action', text: string): void {
+    if (alertTimer !== undefined) clearTimeout(alertTimer);
+    alerting = kind;
+    const show = () => {
+      alertLive.textContent = text;
+      alertTimer = setTimeout(() => {
+        alertTimer = undefined;
+        alertLive.textContent = '';
+        alerting = null;
+      }, ALERT_CLEAR_MS);
+    };
+    // The same text set again is not announced, so the region empties first.
+    if (alertLive.textContent === text) {
+      alertLive.textContent = '';
+      alertTimer = setTimeout(show, ALERT_REPEAT_MS);
+    } else show();
+  }
+
+  function silenceAlert(kind: 'start' | 'action'): void {
+    if (alerting !== kind) return;
+    if (alertTimer !== undefined) { clearTimeout(alertTimer); alertTimer = undefined; }
+    alertLive.textContent = '';
+    alerting = null;
   }
 
   // A mask, redaction, removal or value edit on its way to the draft. Save and
@@ -546,7 +702,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
 
   function expiryNotice(draft: JourneyDraftV1, expiresAt: number): string {
     const saved = savedRevision(draft);
-    const when = `at ${clockTime(expiresAt)}, ${REVIEW_IDLE} after the last change`;
+    const when = `${deadlineTime(expiresAt)}, ${REVIEW_IDLE} after the last change`;
     if (saved?.revision === draft.revision) return `The review closed ${when}. The saved copy is still in Saved journeys.`;
     if (saved) return `Your unsaved changes were deleted ${when}. The last saved copy is still in Saved journeys.`;
     return `Your unsaved journey review was deleted ${when}.`;
@@ -586,7 +742,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     startError = '';
     startErrorSeen = false;
     startErrorFocus = false;
-    if (alerting === 'start') { alertLive.textContent = ''; alerting = null; }
+    silenceAlert('start');
   }
 
   // Focus follows a failed start back to Start once this surface has focus, so
@@ -634,8 +790,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (summaryFlight) return summaryFlight;
     if (!alive) return Promise.resolve(false);
     if (!summaryPending) return Promise.resolve(true);
-    // Text typed in one journey's review never goes to another one.
-    const typedIn = (state.phase === 'reviewing' || state.phase === 'saving') && state.draft.id === summaryPending.journeyId;
+    // Text typed in one review never goes to another one.
+    const typedIn = sameReview(state, summaryPending.review);
     if (typedIn && state.phase === 'saving') { summaryHeld = true; return Promise.resolve(false); }
     if (!typedIn) { summaryPending = null; return Promise.resolve(true); }
     const wanted = summaryPending;
@@ -643,7 +799,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const flight = (async () => {
       let written = false;
       try {
-        await client.updateSummary(wanted.expected, wanted.actual, wanted.journeyId);
+        await client.updateSummary(wanted.expected, wanted.actual, wanted.review);
         if (summaryPending === wanted) summaryPending = null;
         error = '';
         written = true;
@@ -682,6 +838,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   function renderSummaries(draft: JourneyDraftV1): HTMLElement {
+    const review = renderedTarget();
     const section = node('section', undefined, 'journey-summary');
     section.setAttribute('aria-label', 'Expected and actual summaries');
     section.setAttribute('data-error-slot', 'journey-summaries');
@@ -708,7 +865,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       counter.id = `${field.id}-count`;
       area.addEventListener('input', event => {
         counter.textContent = `${codePoints(area.value)} / 4000 characters`;
-        summaryPending = { journeyId: draft.id, expected: areas.expected.value, actual: areas.actual.value };
+        summaryPending = { review, expected: areas.expected.value, actual: areas.actual.value };
         scheduleSummarySave();
         // The first edit of a saved revision withdraws export and one-step
         // discard at once, without interrupting an IME composition.
@@ -724,7 +881,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         // Re-renders detach the focused field, which fires blur synchronously
         // mid-render; only a user leaving a settled field should flush an edit.
         if (rendering || !area.isConnected) return;
-        const wanted = { journeyId: draft.id, expected: areas.expected.value, actual: areas.actual.value };
+        const wanted = { review, expected: areas.expected.value, actual: areas.actual.value };
         if (wanted.expected !== (draft.expected ?? '') || wanted.actual !== (draft.actual ?? '') || summaryPending) {
           summaryPending = wanted;
           void flushSummary();
@@ -738,7 +895,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   function pendingSummary(draft: JourneyDraftV1): { expected: string; actual: string } | null {
-    return summaryPending?.journeyId === draft.id ? summaryPending : null;
+    return summaryPending?.review.journeyId === draft.id && sameReview(state, summaryPending.review) ? summaryPending : null;
   }
 
   function summariesEntered(draft: JourneyDraftV1): boolean {
@@ -774,6 +931,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       };
       confirm.addEventListener('click', () => {
         if (busy || removing) return;
+        const review = renderedTarget();
         // A removed step takes its controls with it; land on its neighbour.
         const index = steps.findIndex(candidate => candidate.id === step.id);
         const neighbour = steps[index + 1] ?? steps[index - 1];
@@ -782,9 +940,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         removing = true;
         error = '';
         render();
-        const journeyId = reviewFor;
-        void client.removeStep(step.id).then(() => { error = ''; }).catch(caught => {
-          editFailed(caught, journeyId, 'Could not remove this step. Try again.', `remove-${step.id}`, `step-${step.id}`);
+        void client.removeStep(step.id, review).then(() => { error = ''; }).catch(caught => {
+          editFailed(caught, review.journeyId, `your removal of step ${step.seq}`,
+            'Could not remove this step. Try again.', `remove-${step.id}`, `step-${step.id}`);
         }).finally(() => {
           removing = false;
           if (alive) void refresh();
@@ -815,7 +973,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   function stepList(seqs: number[]): string {
-    return seqs.length <= 2 ? seqs.join(' and ') : `${seqs.slice(0, -1).join(', ')}, and ${seqs.at(-1)}`;
+    return listed(seqs.map(String));
   }
 
   async function changeImage(
@@ -824,9 +982,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     change: JourneyImageChange,
     returnTo: string,
     subject: string,
+    // The review the change was begun in, even from an editor kept open through another surface's save.
+    review: JourneyReviewTarget,
   ): Promise<void> {
-    // A change started from an editor kept open through another surface's save still names its review.
-    const journeyId = state.phase === 'reviewing' || state.phase === 'saving' ? state.draft.id : '';
     imageBusy = step.id;
     imageStatus = null;
     error = '';
@@ -834,13 +992,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     // A removed screenshot takes its controls with it; keep the reader on its step.
     pendingFocus = [returnTo, `step-${step.id}`];
     try {
-      await client.reviewImage(imageId, change);
+      await client.reviewImage(imageId, change, review);
       error = '';
       imageStatus = { stepId: step.id, text: `Screenshot for ${subject} ${change.operation === 'remove' ? 'removed' : 'masked'}.` };
       if (change.operation === 'remove') pendingFocus = [`step-${step.id}`];
     } catch (caught) {
       // A mask drawn while another surface saves is applied once the review is back.
-      if (heldBySave(caught) && journeyId) heldImageChange = { journeyId, step, imageId, change, returnTo, subject };
+      if (heldBySave(caught)) heldImageChange = { review, step, imageId, change, returnTo, subject };
       else fail(message(caught, 'Could not update the screenshot. Try again.'), returnTo, `mask-image-${step.id}`, `step-${step.id}`);
     } finally {
       imageBusy = null;
@@ -854,11 +1012,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     image: JourneyDraftImage,
     note: string | undefined,
     subject: string,
+    review: JourneyReviewTarget,
   ): Promise<void> {
     if (busy || saveBusy || imageBusy !== null || imageEditor || state.phase !== 'reviewing' || !image.dataUrl) return;
     const maskedFrom = image.dataUrl;
     const abort = new AbortController();
-    const editor = { journeyId: state.draft.id, imageId, abort, regionChosen: false };
+    const editor = { review, imageId, subject, abort, regionChosen: false };
     imageEditor = editor;
     confirmingImageRemove = null;
     imageStatus = null;
@@ -877,7 +1036,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     await changeImage(step, imageId, result.kind === 'applied'
       ? { operation: 'replace', image: result.image, maskedFrom }
-      : { operation: 'remove' }, returnTo, subject);
+      : { operation: 'remove' }, returnTo, subject, review);
   }
 
   // The full-size view is modal; it closes itself if another surface changes
@@ -886,7 +1045,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (imageViewer || imageEditor || state.phase !== 'reviewing') return;
     const abort = new AbortController();
     const returnTo = [`view-image-${step.id}`, `step-${step.id}`];
-    imageViewer = { journeyId: state.draft.id, imageId, dataUrl: image.dataUrl, returnTo, abort };
+    imageViewer = { review: renderedTarget(), imageId, dataUrl: image.dataUrl, returnTo, abort };
     await viewJourneyImage(viewerDialog, {
       dataUrl: image.dataUrl, width: image.width, height: image.height, label: `Screenshot for step ${step.seq}`,
     }, abort.signal);
@@ -975,7 +1134,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       confirm.addEventListener('click', () => {
         if (busy || saveBusy || imageBusy !== null) return;
         confirmingImageRemove = null;
-        void changeImage(step, imageId, { operation: 'remove' }, `remove-image-${step.id}`, subject);
+        void changeImage(step, imageId, { operation: 'remove' }, `remove-image-${step.id}`, subject, renderedTarget());
       });
       confirm.addEventListener('keydown', event => {
         if (event.key === 'Escape') { event.preventDefault(); disarm(); }
@@ -992,7 +1151,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         mask.disabled = disabled;
         mask.setAttribute('data-focus-id', `mask-image-${step.id}`);
         mask.setAttribute('aria-describedby', maskDescription.join(' '));
-        mask.addEventListener('click', () => { void openImageEditor(step, imageId, image, shared, subject); });
+        mask.addEventListener('click', () => { void openImageEditor(step, imageId, image, shared, subject, renderedTarget()); });
         actions.append(mask);
       }
       const remove = node('button', `Remove screenshot for step ${step.seq}`, 'journey-secondary');
@@ -1118,14 +1277,15 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     save.setAttribute('data-focus-id', `save-value-${step.id}`);
     save.addEventListener('click', () => {
       if (busy || valueBusy !== null) return;
+      const review = renderedTarget();
       valueBusy = step.id;
       error = '';
       pendingFocus = [`edit-value-${step.id}`, `save-value-${step.id}`];
       render();
       const wanted = editedValueFor(step.enteredValue, editingText, editingChecked);
-      const journeyId = reviewFor;
-      void client.editValue(step.id, wanted).then(() => { error = ''; }).catch(caught => {
-        editFailed(caught, journeyId, 'Could not update the journey. Try again.', `save-value-${step.id}`, `edit-value-${step.id}`, `step-${step.id}`);
+      void client.editValue(step.id, wanted, review).then(() => { error = ''; }).catch(caught => {
+        editFailed(caught, review.journeyId, newValue(step.seq),
+          'Could not update the journey. Try again.', `save-value-${step.id}`, `edit-value-${step.id}`, `step-${step.id}`);
       }).finally(() => {
         valueBusy = null;
         if (error === '') editingStepId = null;
@@ -1181,12 +1341,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       remove.setAttribute('data-focus-id', `remove-value-${step.id}`);
       remove.addEventListener('click', () => {
         if (busy || valueBusy !== null) return;
+        const review = renderedTarget();
         valueBusy = step.id;
         error = '';
         render();
-        const journeyId = reviewFor;
-        void client.editValue(step.id, emptyValueFor(entered as { kind: string; multiple?: boolean })).then(() => { error = ''; }).catch(caught => {
-          editFailed(caught, journeyId, 'Could not update the journey. Try again.', `remove-value-${step.id}`, `step-${step.id}`);
+        void client.editValue(step.id, emptyValueFor(entered as { kind: string; multiple?: boolean }), review).then(() => { error = ''; }).catch(caught => {
+          editFailed(caught, review.journeyId, `your removal of the value for step ${step.seq}`,
+            'Could not update the journey. Try again.', `remove-value-${step.id}`, `step-${step.id}`);
         }).finally(() => {
           valueBusy = null;
           if (alive) void refresh();
@@ -1214,20 +1375,26 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   // A click label can echo what the user typed, so it is redacted like a URL.
   function renderUrlRedact(step: JourneyDraftStep, draft: JourneyDraftV1): HTMLElement | null {
     const wrap = node('div', undefined, 'journey-url-actions');
-    const redactControl = (target: JourneyUrlRedactionTarget | 'label', text: string, redactIt: () => Promise<void>) => {
+    const redactControl = (
+      target: JourneyUrlRedactionTarget | 'label',
+      text: string,
+      what: string,
+      redactIt: (review: JourneyReviewTarget) => Promise<void>,
+    ) => {
       const redact = node('button', text, 'journey-secondary');
       redact.type = 'button';
       redact.disabled = busy || redactBusy !== null;
       redact.setAttribute('data-focus-id', `redact-${target}-${step.id}`);
       redact.addEventListener('click', () => {
         if (busy || redactBusy !== null) return;
+        const review = renderedTarget();
         redactBusy = `${step.id}:${target}`;
         error = '';
         pendingFocus = [`redact-${target}-${step.id}`, `redacted-${target}-${step.id}`, `step-${step.id}`];
         render();
-        const journeyId = reviewFor;
-        void redactIt().then(() => { error = ''; }).catch(caught => {
-          editFailed(caught, journeyId, 'Could not update the journey. Try again.', `redact-${target}-${step.id}`, `step-${step.id}`);
+        void redactIt(review).then(() => { error = ''; }).catch(caught => {
+          editFailed(caught, review.journeyId, `your redaction of the ${what} for step ${step.seq}`,
+            'Could not update the journey. Try again.', `redact-${target}-${step.id}`, `step-${step.id}`);
         }).finally(() => {
           redactBusy = null;
           if (alive) void refresh();
@@ -1236,7 +1403,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       wrap.append(redact);
     };
     const urlControl = (url: string, target: JourneyUrlRedactionTarget, label: string) => {
-      if (url !== REDACTED) redactControl(target, `Redact ${label} URL for step ${step.seq}`, () => client.redactUrl(step.id, target));
+      if (url !== REDACTED) {
+        redactControl(target, `Redact ${label} URL for step ${step.seq}`, `${label} URL`, review => client.redactUrl(step.id, target, review));
+      }
     };
     urlControl(step.sourceUrl, 'source', 'source');
     if (step.kind === 'navigation') urlControl(step.navigation.toUrl, 'destination', 'destination');
@@ -1246,15 +1415,16 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     // An editable target's label is only its generic kind, such as "text field".
     if (step.kind === 'click' && !step.target.editable && !labelRedacted(step, draft)) {
-      redactControl('label', `Redact click label for step ${step.seq}`, () => client.redactLabel(step.id));
+      redactControl('label', `Redact click label for step ${step.seq}`, 'click label', review => client.redactLabel(step.id, review));
     }
     return wrap.childElementCount > 0 ? wrap : null;
   }
 
   function renderSave(draft: JourneyDraftV1): HTMLElement {
     const section = node('section', undefined, 'journey-save');
-    section.setAttribute('aria-label', 'Save journey');
     const title = node('h2', 'Save journey');
+    title.id = 'journey-save-heading';
+    section.setAttribute('aria-labelledby', title.id);
     title.tabIndex = -1;
     title.setAttribute('data-focus-id', 'journey-save-heading');
     section.append(title);
@@ -1294,13 +1464,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     save.setAttribute('data-focus-id', 'journey-save');
     save.addEventListener('click', () => {
       if (save.disabled) return;
+      const review = renderedTarget();
       saveBusy = true;
       error = '';
       render();
-      // A review that moved on to another journey meanwhile is never saved from here.
+      // A review that moved on to another review meanwhile is never saved from here.
       void summaryWritten().then(async () => {
-        if (state.phase !== 'reviewing' || state.draft.id !== draft.id) return;
-        await client.save(acknowledged);
+        if (state.phase !== 'reviewing' || !sameReview(state, review)) return;
+        await client.save(acknowledged, review);
         error = '';
       }).catch(caught => {
         fail(message(caught, 'Could not save this journey. Try again.'), 'journey-save');
@@ -1317,13 +1488,17 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
-  function renderExport(target: { journeyId: string; revision: number }, exportable: boolean, primary = false): HTMLElement | null {
+  // finishing: a change here is on its way to the draft, so whether it must be
+  // saved first is not known yet.
+  function renderExport(target: { journeyId: string; revision: number }, exportable: boolean, primary = false, finishing = false): HTMLElement | null {
     if (typeof (client as Partial<JourneyClient>).openSnapshot !== 'function') return null;
     const section = node('section', undefined, 'journey-export');
-    section.setAttribute('aria-label', 'Share journey');
-    section.append(node('h2', 'Share journey'));
+    const title = node('h2', 'Share journey');
+    title.id = 'journey-export-heading';
+    section.setAttribute('aria-labelledby', title.id);
+    section.append(title);
     if (!exportable) {
-      const note = node('p', 'Save first to copy or download this journey.', 'journey-help');
+      const note = node('p', finishing ? FINISHING_CHANGE : 'Save first to copy or download this journey.', 'journey-help');
       note.id = 'journey-export-note';
       section.append(note);
     }
@@ -1397,14 +1572,18 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   // An unchanged reopened journey stays saved, so closing it needs no
-  // confirmation. Anything unsaved is confirmed like Remove step.
+  // confirmation. Anything unsaved is confirmed like Remove step, including a
+  // saved one a change here is about to alter. The discard names the review,
+  // and the one-step discard the saved revision it offered to close.
   function renderDiscard(draft: JourneyDraftV1): HTMLElement {
     const section = node('div', undefined, 'journey-discard');
     const saved = savedRevision(draft);
-    if (draftIsSaved(draft)) {
+    const review = renderedTarget();
+    if (draftIsSaved(draft) && !reviewMutating()) {
       const note = node('p', 'Discarding closes this review. The saved copy stays in Saved journeys.', 'journey-help');
       note.id = 'journey-discard-note';
-      const discard = action('Discard journey', () => client.discard(), 'secondary', false, 'journey-discard');
+      const discard = action('Discard journey', () => client.discard({ phase: 'reviewing', ...review, revision: draft.revision }),
+        'secondary', false, 'journey-discard');
       discard.setAttribute('aria-describedby', note.id);
       section.append(note, discard);
     } else if (confirmingDiscard === draft.id) {
@@ -1413,7 +1592,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         : 'Discard this journey? Its steps and screenshots are deleted and cannot be recovered.', 'journey-help');
       scope.id = 'journey-discard-scope';
       const actions = node('div', undefined, 'journey-step-actions');
-      const confirm = action('Confirm discard journey', () => client.discard(), 'danger', false, 'journey-confirm-discard');
+      const confirm = action('Confirm discard journey', () => client.discard({ phase: 'reviewing', ...review }),
+        'danger', false, 'journey-confirm-discard');
       confirm.setAttribute('aria-describedby', scope.id);
       const disarm = () => {
         confirmingDiscard = null;
@@ -1587,8 +1767,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (savedJourneys === null) return null;
     const saved = reviewing ? savedJourneys.filter(item => item.journeyId !== reviewing.id) : savedJourneys;
     const section = node('section', undefined, 'journey-saved-list');
-    section.setAttribute('aria-label', 'Saved journeys');
     const title = node('h2', 'Saved journeys');
+    title.id = 'journey-saved-heading';
+    section.setAttribute('aria-labelledby', title.id);
     title.tabIndex = -1;
     title.setAttribute('data-focus-id', 'journey-saved-heading');
     section.append(title);
@@ -1742,13 +1923,25 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return item;
   }
 
+  // Whether the draft records the loss its own stop caused, which the stop
+  // notice then states in place of the Limitations list.
+  function stopLimitation(draft: JourneyDraftV1): string | undefined {
+    const limitation = storageFailedAfterRecording(draft) ? JOURNEY_LIMITATIONS.reviewStorage
+      : draft.stopReason ? stopLimitations[draft.stopReason] : undefined;
+    const limitations: unknown = draft.limitations;
+    return limitation && Array.isArray(limitations) && limitations.includes(limitation) ? limitation : undefined;
+  }
+
   function announceStop(draft: JourneyDraftV1): HTMLElement | null {
     const reason = draft.stopReason;
-    const text = !reason ? undefined : storageFailedAfterRecording(draft) ? REVIEW_STORAGE_NOTICE : stopNotices[reason];
+    const text = !reason ? undefined
+      : storageFailedAfterRecording(draft) ? REVIEW_STORAGE_NOTICE
+        : reason === 'session-storage-limit' && stopLimitation(draft) ? STORAGE_LOSS_NOTICE
+          : stopNotices[reason];
     if (!reason || !text) return null;
     // A storage failure can still lose the draft, so it interrupts.
     const storage = reason === 'session-storage-limit';
-    const key = `${draft.id}:${reason}`;
+    const key = `${draft.id}:${reason}:${text}`;
     if (announcedNotice !== key) {
       announcedNotice = key;
       (storage ? urgentLive : politeLive).textContent = text;
@@ -1758,10 +1951,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   // What recording lost, shown before the steps so no one shares the journey
-  // believing it complete. journeys.md lists the same limitations.
+  // believing it complete. journeys.md lists the same limitations. The stop
+  // notice above already says what the stop itself lost, so each loss shows once.
   function renderLimitations(draft: JourneyDraftV1): HTMLElement | null {
-    const limitations: unknown = draft.limitations;
-    if (!Array.isArray(limitations) || limitations.length === 0) return null;
+    const all: unknown = draft.limitations;
+    const stated = stopLimitation(draft);
+    const limitations = Array.isArray(all) ? all.filter(limitation => limitation !== stated) : [];
+    if (limitations.length === 0) return null;
     const section = node('section', undefined, 'journey-notice journey-limitations');
     const title = node('h2', 'Limitations');
     title.id = 'journey-limitations-heading';
@@ -1775,7 +1971,15 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   // Every review says up front how long unsaved work lasts. Once its deadline
   // nears, a warning stays in view and is announced once per deadline; a
   // change here moves the deadline and withdraws it.
-  function renderDeadline(draft: JourneyDraftV1, warningAt: number, expiresAt: number): HTMLElement[] {
+  function deadlineStage(now: number): DeadlineStage {
+    if (state.phase !== 'reviewing' || draftIsSaved(state.draft)) return 'none';
+    const warningAt = Date.parse(state.warningAt);
+    const expiresAt = Date.parse(state.expiresAt);
+    if (!Number.isFinite(warningAt) || !Number.isFinite(expiresAt) || now < warningAt) return 'none';
+    return now >= expiresAt ? 'expired' : 'warning';
+  }
+
+  function renderDeadline(draft: JourneyDraftV1, expiresAt: number): HTMLElement[] {
     const saved = savedRevision(draft);
     const unchanged = draftIsSaved(draft);
     const standing = node('p', unchanged
@@ -1783,14 +1987,16 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       : `Unsaved ${saved ? 'changes are' : 'reviews are'} deleted after ${REVIEW_IDLE} without changes, and when the browser restarts.`,
     'journey-help journey-deadline-note');
     const now = Date.now();
-    if (unchanged || !Number.isFinite(warningAt) || !Number.isFinite(expiresAt) || now < warningAt) return [standing];
+    const stage = deadlineStage(now);
+    renderedDeadline = stage;
+    if (stage === 'none') return [standing];
     const warning = node('div', undefined, 'journey-notice journey-notice-error journey-deadline');
     const subject = saved ? 'Your unsaved changes' : 'This unsaved review';
-    const text = now >= expiresAt
+    const text = stage === 'expired'
       ? `${subject} went ${REVIEW_IDLE} without changes and ${saved ? 'are' : 'is'} being deleted.`
-      : `${subject} will be deleted at ${clockTime(expiresAt)}. Save now, or make any change to keep reviewing.`;
+      : `${subject} will be deleted ${deadlineTime(expiresAt)}. Save now, or make any change to keep reviewing.`;
     warning.append(node('p', text));
-    if (now < expiresAt) {
+    if (stage === 'warning') {
       const go = node('button', 'Go to Save', 'journey-secondary');
       go.type = 'button';
       go.setAttribute('data-focus-id', 'journey-go-to-save');
@@ -1802,7 +2008,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       });
       warning.append(go);
     }
-    const key = `${draft.id}@${expiresAt}:${now >= expiresAt}`;
+    const key = `${draft.id}@${expiresAt}:${stage}`;
     if (announcedDeadline !== key) {
       announcedDeadline = key;
       urgentLive.textContent = text;
@@ -1811,26 +2017,43 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   // Wakes the review when its warning is due, and re-reads it at its deadline
-  // in case the background's notice is late.
+  // in case the background's notice is late. The timer never runs longer than
+  // DEADLINE_RECHECK_MS, since timers stall while the computer sleeps.
   function scheduleDeadline(): void {
     if (deadlineTimer !== undefined) { clearTimeout(deadlineTimer); deadlineTimer = undefined; }
     if (state.phase !== 'reviewing' || !alive) return;
     const now = Date.now();
-    const expiresAt = Date.parse(state.expiresAt);
-    const next = [Date.parse(state.warningAt), expiresAt].filter(at => Number.isFinite(at) && at > now);
+    const next = [Date.parse(state.warningAt), Date.parse(state.expiresAt)].filter(at => Number.isFinite(at) && at > now);
     if (next.length === 0) return;
-    const at = Math.min(...next);
     deadlineTimer = setTimeout(() => {
       deadlineTimer = undefined;
-      if (at === expiresAt) void refresh();
-      else update();
-    }, Math.min(at - now + 50, 2 ** 31 - 1));
+      recheckDeadline();
+    }, Math.min(Math.min(...next) - now + 50, DEADLINE_RECHECK_MS));
+  }
+
+  // Shows a warning that fell due, or re-reads a review whose deadline passed,
+  // after a timer or when the reader returns to this surface (after sleep, say).
+  function recheckDeadline(): void {
+    if (!alive || state.phase !== 'reviewing') return;
+    const now = Date.now();
+    if (now >= Date.parse(state.expiresAt)) void refresh();
+    else if (deadlineStage(now) !== renderedDeadline) update();
+    else scheduleDeadline();
+  }
+
+  function describedBy(element: Element, add: string | undefined, remove?: string): void {
+    const ids = (element.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(id => id && id !== remove);
+    if (add && !ids.includes(add)) ids.push(add);
+    if (ids.length > 0) element.setAttribute('aria-describedby', ids.join(' '));
+    else element.removeAttribute('aria-describedby');
   }
 
   // The error shows below the first rendered control it names, below that
-  // control's row of buttons, or below the heading.
+  // control's row of buttons, or below the heading, and describes that control
+  // (or the fields of the section it names, or the heading) for screen readers.
   function placeError(): void {
     view.querySelector('#journey-error')?.remove();
+    for (const described of view.querySelectorAll('[aria-describedby~="journey-error"]')) describedBy(described, undefined, 'journey-error');
     if (!error) return;
     const shown = node('p', error, 'journey-error');
     shown.id = 'journey-error';
@@ -1840,7 +2063,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       anchor = view.querySelector(`[data-focus-id="${escaped}"], [data-error-slot="${escaped}"]`);
       if (anchor) break;
     }
-    anchor = anchor ? anchor.closest(ACTION_ROWS) ?? anchor : view.querySelector('[data-focus-id="journey-heading"]');
+    anchor ??= view.querySelector('[data-focus-id="journey-heading"]');
+    const controls = anchor?.hasAttribute('data-error-slot') ? Array.from(anchor.querySelectorAll('[data-focus-id]')) : anchor ? [anchor] : [];
+    for (const control of controls) describedBy(control, shown.id);
+    anchor = anchor ? anchor.closest(ACTION_ROWS) ?? anchor : null;
     if (anchor) anchor.after(shown);
     else view.append(shown);
   }
@@ -1859,6 +2085,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const phaseChanged = renderedPhase !== undefined && renderedPhase !== state.phase;
     renderedPhase = state.phase;
     renderedKey = viewKey(state);
+    renderedReview = state.phase === 'reviewing' ? reviewOf(state) : undefined;
+    renderedDeadline = 'none';
     if (state.phase !== 'reviewing' && (announcedNotice || announcedDeadline)) {
       announcedNotice = '';
       announcedDeadline = '';
@@ -1908,7 +2136,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const buttons = node('div', undefined, 'journey-actions');
       // A surface that cannot start again closes the confirmation instead.
       const next = client.canStart?.() === false ? 'Done' : 'Record another journey';
-      buttons.append(action(next, () => client.discard(), 'secondary', false, 'journey-record-another'));
+      buttons.append(action(next, () => client.discard({ phase: 'saved', journeyId }), 'secondary', false, 'journey-record-another'));
       view.append(buttons);
     } else if (state.phase === 'starting' || state.phase === 'recording') {
       const recording = state.phase === 'recording';
@@ -1922,7 +2150,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       view.append(node('p', `${count(draft.steps.length, 'retained step')} · Entered values: ${draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
       // The stop notice announces first, so a due deadline warning is not cleared by it.
       const notice = announceStop(draft);
-      view.append(...renderDeadline(draft, Date.parse(state.warningAt), Date.parse(state.expiresAt)));
+      view.append(...renderDeadline(draft, Date.parse(state.expiresAt)));
       if (notice) view.append(notice);
       const limitations = renderLimitations(draft);
       if (limitations) view.append(limitations);
@@ -1937,7 +2165,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const room = makingRoom ? renderSavedList(draft) : null;
       if (room) view.append(room);
       renderedSaved = draftIsSaved(draft);
-      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, renderedSaved && !reviewMutating());
+      const mutating = reviewMutating();
+      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, renderedSaved && !mutating, false, mutating);
       if (sharing) view.append(sharing);
       view.append(renderDiscard(draft));
     } else {
@@ -1950,19 +2179,15 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (loadFailed) view.querySelector('[data-focus-id="journey-heading"]')
       ?.after(action('Reset journey storage', () => client.discard(), 'secondary', false, 'journey-reset-storage'));
     placeError();
-    if (error) {
-      if (alerting !== 'action' || alertLive.textContent !== error) {
-        alerting = 'action';
-        alertLive.textContent = error;
-      }
-    } else if (alerting === 'action') {
-      alerting = null;
-      alertLive.textContent = '';
-    }
+    // Each failure is announced once, a repeated message included; re-renders
+    // that keep an error in view leave the alert region alone.
+    if (error && announcedFailure !== failureCount) {
+      announcedFailure = failureCount;
+      announceAlert('action', error);
+    } else if (!error) silenceAlert('action');
     if (startError && !startErrorSeen && state.phase === 'idle' && document.visibilityState === 'visible') {
       startErrorSeen = true;
-      alerting = 'start';
-      alertLive.textContent = startError;
+      announceAlert('start', startError);
     }
     let restored = false;
     if (focusId) {
@@ -2001,13 +2226,19 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
 
   // Returning to this surface clears a start error the reader already saw here.
   // One that arrived while the surface was hidden is shown and announced now.
+  // A review's deadline is read again too: the computer may have slept.
   const reactivated = () => {
-    if (document.visibilityState !== 'visible' || !startError || !alive) return;
+    if (document.visibilityState !== 'visible' || !alive) return;
+    recheckDeadline();
+    if (!startError) return;
     if (startErrorSeen) { clearStartError(); void refresh(); return; }
     render();
     focusStartError();
   };
-  const refocused = () => { focusStartError(); };
+  const refocused = () => {
+    recheckDeadline();
+    focusStartError();
+  };
   document.addEventListener('visibilitychange', reactivated);
   window.addEventListener('focus', refocused);
   root.addEventListener('pointerdown', pressStarted, true);
@@ -2024,6 +2255,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     if (pressTimer !== undefined) clearTimeout(pressTimer);
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    if (alertTimer !== undefined) clearTimeout(alertTimer);
     imageEditor?.abort.abort();
     imageViewer?.abort.abort();
     document.removeEventListener('visibilitychange', reactivated);
