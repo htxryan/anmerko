@@ -1,7 +1,11 @@
 .journey-image-review {
+  background: var(--surface, #fff);
   box-sizing: border-box;
   border: 0;
+  border-radius: 12px;
+  color: var(--text, #202b41);
   display: grid;
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   gap: 16px;
   max-height: 100%;
   max-width: 720px;
@@ -86,7 +90,9 @@
 }
 
 .journey-image-review__field input {
+  background: var(--surface, #fff);
   border: 1px solid #7b8492;
+  color: inherit;
   border-radius: 6px;
   font: inherit;
   min-height: 44px;
@@ -96,11 +102,11 @@
 }
 
 .journey-image-review__field input[aria-invalid='true'] {
-  border-color: #b42318;
+  border-color: var(--danger, #b42318);
 }
 
 .journey-image-review__error {
-  color: #b42318;
+  color: var(--danger, #b42318);
 }
 
 .journey-image-review__actions {
@@ -111,7 +117,9 @@
 }
 
 .journey-image-review__button {
+  background: var(--surface, #fff);
   border: 1px solid #667085;
+  color: inherit;
   border-radius: 6px;
   cursor: pointer;
   font: inherit;
@@ -125,12 +133,12 @@
 }
 
 .journey-image-review__button--danger {
-  color: #b42318;
+  color: var(--danger, #b42318);
   margin-right: auto;
 }
 
 .journey-image-review__button--primary {
-  background: #175cd3;
+  background: var(--primary, #175cd3);
   color: #fff;
 }
 

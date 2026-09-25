@@ -219,6 +219,43 @@ for (const hash of ['', 'launch=short', 'launch=valid_nonce-1234567890&extra=1',
   });
 }
 
+test('every review surface styles the screenshot mask dialog', async ({ page }) => {
+  const maskDialogRadius = () => {
+    const host = Array.from(document.documentElement.children).find(element => element.shadowRoot?.querySelector('.app'));
+    const dialog = document.createElement('dialog');
+    dialog.className = 'journey-image-review';
+    (host?.shadowRoot?.querySelector('.app') ?? document.body).append(dialog);
+    return getComputedStyle(dialog).borderTopLeftRadius;
+  };
+  await page.setContent('<!doctype html><html><head></head><body><main id="journey"></main></body></html>');
+  await page.addScriptTag({ content: pageBundle(true) });
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  expect(await page.evaluate(maskDialogRadius)).toBe('12px');
+
+  const sidebarBundle = buildSync({
+    entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife',
+    loader: { '.css': 'text' }, define: { __ANMERKO_JOURNEYS__: 'true' },
+  }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: sidebarBundle });
+  await expect(page.getByRole('complementary', { name: 'anmerko feedback panel' })).toBeVisible();
+  expect(await page.evaluate(maskDialogRadius)).toBe('12px');
+
+  // A dark sidebar keeps the dialog's warning text on theme tokens, readable on its dark surface.
+  expect(await page.evaluate(() => {
+    const app = Array.from(document.documentElement.children)
+      .map(element => element.shadowRoot?.querySelector('.app')).find(Boolean)!;
+    app.setAttribute('data-theme', 'dark');
+    const dialog = app.querySelector('.journey-image-review')!;
+    const danger = document.createElement('button');
+    danger.className = 'journey-image-review__button journey-image-review__button--danger';
+    const error = document.createElement('p');
+    error.className = 'journey-image-review__error';
+    dialog.append(danger, error);
+    return [getComputedStyle(dialog).backgroundColor, getComputedStyle(danger).color, getComputedStyle(error).color];
+  })).toEqual(['rgb(28, 37, 53)', 'rgb(255, 170, 165)', 'rgb(255, 170, 165)']);
+});
+
 test('feature-off page renders an unavailable message without contacting the background', async ({ page }) => {
   await page.setContent('<!doctype html><html><head></head><body><main id="journey"></main></body></html>');
   await page.evaluate(() => { location.hash = 'launch=valid_nonce-1234567890'; });

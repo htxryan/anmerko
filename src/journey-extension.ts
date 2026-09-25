@@ -7,7 +7,7 @@ import {
 } from './journey-controller';
 import type { JourneyDraftImage, JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
-import { normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
+import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
 import { deleteJourneySnapshot, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
@@ -166,6 +166,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let latestCaptureId: string | undefined;
   let activeNormalizations = 0;
   let queuedNormalizations = 0;
+  // A save and a screenshot review never overlap: the save would otherwise
+  // store the pixels a mask is about to cover and then report success.
+  let imageReviewsInFlight = 0;
+  let savesInFlight = 0;
   let normalizationTurn: Promise<void> = Promise.resolve();
   let releaseNormalizationTurn: () => void = () => {};
   type PendingWakeEvent = {
@@ -366,6 +370,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       normalizationTurn = new Promise<void>(resolve => { releaseNormalizationTurn = resolve; });
       release();
     }
+  };
+
+  // Review surfaces are trusted, but their replacement PNG is not: every
+  // dimension comes from its bytes, and the capture normalizer re-encodes it.
+  const reviewedReplacement = async (dataUrl: string, isCurrent: () => boolean): Promise<NormalizedJourneyPng> => {
+    let inspected: Pick<NormalizedJourneyPng, 'width' | 'height'>;
+    try { inspected = inspectNormalizedJourneyPng(dataUrl); }
+    catch { throw new Error(GENERIC_ERROR); }
+    const image = await normalizeBounded(dataUrl, isCurrent);
+    if (image.width !== inspected.width || image.height !== inspected.height) throw new Error(GENERIC_ERROR);
+    return image;
   };
 
   const capture = async (
@@ -1062,6 +1077,40 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }));
       return;
     }
+    if (message.type === 'ANMERKO_JOURNEY_REVIEW_IMAGE') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      if (typeof message.epoch !== 'number' || typeof message.journeyId !== 'string'
+        || typeof message.revision !== 'number' || typeof message.imageId !== 'string'
+        || (message.operation !== 'remove' && (message.operation !== 'replace' || typeof message.dataUrl !== 'string'))) {
+        throw new Error(GENERIC_ERROR);
+      }
+      if (savesInFlight > 0) throw new JourneyCommandError('stale-review');
+      const guard = { epoch: message.epoch, journeyId: message.journeyId, revision: message.revision, imageId: message.imageId };
+      imageReviewsInFlight += 1;
+      try {
+        if (message.operation === 'remove') {
+          await withPersistedState(controller.reviewImage({ operation: 'remove', ...guard }));
+          return;
+        }
+        const stillCurrent = () => {
+          const current = controller.getState();
+          return current.phase === 'reviewing' && current.epoch === guard.epoch
+            && current.journeyId === guard.journeyId && current.draft.revision === guard.revision;
+        };
+        // Fail fast before decoding; the controller re-checks the guards when it applies the image.
+        if (!stillCurrent()) throw new JourneyCommandError('stale-review');
+        let image: NormalizedJourneyPng;
+        try { image = await reviewedReplacement(message.dataUrl as string, stillCurrent); }
+        catch (error) {
+          if (!stillCurrent()) throw new JourneyCommandError('stale-review');
+          throw error;
+        }
+        await withPersistedState(controller.reviewImage({ operation: 'replace', ...guard, image }));
+        return;
+      } finally {
+        imageReviewsInFlight -= 1;
+      }
+    }
     if (message.type === 'ANMERKO_JOURNEY_LIST') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       return listJourneySnapshots();
@@ -1115,10 +1164,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
     if (message.type === 'ANMERKO_JOURNEY_SAVE') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      // Another review surface is still masking or removing a screenshot.
+      if (imageReviewsInFlight > 0) throw new JourneyCommandError('stale-review');
       let saved: { journeyId: string; revision: number } | undefined;
-      await withPersistedState(controller.save(message.acknowledged).then(result => {
-        saved = result;
-      }));
+      savesInFlight += 1;
+      try {
+        await withPersistedState(controller.save(message.acknowledged).then(result => {
+          saved = result;
+        }));
+      } finally {
+        savesInFlight -= 1;
+      }
       return saved;
     }
     throw new Error(GENERIC_ERROR);
@@ -1200,7 +1256,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_REVIEW_IMAGE', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {

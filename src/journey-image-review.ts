@@ -10,6 +10,8 @@ export interface JourneyImageReviewInput {
   dataUrl: string;
   width: number;
   height: number;
+  // Extra context under the instructions, such as steps sharing this image.
+  note?: string;
 }
 
 export type JourneyImageReviewResult =
@@ -130,7 +132,13 @@ export function reviewJourneyImage(
   apply.textContent = 'Apply mask';
   apply.disabled = true;
   actions.append(remove, cancel, apply);
-  view.append(heading, help, stage, fields, error, actions);
+  view.append(heading, help);
+  if (input.note) {
+    const note = element('p', 'journey-image-review__help');
+    note.textContent = input.note;
+    view.append(note);
+  }
+  view.append(stage, fields, error, actions);
   root.replaceChildren(view);
   view.showModal();
 

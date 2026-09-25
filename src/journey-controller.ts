@@ -28,7 +28,9 @@ import {
   type Viewport,
 } from './journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch } from './journey-events';
+import type { NormalizedJourneyPng } from './journey-image';
 import { CAPTURE_FAILURES, JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
+import { applyJourneyImageReview } from './journey-review';
 
 export interface JourneyPageIdentity {
   documentToken: string;
@@ -63,6 +65,12 @@ export interface JourneyControllerAdapter {
   delay?(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
+// The background validates the replacement pixels and stamps the edit time
+// itself, so a review surface supplies only the revision guards and image.
+export type JourneyImageReviewRequest =
+  | { operation: 'replace'; epoch: number; journeyId: string; revision: number; imageId: string; image: NormalizedJourneyPng }
+  | { operation: 'remove'; epoch: number; journeyId: string; revision: number; imageId: string };
+
 export interface JourneyController {
   getState(): JourneySession;
   start(input: { ownerTabId: number; ownerWindowId: number; includeEnteredValues?: boolean }): Promise<void>;
@@ -74,6 +82,7 @@ export interface JourneyController {
   removeStep(input: JourneyRemoveStepInput): Promise<void>;
   editValue(input: JourneyEditValueInput): Promise<void>;
   redactUrl(input: JourneyRedactUrlInput): Promise<void>;
+  reviewImage(input: JourneyImageReviewRequest): Promise<void>;
   reopen(input: {
     ownerTabId: number; ownerWindowId: number;
     draft: JourneyDraftV1; images: Record<string, JourneyDraftImage>;
@@ -648,6 +657,20 @@ export function createJourneyController(
     if (next !== previous) publish(next);
   }
 
+  async function reviewImage(input: JourneyImageReviewRequest): Promise<void> {
+    const previous = currentReview(state, input);
+    const updatedAt = new Date(Math.max(now(), Date.parse(previous.draft.updatedAt))).toISOString();
+    const guard = { epoch: input.epoch, journeyId: input.journeyId, revision: input.revision, imageId: input.imageId, updatedAt };
+    const result = applyJourneyImageReview(previous, input.operation === 'replace'
+      ? {
+        operation: 'replace', ...guard,
+        image: { dataUrl: input.image.dataUrl, width: input.image.width, height: input.image.height, byteLength: input.image.byteLength },
+      }
+      : { operation: 'remove', ...guard });
+    if (!result.ok) throw new Error('The screenshot review could not be applied.');
+    publish(result.value);
+  }
+
   async function reopen(input: {
     ownerTabId: number; ownerWindowId: number;
     draft: JourneyDraftV1; images: Record<string, JourneyDraftImage>;
@@ -727,7 +750,7 @@ export function createJourneyController(
     await safeEnd(tabId, sessionId, epoch, documentToken);
   }
 
-  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, save, reopen };
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, reviewImage, save, reopen };
 }
 
 function newId(prefix: string): string {
