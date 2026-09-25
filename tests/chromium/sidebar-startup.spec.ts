@@ -207,6 +207,28 @@ test('native Float posts a one-way port command before close and reports a live-
   expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(2);
 });
 
+test('a native Firefox sidebar closes itself for Minimize within the click, while Chromium animates first', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  for (const firefox of [true, false]) {
+    await page.goto('http://127.0.0.1:4173/sidebar.html');
+    await page.evaluate(value => { (globalThis as { nativeHarnessFirefox?: boolean }).nativeHarnessFirefox = value; }, firefox);
+    await page.addScriptTag({ content: nativeBundle });
+    await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+    await run(page, 'nativeHarness.reply()');
+    const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+    await expect(panel.getByRole('button', { name: 'Minimize comments', exact: true })).toBeEnabled();
+    await run(page, 'nativeHarness.resetLayoutSequence()');
+    // Firefox only lets a sidebar close in the click's own task, before any await.
+    const sequence = await page.evaluate(() => {
+      document.querySelector('anmerko-overlay')!.shadowRoot!.querySelector<HTMLButtonElement>('.minimize')!.click();
+      return [...(globalThis as unknown as { nativeHarness: { layoutSequence: string[] } }).nativeHarness.layoutSequence];
+    });
+    expect(sequence, firefox ? 'Firefox' : 'Chromium').toEqual(firefox ? ['port-post', 'close'] : []);
+    await expect.poll(() => run(page, 'nativeHarness.layoutSequence')).toEqual(['port-post', 'close']);
+    expect(await run(page, 'nativeHarness.requests.at(-1)')).toEqual(expect.objectContaining({ type: 'ANMERKO_SIDEBAR_LAYOUT', mode: 'minimized' }));
+  }
+});
+
 test('page lifecycle fallback reconnects a reused sidebar document', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');

@@ -25,6 +25,9 @@ const backgroundOwners = new Map<number, object>();
 let delayQuery = false;
 let releaseQuery: (() => void) | undefined;
 let activeTabId = 1;
+// Runs as Chromium unless a page sets nativeHarnessFirefox before loading the
+// bundle; Firefox is known by runtime.getBrowserInfo, not by manifest keys.
+const firefox = (globalThis as { nativeHarnessFirefox?: boolean }).nativeHarnessFirefox === true;
 Object.assign(globalThis, { chrome: {
   sidebarAction: {
     open: async () => {},
@@ -33,6 +36,7 @@ Object.assign(globalThis, { chrome: {
   sidePanel: { onOpened: panelOpened },
   runtime: {
     id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`,
+    ...(firefox ? { getBrowserInfo: async () => ({ name: 'Firefox', vendor: 'Mozilla' }) } : {}),
     getManifest: () => ({ sidebar_action: {}, side_panel: { default_path: 'sidebar.html' } }),
     onMessage: runtimeMessages,
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
