@@ -135,3 +135,62 @@ test('the journey tab carries the panel theme colors', () => {
     for (const [name, value] of Object.entries(carried)) expect([name, value]).toEqual([name, source[name]]);
   }
 });
+
+// Opens the journey tab with a stored theme that is read only when released,
+// recording the theme the page shows when its content first appears.
+async function openJourneyTabHeld(page: Page, stored: unknown, reload = false) {
+  if (!reload) await page.goto('http://127.0.0.1:4173');
+  else await page.reload();
+  await page.setContent('<!doctype html><html><body class="journey-page"><main id="journey"></main></body></html>');
+  await page.evaluate(`location.hash = '#launch=${'a'.repeat(16)}'`);
+  await page.evaluate(`window.chrome = {
+    runtime: {
+      sendMessage: async message => message && message.type === 'ANMERKO_JOURNEY_STATE'
+        ? { ok: true, value: { phase: 'idle', epoch: 0 } }
+        : message && message.type === 'ANMERKO_JOURNEY_LIST' ? { ok: true, value: [] } : { ok: false },
+      onMessage: { addListener: () => {}, removeListener: () => {} },
+    },
+  };`);
+  await page.evaluate(addJourneyApis);
+  await page.evaluate(value => {
+    const api = (window as any).chrome;
+    let release: (stored: object) => void = () => {};
+    const read = new Promise<object>(resolve => { release = resolve; });
+    api.storage.local = { get: () => read };
+    api.storage.onChanged = { addListener: () => {}, removeListener: () => {} };
+    (window as any).releaseTheme = () => release(value === undefined ? {} : { 'anmerko:theme': value });
+    (window as any).firstContentTheme = null;
+    new MutationObserver(() => {
+      if ((window as any).firstContentTheme === null && document.querySelector('.journey-view')) {
+        (window as any).firstContentTheme = [document.body.dataset.theme, document.documentElement.style.colorScheme];
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }, stored);
+  await page.addScriptTag({ content: journeyPageBundle });
+}
+
+test('the journey tab resolves a stored Dark appearance before its content first paints, with no light flash', async ({ page }) => {
+  await openJourneyTabHeld(page, 'dark');
+  // Until the stored theme is read, no content is shown in the wrong theme.
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+  expect(await page.evaluate(() => (window as any).firstContentTheme)).toBeNull();
+  await page.evaluate(() => (window as any).releaseTheme());
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).firstContentTheme)).toEqual(['dark', 'dark']);
+  // The root element carries the scheme, so the canvas and scrollbars match.
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe('dark');
+
+  // The next tab paints dark at once from the theme this one resolved.
+  await openJourneyTabHeld(page, 'dark', true);
+  expect(await page.evaluate(() => [document.body.dataset.theme, getComputedStyle(document.documentElement).colorScheme]))
+    .toEqual(['dark', 'dark']);
+  await page.evaluate(() => (window as any).releaseTheme());
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).firstContentTheme)).toEqual(['dark', 'dark']);
+});
+
+test('the journey tab still opens when the stored appearance never arrives', async ({ page }) => {
+  await openJourneyTabHeld(page, 'dark');
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await expect(page.locator('body')).toHaveAttribute('data-theme', 'light');
+});

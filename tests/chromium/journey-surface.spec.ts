@@ -161,39 +161,128 @@ test('review edits refused by a save in progress say so, and real staleness stil
   });
 });
 
-test('a summary write names its journey and is refused once another journey is under review', async ({ page }) => {
+test('a summary write names its review and is refused once another review is current', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   const outcomes = await page.evaluate(async () => {
     const { clientModule } = globalThis as HarnessWindow;
     const runtime = (globalThis as any).chrome.runtime;
-    const reviewing = (journeyId: string) => ({ phase: 'reviewing', epoch: 2, sessionId: 'S', journeyId, ownerTabId: 1, ownerWindowId: 1,
+    const reviewing = (journeyId: string, sessionId = 'S') => ({ phase: 'reviewing', epoch: 2, sessionId, journeyId, ownerTabId: 1, ownerWindowId: 1,
       warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
       draft: { id: journeyId, revision: 3, images: {}, steps: [] } });
-    // The review this view typed in (J1) was saved or closed, and J2 is now under review or saving.
+    // The review this view typed in (J1, session S) was saved or closed, and
+    // J2, or J1 reopened in a new session, is now under review or saving.
     const run = async (current: unknown) => {
       const sent: unknown[] = [];
-      runtime.sendMessage = async (message: { type: string; journeyId?: string }) => {
-        sent.push(message.type === 'ANMERKO_JOURNEY_STATE' ? message.type : { type: message.type, journeyId: message.journeyId });
+      runtime.sendMessage = async (message: { type: string; journeyId?: string; sessionId?: string }) => {
+        sent.push(message.type === 'ANMERKO_JOURNEY_STATE' ? message.type
+          : { type: message.type, journeyId: message.journeyId, sessionId: message.sessionId });
         return message.type === 'ANMERKO_JOURNEY_STATE' ? { ok: true, value: current } : { ok: true };
       };
       try {
-        await clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })).updateSummary('Expected', 'Actual', 'J1');
+        await clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 }))
+          .updateSummary('Expected', 'Actual', { journeyId: 'J1', sessionId: 'S' });
         return { sent, outcome: 'ok' };
       } catch (error) {
         return { sent, outcome: `${(error as { code?: string }).code ?? 'none'}: ${(error as Error).message}` };
       }
     };
     return {
-      sameJourney: await run(reviewing('J1')),
+      sameReview: await run(reviewing('J1')),
       otherJourney: await run(reviewing('J2')),
       otherJourneySaving: await run({ ...reviewing('J2'), phase: 'saving' }),
+      sameJourneyReopened: await run(reviewing('J1', 'S2')),
+      sameJourneyReopenedSaving: await run({ ...reviewing('J1', 'S2'), phase: 'saving' }),
     };
   });
   const stale = 'stale-review: Another review tab changed this journey. Reload the review and try again.';
   expect(outcomes).toEqual({
-    sameJourney: { sent: ['ANMERKO_JOURNEY_STATE', { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', journeyId: 'J1' }], outcome: 'ok' },
+    sameReview: { sent: ['ANMERKO_JOURNEY_STATE', { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', journeyId: 'J1', sessionId: 'S' }], outcome: 'ok' },
     otherJourney: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale },
     otherJourneySaving: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale },
+    sameJourneyReopened: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale },
+    sameJourneyReopenedSaving: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale },
+  });
+});
+
+test('every review command and discard names the review or view it was made in', async ({ page }) => {
+  await page.addScriptTag({ content: clientBundle });
+  const outcomes = await page.evaluate(async () => {
+    const { clientModule } = globalThis as HarnessWindow;
+    const runtime = (globalThis as any).chrome.runtime;
+    const reviewing = (sessionId: string, phase = 'reviewing') => ({ phase, epoch: 2, sessionId, journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+      warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+      draft: { id: 'J1', revision: 3, images: { I1: { dataUrl: 'data:image/png;base64,AAAA' } }, steps: [] } });
+    const review = { journeyId: 'J1', sessionId: 'S' };
+    // current: the state each read returns; refused: whether the command itself is refused as stale.
+    const run = async (current: unknown, refused: boolean, command: (client: any) => Promise<unknown>) => {
+      const sent: unknown[] = [];
+      runtime.sendMessage = async (message: Record<string, unknown>) => {
+        if (message.type === 'ANMERKO_JOURNEY_STATE') {
+          sent.push(message.type);
+          return { ok: true, value: current };
+        }
+        const { type, updatedAt: _updatedAt, ...rest } = message;
+        sent.push({ type, ...rest });
+        if (refused) return { ok: false, error: 'Journey command unavailable.', code: 'stale-review' };
+        return type === 'ANMERKO_JOURNEY_SAVE' ? { ok: true, value: { journeyId: 'J1', revision: 4 } } : { ok: true };
+      };
+      try {
+        await command(clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })));
+        return { sent, outcome: 'ok' };
+      } catch (error) {
+        return { sent, outcome: `${(error as { code?: string }).code ?? 'none'}: ${(error as Error).message}` };
+      }
+    };
+    const edits: Record<string, (client: any) => Promise<unknown>> = {
+      removeStep: client => client.removeStep('S1', review),
+      editValue: client => client.editValue('S1', { kind: 'text', value: 'x' }, review),
+      redactUrl: client => client.redactUrl('S1', 'source', review),
+      redactLabel: client => client.redactLabel('S1', review),
+      reviewImage: client => client.reviewImage('I1', { operation: 'remove' }, review),
+    };
+    const results: Record<string, unknown> = {};
+    for (const [name, edit] of Object.entries(edits)) {
+      results[name] = await run(reviewing('S'), false, edit);
+      // The saved journey was reopened elsewhere: nothing is sent.
+      results[`${name}Reopened`] = await run(reviewing('S2'), false, edit);
+    }
+    results.save = await run(reviewing('S'), false, client => client.save(true, review));
+    results.discardReview = await run(reviewing('S'), false, client => client.discard({ phase: 'reviewing', ...review, revision: 3 }));
+    // A discard this review's own save refuses says so; another review's refusal blames the other tab.
+    results.discardWhileSaving = await run(reviewing('S', 'saving'), true, client => client.discard({ phase: 'reviewing', ...review }));
+    results.discardReopened = await run(reviewing('S2'), true, client => client.discard({ phase: 'reviewing', ...review }));
+    results.discardSaved = await run({ phase: 'saved', epoch: 3, journeyId: 'J1', revision: 4 }, false,
+      client => client.discard({ phase: 'saved', journeyId: 'J1' }));
+    results.reset = await run({ phase: 'idle', epoch: 3 }, false, client => client.discard());
+    return results;
+  });
+  const stale = 'stale-review: Another review tab changed this journey. Reload the review and try again.';
+  const guards = { epoch: 2, journeyId: 'J1', sessionId: 'S', revision: 3 };
+  const sentEdit = (type: string, extra: Record<string, unknown>) => ({ sent: ['ANMERKO_JOURNEY_STATE', { type, ...guards, ...extra }], outcome: 'ok' });
+  const refusedUnsent = { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale };
+  expect(outcomes).toEqual({
+    removeStep: sentEdit('ANMERKO_JOURNEY_REMOVE_STEP', { stepId: 'S1' }),
+    removeStepReopened: refusedUnsent,
+    editValue: sentEdit('ANMERKO_JOURNEY_EDIT_VALUE', { stepId: 'S1', value: { kind: 'text', value: 'x' } }),
+    editValueReopened: refusedUnsent,
+    redactUrl: sentEdit('ANMERKO_JOURNEY_REDACT_URL', { stepId: 'S1', url: 'source' }),
+    redactUrlReopened: refusedUnsent,
+    redactLabel: sentEdit('ANMERKO_JOURNEY_REDACT_LABEL', { stepId: 'S1' }),
+    redactLabelReopened: refusedUnsent,
+    reviewImage: sentEdit('ANMERKO_JOURNEY_REVIEW_IMAGE', { imageId: 'I1', operation: 'remove' }),
+    reviewImageReopened: refusedUnsent,
+    save: { sent: [{ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: 'J1', sessionId: 'S' }], outcome: 'ok' },
+    discardReview: { sent: [{ type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: 'J1', sessionId: 'S', revision: 3 }], outcome: 'ok' },
+    discardWhileSaving: {
+      sent: [{ type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: 'J1', sessionId: 'S' }, 'ANMERKO_JOURNEY_STATE'],
+      outcome: 'save-in-progress: This journey is being saved. Wait for the save to finish, then try again.',
+    },
+    discardReopened: {
+      sent: [{ type: 'ANMERKO_JOURNEY_DISCARD', phase: 'reviewing', journeyId: 'J1', sessionId: 'S' }, 'ANMERKO_JOURNEY_STATE'],
+      outcome: stale,
+    },
+    discardSaved: { sent: [{ type: 'ANMERKO_JOURNEY_DISCARD', phase: 'saved', journeyId: 'J1' }], outcome: 'ok' },
+    reset: { sent: [{ type: 'ANMERKO_JOURNEY_DISCARD' }], outcome: 'ok' },
   });
 });
 

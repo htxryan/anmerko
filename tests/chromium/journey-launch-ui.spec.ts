@@ -49,9 +49,18 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
         if (window.rejectReopen) throw Object.assign(new Error('Finish or discard the existing journey before starting another.'), { code: 'busy' });
       },
       start: async () => {}, stop: async () => {},
-      // Discarding a save's confirmation leaves the snapshot saved and the session idle.
-      discard: async () => {
+      // Discarding a save's confirmation leaves the snapshot saved and the
+      // session idle. Like the background, a discard naming a saved
+      // confirmation refuses any journey that has replaced it.
+      discard: async expected => {
         window.discards = (window.discards || 0) + 1;
+        window.discardTargets = [...(window.discardTargets || []), expected ?? null];
+        window.beforeDiscard?.();
+        const phase = window.journeyState?.phase;
+        if (expected?.phase === 'saved' && phase && phase !== 'idle'
+          && (phase !== 'saved' || (expected.journeyId !== undefined && window.journeyState.journeyId !== expected.journeyId))) {
+          throw Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
+        }
         if (window.journeyState?.phase === 'saved') window.journeyState = { phase: 'idle', epoch: window.journeyState.epoch + 1 };
         for (const listener of window.journeyListeners || []) listener();
       },
@@ -419,6 +428,8 @@ test('Manage saved journeys closes a save confirmation first and waits while a j
   await expect(view.getByRole('heading', { name: 'Journey saved' })).toHaveCount(0);
   await expect(view.getByRole('button', { name: /^Delete journey: Checkout keeps the item/ })).toBeVisible();
   expect(await page.evaluate('window.discards')).toBe(1);
+  // The discard names the saved confirmation it closes.
+  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved', journeyId: 'J1' }]);
   await page.getByRole('button', { name: 'Back to comments', exact: true }).click();
 
   // While a journey records or waits for review, the view has no list and a
@@ -444,6 +455,21 @@ test('Manage saved journeys closes a save confirmation first and waits while a j
   await expect(view).toHaveCount(0);
   expect(await page.evaluate('window.discards')).toBe(1);
   await expect(held).toBeVisible();
+
+  // Another view reopens a journey after this panel read the saved
+  // confirmation but before its discard lands: the reopened review is left
+  // alone, and the panel says why nothing opened.
+  await notify({ phase: 'saved', epoch: 10, journeyId: 'J1', revision: 2 });
+  await expect(manage).toBeEnabled();
+  await page.evaluate(() => {
+    (window as any).beforeDiscard = () => { (window as any).journeyState = { phase: 'reviewing', epoch: 1 }; };
+  });
+  await panel.locator('.status').evaluate(status => { status.textContent = ''; });
+  await manage.click();
+  await expect(panel.locator('.status')).toHaveText('Finish or discard the current journey to reopen or manage saved journeys.');
+  await expect(view).toHaveCount(0);
+  expect(await page.evaluate('window.journeyState')).toEqual({ phase: 'reviewing', epoch: 1 });
+  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved', journeyId: 'J1' }, { phase: 'saved', journeyId: 'J1' }]);
 });
 
 test('a native panel offers a pending review and opens the journey view for it', async ({ page }) => {

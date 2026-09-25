@@ -51,7 +51,7 @@ Steps recorded before the stop are kept, and review explains why recording ended
 
 ## Review a journey
 
-Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none. **Limitations**, when shown, notes losses such as shortened entered values or a page anmerko could no longer access.
+Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none. When the stop itself lost something, such as a page anmerko could no longer access, the explanation of why recording ended says so; **Limitations**, when shown, notes other losses, such as shortened entered values.
 
 - **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step; discard the journey instead.
 - **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider. **View full-size screenshot** opens it at actual size; scroll or use the arrow keys to move around, choose **Fit to window** to see all of it, and **Close** or Esc to return.

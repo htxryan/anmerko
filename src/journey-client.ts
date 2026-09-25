@@ -2,7 +2,7 @@ import { extensionApi, firefoxExtension } from './platform';
 import type { JourneyDraftImage, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import { isJourneyBackgroundSender } from './journey-messaging';
 import { JOURNEY_SAVE_IN_PROGRESS, JOURNEY_SAVE_IN_PROGRESS_ERROR } from './journey-ui';
-import type { JourneyClient, JourneyImageChange, JourneySavedSummary } from './journey-ui';
+import type { JourneyClient, JourneyDiscardTarget, JourneyImageChange, JourneyReviewTarget, JourneySavedSummary } from './journey-ui';
 
 type JourneyOwner = { ownerTabId?: number; ownerWindowId?: number };
 type ReviewingSession = Extract<JourneySession, { phase: 'reviewing' }>;
@@ -34,6 +34,20 @@ function savingError(): Error {
   return Object.assign(new Error(JOURNEY_SAVE_IN_PROGRESS_ERROR), { code: JOURNEY_SAVE_IN_PROGRESS });
 }
 
+function staleError(): Error {
+  return Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
+}
+
+function errorCode(error: unknown): unknown {
+  return (error as { code?: unknown } | null)?.code;
+}
+
+// Whether a session is, or is saving, the given review.
+function holdsReview(session: JourneySession | undefined, review: JourneyReviewTarget): boolean {
+  return (session?.phase === 'reviewing' || session?.phase === 'saving')
+    && session.journeyId === review.journeyId && session.sessionId === review.sessionId;
+}
+
 export function createJourneyClient(
   owner?: () => JourneyOwner,
   intent?: string,
@@ -57,30 +71,37 @@ export function createJourneyClient(
     return response.value;
   }
 
-  // journeyId, when given, is the review the edit was made in; any other
-  // journey is refused as another tab's change, even while it saves.
-  async function reviewing(journeyId?: string): Promise<ReviewingSession> {
+  // review, when given, is the review the edit was made in: its journey and
+  // the session that recorded or reopened it. Any other journey, or another
+  // review of the same one, is refused as another tab's change, even while it
+  // saves.
+  async function reviewing(review?: JourneyReviewTarget): Promise<ReviewingSession> {
     const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
-    if (journeyId !== undefined && current.phase !== 'idle' && current.journeyId !== journeyId) {
-      throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
-    }
+    if (review !== undefined && current.phase !== 'idle' && (current.journeyId !== review.journeyId
+      || ('sessionId' in current && current.sessionId !== review.sessionId))) throw staleError();
     if (current.phase === 'saving') throw savingError();
     if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
     return current;
   }
 
-  // A save holds the review in its saving phase, and the background refuses
-  // edits then as stale. When the review has not changed since this edit read
-  // it, or the refusing save has since finished, the save refused it, not
-  // another tab: say so, so the view can wait for the save instead.
+  // The edit names the review it read, which the background checks when it
+  // applies it: a review switched since is refused as stale. A save holds the
+  // review in its saving phase, and the background refuses edits then as
+  // stale too. When the review has not changed since this edit read it, or
+  // this review's save has since finished, the save refused it, not another
+  // tab: say so, so the view can wait for the save instead.
   async function reviewEdit(current: ReviewingSession, type: string, extra: Record<string, unknown>): Promise<void> {
     try {
-      await command(type, { epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision, ...extra });
+      await command(type, {
+        epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId,
+        revision: current.draft.revision, ...extra,
+      });
     } catch (error) {
-      if ((error as { code?: unknown }).code !== 'stale-review') throw error;
+      if (errorCode(error) !== 'stale-review') throw error;
       const latest = await command('ANMERKO_JOURNEY_STATE').catch(() => undefined) as JourneySession | undefined;
-      if (latest?.phase === 'saving' || (latest?.phase === 'saved' && latest.journeyId === current.journeyId)
-        || (latest?.phase === 'reviewing' && latest.epoch === current.epoch && latest.journeyId === current.journeyId
+      if ((latest?.phase === 'saving' && holdsReview(latest, current))
+        || (latest?.phase === 'saved' && latest.journeyId === current.journeyId)
+        || (latest?.phase === 'reviewing' && holdsReview(latest, current) && latest.epoch === current.epoch
           && latest.draft.revision === current.draft.revision)) throw savingError();
       throw error;
     }
@@ -90,43 +111,44 @@ export function createJourneyClient(
     supportsEnteredValues: true,
     pageLoadsEndJourney: firefoxExtension(),
     read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
-    updateSummary: async (expected: string, actual: string, journeyId?: string): Promise<void> => {
-      await reviewEdit(await reviewing(journeyId), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
+    updateSummary: async (expected: string, actual: string, review?: JourneyReviewTarget): Promise<void> => {
+      await reviewEdit(await reviewing(review), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
         updatedAt: new Date().toISOString(), expected, actual,
       });
     },
-    removeStep: async (stepId: string): Promise<void> => {
-      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_REMOVE_STEP', {
+    removeStep: async (stepId: string, review?: JourneyReviewTarget): Promise<void> => {
+      await reviewEdit(await reviewing(review), 'ANMERKO_JOURNEY_REMOVE_STEP', {
         updatedAt: new Date().toISOString(), stepId,
       });
     },
-    editValue: async (stepId: string, value: unknown): Promise<void> => {
-      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_EDIT_VALUE', {
+    editValue: async (stepId: string, value: unknown, review?: JourneyReviewTarget): Promise<void> => {
+      await reviewEdit(await reviewing(review), 'ANMERKO_JOURNEY_EDIT_VALUE', {
         updatedAt: new Date().toISOString(), stepId, value,
       });
     },
-    redactUrl: async (stepId: string, url: JourneyUrlRedactionTarget): Promise<void> => {
-      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_REDACT_URL', {
+    redactUrl: async (stepId: string, url: JourneyUrlRedactionTarget, review?: JourneyReviewTarget): Promise<void> => {
+      await reviewEdit(await reviewing(review), 'ANMERKO_JOURNEY_REDACT_URL', {
         updatedAt: new Date().toISOString(), stepId, url,
       });
     },
-    redactLabel: async (stepId: string): Promise<void> => {
-      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_REDACT_LABEL', {
+    redactLabel: async (stepId: string, review?: JourneyReviewTarget): Promise<void> => {
+      await reviewEdit(await reviewing(review), 'ANMERKO_JOURNEY_REDACT_LABEL', {
         updatedAt: new Date().toISOString(), stepId,
       });
     },
-    reviewImage: async (imageId: string, change: JourneyImageChange): Promise<void> => {
-      const current = await reviewing();
+    reviewImage: async (imageId: string, change: JourneyImageChange, review?: JourneyReviewTarget): Promise<void> => {
+      const current = await reviewing(review);
       // A mask drawn on older pixels must not overwrite a change another review tab made since.
-      if (change.operation === 'replace' && current.draft.images[imageId]?.dataUrl !== change.maskedFrom) {
-        throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
-      }
+      if (change.operation === 'replace' && current.draft.images[imageId]?.dataUrl !== change.maskedFrom) throw staleError();
       await reviewEdit(current, 'ANMERKO_JOURNEY_REVIEW_IMAGE', {
         imageId, operation: change.operation, ...(change.operation === 'replace' ? { dataUrl: change.image.dataUrl } : {}),
       });
     },
-    save: async (acknowledged: boolean): Promise<{ journeyId: string; revision: number }> => {
-      const result = await command('ANMERKO_JOURNEY_SAVE', { acknowledged }) as unknown;
+    // The background saves only the named review.
+    save: async (acknowledged: boolean, review?: JourneyReviewTarget): Promise<{ journeyId: string; revision: number }> => {
+      const result = await command('ANMERKO_JOURNEY_SAVE', review
+        ? { acknowledged, journeyId: review.journeyId, sessionId: review.sessionId }
+        : { acknowledged }) as unknown;
       if (!result || typeof result !== 'object' || typeof (result as { journeyId?: unknown }).journeyId !== 'string'
         || !Number.isSafeInteger((result as { revision?: unknown }).revision)) {
         throw new Error(CLIENT_ERROR);
@@ -169,9 +191,23 @@ export function createJourneyClient(
       ++actionGeneration;
       return command('ANMERKO_JOURNEY_STOP', !owner && validIntent(intent) ? { intent } : {}) as Promise<void>;
     },
-    discard(): Promise<void> {
+    // A targeted discard is refused as stale once its view no longer shows the
+    // current journey; one that finds this review saving says so instead.
+    async discard(expected?: JourneyDiscardTarget): Promise<void> {
       ++actionGeneration;
-      return command('ANMERKO_JOURNEY_DISCARD') as Promise<void>;
+      if (!expected) {
+        await command('ANMERKO_JOURNEY_DISCARD');
+        return;
+      }
+      try {
+        await command('ANMERKO_JOURNEY_DISCARD', { ...expected });
+      } catch (error) {
+        if (errorCode(error) === 'stale-review' && expected.phase === 'reviewing') {
+          const latest = await command('ANMERKO_JOURNEY_STATE').catch(() => undefined) as JourneySession | undefined;
+          if (latest?.phase === 'saving' && holdsReview(latest, expected)) throw savingError();
+        }
+        throw error;
+      }
     },
     subscribe(changed: () => void): () => void {
       const listener = (message: unknown, sender: chrome.runtime.MessageSender) => {
