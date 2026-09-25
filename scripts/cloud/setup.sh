@@ -68,8 +68,9 @@ install_browsers() {
   fi
   for version in stable 142.0; do
     log "Caching Firefox $version and geckodriver"
-    "$root/node_modules/selenium-webdriver/bin/linux/selenium-manager" \
-      --browser firefox --browser-version "$version" --output json >"$state/firefox-$version.json"
+    (cd "$root" && node -e "const { binaryPaths } = require('selenium-webdriver/common/seleniumManager');
+      console.log(JSON.stringify(binaryPaths(['--browser', 'firefox', '--browser-version', process.argv[1], '--output', 'json'])));" \
+      "$version") >"$state/firefox-$version.json"
   done
 }
 
