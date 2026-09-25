@@ -1,4 +1,6 @@
 import type { ElementContext, Note } from './core';
+import type { JourneySession } from './journey-core';
+import type { JourneyClient } from './journey-ui';
 import type { ComponentContextV1 } from './component-context';
 
 export type StoreChanges = Record<string, { newValue?: unknown }>;
@@ -68,5 +70,16 @@ export interface Runtime {
   storageError: string;
   settingsLabel: string;
   presentation?: Presentation;
+  journeys?: JourneyClient;
+  openJourney?: () => Promise<void>;
+  // Whether a journey waits for review, so a page panel can offer it.
+  journeyReviewPending?: () => Promise<boolean>;
+  // The journey session's phase alone, so the native side panel can follow it
+  // without reading every screenshot on each change.
+  journeyPhase?: () => Promise<JourneySession['phase']>;
+  // Whether the native side panel shows a private window, where journeys are unavailable.
+  journeyPrivateWindow?: () => Promise<boolean>;
+  // Reports when this page records a journey, so a floating panel can step aside.
+  watchJourneyRecording?: (listener: (recording: boolean) => void) => () => void;
   onDispose?: () => void;
 }

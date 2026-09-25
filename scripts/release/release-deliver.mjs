@@ -38,6 +38,17 @@ export function chromeReviewState(result, version) {
   const published = result.status?.publishedItemRevisionStatus?.distributionChannels || [];
   return published.some(channel => channel.crxVersion === version) ? 'published' : 'pending-review';
 }
+// AMO rejects reviewer notes longer than this (addons-server Version.approval_notes).
+export const AMO_APPROVAL_NOTES_MAX_LENGTH = 3000;
+// docs/store/listing-copy.md shows reviewers the same rendered note.
+export const FIREFOX_JOURNEY_REVIEW_NOTES = `Journeys: nothing records until the user chooses Record journey and then Start journey. While a journey records, anmerko keeps ordered clicks, same-origin page changes, and a screenshot per step for that one tab. Only if the user turns on Include entered values does it also keep finished changes to form fields not identified as sensitive. A local review opens before anything can be copied or exported. Nothing is sent to a server.
+
+Journey permissions (no host or optional permissions are requested):
+- webNavigation (Firefox shows "Access browser activity during navigation"): used only while a user-started journey records, to order same-origin page loads, route changes, and hash changes in the recorded tab, and to end the journey when that tab leaves the starting website. Events from other tabs and frames are ignored, and browser history is never read. Only the same-origin page URLs that become journey steps are kept, locally, with that journey.
+- alarms (no warning): ends a recording at the five-minute limit, warns before an unsaved journey review expires, and discards it after 30 minutes without changes, even if the background script was suspended.
+
+Smoke test: open a normal HTTPS page and activate anmerko. Save an element comment and choose Copy Prompt. Choose More Comment Options, Record journey, then Start journey. Wait for the Recording strip, click a control that stays on the same page, and choose Stop on the strip. A reload or a link to another page ends a Firefox journey by design. In review, enter the expected and actual results, mask part of one screenshot, check the retention acknowledgement, choose Save journey, then Copy Prompt or Download Markdown + Images.`;
+
 export function firefoxReviewNotes(version, sourceZipPath) {
   return `Review the matching source archive ${basename(sourceZipPath)} for extension version ${version}.
 
@@ -45,7 +56,9 @@ Build with Node.js 24 or later from the extracted source archive root:
 npm ci
 RELEASE_VERSION=${version} npm run build:firefox
 
-The resulting dist-firefox directory is the submitted extension. esbuild bundles TypeScript and embeds panel.css without minifying or obfuscating it. The listed and website/unlisted variants are distinct packages; use this submission's matching source archive. The unlisted package has no custom update URL; users update it manually in the same Firefox profile.`;
+The resulting dist-firefox directory is the submitted extension. esbuild bundles TypeScript and embeds panel.css without minifying or obfuscating it. The listed and website/unlisted variants are distinct packages; use this submission's matching source archive. The unlisted package has no custom update URL; users update it manually in the same Firefox profile.
+
+${FIREFOX_JOURNEY_REVIEW_NOTES}`;
 }
 export function assertSignedVariant(signed, unsigned, expectedVersion) {
   const signedPayload = archivePayload(signed), unsignedPayload = archivePayload(unsigned);

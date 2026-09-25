@@ -7,7 +7,7 @@ Open the gear button in the panel header. Saved settings apply across tabs in th
 
 ## Appearance
 
-Choose **Light** (default) or **Dark** for anmerko's panels.
+Choose **Light** (default) or **Dark** for anmerko's panels and journey tabs.
 
 ![Current anmerko settings beside Salad Recipe Finder](/screenshots/05-settings.png)
 
@@ -29,4 +29,4 @@ Edit the introduction and click **Save Preamble**. Markdown is supported; an emp
 
 > Comments collected with anmerko. Page URLs and captured context are listed with each comment.
 
-Copy and ZIP exports use the last saved preamble. Failed saves retain your edits. Save before closing or refreshing; layout changes keep unfinished edits while the document stays open.
+Comment copies and ZIP exports use the last saved preamble; journey exports don't use it. Failed saves retain your edits. Save before closing or refreshing; layout changes keep unfinished edits while the document stays open.

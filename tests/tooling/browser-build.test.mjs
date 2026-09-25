@@ -10,6 +10,9 @@ import { browserTarget, browserManifest } from '../../scripts/extension/browser-
 const exec = promisify(execFile);
 const source = JSON.parse(await readFile('public/manifest.json', 'utf8'));
 const version = JSON.parse(await readFile('package.json', 'utf8')).version;
+// Every target requests the shared set; Chrome, Edge, and Firefox add the journey APIs.
+const sharedPermissions = ['activeTab', 'scripting', 'storage', 'clipboardWrite'];
+const journeyPermissions = ['alarms', 'webNavigation'];
 
 test('existing CLI aliases keep their output paths and unknown targets fail', () => {
   assert.equal(browserTarget([]).outdir, 'dist');
@@ -17,17 +20,26 @@ test('existing CLI aliases keep their output paths and unknown targets fail', ()
   assert.deepEqual(browserTarget(['--target', 'chromium']), browserTarget([]));
   assert.deepEqual(browserTarget(['--firefox']), browserTarget(['--target', 'firefox']));
   assert.deepEqual(browserTarget(['--target', 'orion']), {
-    name: 'orion', label: 'Orion for iOS', outdir: 'dist-orion', syntax: 'safari16.4', format: 'iife', archiveSuffix: '-orion',
+    name: 'orion', label: 'Orion for iOS', outdir: 'dist-orion', syntax: 'safari16.4', format: 'iife', archiveSuffix: '-orion', journeys: false,
   });
   for (const args of [['--target', 'opera'], ['--target'], ['--unknown'], ['--firefox', '--target', 'chromium']]) {
     assert.throws(() => browserTarget(args));
   }
 });
 
+test('journeys ship in every target except Orion', () => {
+  for (const target of ['chrome', 'firefox', 'orion']) assert.equal(browserTarget(['--target', target]).journeys, target !== 'orion', target);
+});
+
 test('browser manifests keep the shared permissions, version, and Firefox identities', () => {
   const original = structuredClone(source);
   const manifest = target => browserManifest(source, version, browserTarget(['--target', target]));
-  assert.deepEqual(manifest('chrome'), { ...source, version });
+  assert.deepEqual(source.permissions, [...sharedPermissions, 'sidePanel']);
+  for (const candidate of [source, manifest('chrome'), manifest('firefox'), manifest('orion')]) {
+    assert.equal(candidate.optional_permissions, undefined);
+    assert.equal(candidate.optional_host_permissions, undefined);
+  }
+  assert.deepEqual(manifest('chrome'), { ...source, version, permissions: [...source.permissions, ...journeyPermissions] });
   const firefox = manifest('firefox');
   assert.equal(firefox.version, version);
   assert.deepEqual(firefox.background, { scripts: ['background.js'] });
@@ -40,13 +52,13 @@ test('browser manifests keep the shared permissions, version, and Firefox identi
   assert.equal(firefox.sidebar_action.default_panel, 'sidebar.html');
   assert.equal(firefox.sidebar_action.default_title, 'anmerko');
   assert.equal(firefox.sidebar_action.open_at_install, false);
-  assert.deepEqual(firefox.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+  assert.deepEqual(firefox.permissions, [...sharedPermissions, ...journeyPermissions]);
   assert.equal(firefox.minimum_chrome_version, undefined);
   assert.equal(firefox.side_panel, undefined);
   assert.equal(firefox.host_permissions, undefined);
   const orion = manifest('orion');
   assert.equal(orion.version, version);
-  assert.deepEqual(orion.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+  assert.deepEqual(orion.permissions, sharedPermissions);
   assert.deepEqual(orion.background, { scripts: ['background.js'] });
   assert.equal(orion.action.default_popup, 'popup.html');
   assert.equal(orion.minimum_chrome_version, undefined);
@@ -61,7 +73,7 @@ test('supported browser targets build clean resources and reject development hel
   const root = await mkdtemp(join(tmpdir(), 'anmerko-browser-build-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const file of ['src', 'public', 'package.json']) await cp(file, join(root, file), { recursive: true });
-  const build = args => exec(process.execPath, [resolve('scripts/extension/build.mjs'), ...args], { cwd: root });
+  const build = (args, env = process.env) => exec(process.execPath, [resolve('scripts/extension/build.mjs'), ...args], { cwd: root, env });
   await mkdir(join(root, 'dist'));
   await writeFile(join(root, 'dist/keep.txt'), 'existing Chrome build');
   await assert.rejects(build(['--target', 'opera']));
@@ -72,12 +84,38 @@ test('supported browser targets build clean resources and reject development hel
     { args: ['--target', 'orion'], outdir: 'dist-orion', suffix: '-orion' },
   ]) {
     const pack = () => exec(process.execPath, [resolve('scripts/extension/package.mjs'), ...args], { cwd: root });
-    await build(args);
     const target = browserTarget(args);
+    // Journeys are the target's capability: the retired switch changes nothing.
+    await build(args, { ...process.env, ANMERKO_JOURNEYS: target.journeys ? '0' : '1' });
     const manifest = JSON.parse(await readFile(join(root, outdir, 'manifest.json'), 'utf8'));
     assert.deepEqual(manifest, browserManifest(source, version, target));
+    assert.deepEqual(manifest.permissions.filter(permission => journeyPermissions.includes(permission)),
+      target.journeys ? journeyPermissions : [], `${target.name}: journey permissions`);
+    // Orion's background bundle drops the journey runtime, not just its activation.
+    const background = await readFile(join(root, outdir, 'background.js'), 'utf8');
+    for (const marker of [/\bfunction bindJourneyExtension\(/, /\.webNavigation\b/, /\.alarms\.onAlarm\b/]) {
+      assert.equal(marker.test(background), target.journeys, `${target.name}: ${marker}`);
+    }
+    const files = await readdir(join(root, outdir));
     for (const name of ['content.js', 'background.js', 'popup.js', 'sidebar.html', 'unavailable.html', 'icons']) {
-      assert.ok((await readdir(join(root, outdir))).includes(name), `${target.name}: ${name}`);
+      assert.ok(files.includes(name), `${target.name}: ${name}`);
+    }
+    // Orion ships no journey page or scripts, and its content script carries no
+    // journey launch, review offer, saved list, recording strip or view, and no
+    // journey model, limits, export or availability check behind them.
+    const journeyFiles = ['journey.html', 'journey.js', 'journey-observer.js'];
+    for (const name of journeyFiles) assert.equal(files.includes(name), target.journeys, `${target.name}: ${name}`);
+    const content = await readFile(join(root, outdir, 'content.js'), 'utf8');
+    for (const marker of ['ANMERKO_JOURNEY_OPEN', 'ANMERKO_JOURNEY_PENDING', 'ANMERKO_JOURNEY_PHASE', 'Record journey', 'Review journey', 'Saved journeys',
+      'anmerko journey recording', 'anmerko-journey-strip', '.journey-view', 'function attachJourneyPanel(', 'function mountJourneyUI(',
+      'function createJourneyClient(', 'function bindJourneyPage(', 'function validateJourneyDraft(', 'var JOURNEY_LIMITS =',
+      'function journeyArchive(', 'function journeyPrompt(', 'function journeysAvailable(', 'function stripUrlCredentials(']) {
+      assert.equal(content.includes(marker), target.journeys, `${target.name}: content.js ${marker}`);
+    }
+    // Every bundle reads the capability from the build: an unreplaced define
+    // would silently leave journeys out.
+    for (const name of ['content.js', 'background.js', 'popup.js', ...target.journeys ? ['journey.js', 'journey-observer.js'] : []]) {
+      assert.doesNotMatch(await readFile(join(root, outdir, name), 'utf8'), /__TARGET_JOURNEYS__|ANMERKO_JOURNEYS/, `${target.name}: ${name}`);
     }
     await pack();
     const archive = join(root, `artifacts/anmerko-${version}${suffix}.zip`);

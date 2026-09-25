@@ -9,7 +9,11 @@ import type { ComponentContextUpdate, Controller, DraftTargetIdentity, Presentat
 import { statusMessage } from './status';
 import { splitMenu } from './split-menu';
 import { createUuid } from './uuid';
+import { attachJourneyPanel } from './journey-panel';
+import type { JourneySavedSummary } from './journey-ui';
 import { buildPrompt, captureElement, DEFAULT_PROMPT_PREAMBLE, elementHierarchy, pageUrl, readNotes, removeNote, resolveElement, samePage, saveNote, shorten, STORAGE_PREFIX, type Note } from './core';
+
+declare const __TARGET_JOURNEYS__: boolean;
 
 type Theme = 'light' | 'dark';
 const THEME_KEY = 'anmerko:theme';
@@ -76,6 +80,7 @@ export function mount(runtime: Runtime): Controller {
   const componentContextStatus = statusMessage($('.component-context-status'), abort.signal);
   let notes: Note[] = [];
   let noteViews: Array<() => void> = [];
+  let savedJourneys: JourneySavedSummary[] | null = null;
   let disposeEditor: (() => void) | undefined;
   let editorView: ReturnType<typeof createCommentCard> | undefined;
   const componentCapture = componentContextCapture();
@@ -126,6 +131,19 @@ export function mount(runtime: Runtime): Controller {
   let suppressMouseUntil = 0;
   const scope = $('select') as HTMLSelectElement;
   const setCopyMenu = splitMenu($('.footer-buttons'), $<HTMLButtonElement>('.copy-options'), $('#copy-menu'), abort.signal);
+  // Only a journey client adds comment options. Without journeys (Orion builds,
+  // iPhone and iPad, or a browser missing their APIs) the bar keeps three actions.
+  // Orion builds define __TARGET_JOURNEYS__ false, which folds the journey panel
+  // out of their content script; esbuild folds the define only within this module.
+  const journeyPanel = (typeof __TARGET_JOURNEYS__ === 'undefined' || __TARGET_JOURNEYS__) && (runtime.journeys || runtime.openJourney)
+    ? attachJourneyPanel({
+      runtime, app, shadow, signal: abort.signal,
+      state: () => ({ alive, draft: !!draft, capturing: captureBusy, settings }),
+      status, closeMenu: () => setCommentMenu(false), commentsChanged: () => void refresh(),
+    })
+    : undefined;
+  const commentOptions = shadow.querySelector<HTMLButtonElement>('.comment-options');
+  const setCommentMenu = commentOptions ? splitMenu($('.intro'), commentOptions, $('#comment-menu'), abort.signal) : () => {};
 
   function viewState(componentContextUpdate?: ComponentContextUpdate): ViewState {
     return { url, pageTitle: native ? title : document.title, draft, scope: scope.value, picking, settings, preambleDraft,
@@ -344,6 +362,8 @@ export function mount(runtime: Runtime): Controller {
     $('.content').hidden = settings;
     $('.footer-buttons').hidden = settings;
     $('.support-link').hidden = !settings;
+    if (settings) setCommentMenu(false);
+    journeyPanel?.render();
     renderPrompt();
     scheduleDraw();
   }
@@ -415,7 +435,7 @@ export function mount(runtime: Runtime): Controller {
     const changed = connectionWarning !== value;
     const restoreFocus = shadow.activeElement === prompt;
     connectionWarning = value;
-    if (value) { setCopyMenu(false); }
+    if (value) { setCopyMenu(false); setCommentMenu(false); }
     prompt.hidden = !value || settings;
     $('.connection-shade').hidden = prompt.hidden;
     if (value && changed && !settings) prompt.focus({ preventScroll: true });
@@ -456,6 +476,7 @@ export function mount(runtime: Runtime): Controller {
   }
   function setMinimized(value: boolean) {
     setCopyMenu(false);
+    setCommentMenu(false);
     $('.panel').hidden = !native && ((presentation === 'remote' && !composeOnPage) || value || picking);
     $('.resume').hidden = native || presentation === 'remote' || !value || picking;
     $('.minimized-actions').hidden = $('.resume').hidden;
@@ -510,6 +531,8 @@ export function mount(runtime: Runtime): Controller {
       const loaded = await readNotes(store);
       if (!alive || version !== readVersion) return;
       notes = loaded;
+      savedJourneys = await journeyPanel?.loadSaved() ?? null;
+      if (!alive || version !== readVersion) return;
       renderNotes();
     } catch (error) { showError(error); }
   }
@@ -677,6 +700,7 @@ export function mount(runtime: Runtime): Controller {
       }
       list.append(card);
     });
+    if (journeyPanel && savedJourneys && savedJourneys.length > 0) list.append(journeyPanel.savedSection(savedJourneys));
     drawPins();
   }
   function editNote(note: Note) {
@@ -736,6 +760,11 @@ export function mount(runtime: Runtime): Controller {
     $<HTMLButtonElement>('.select').disabled = !!draft || captureBusy || (native && !url);
     $<HTMLButtonElement>('.capture').disabled = !runtime.capture || !!draft || captureBusy || (native && !url);
     $<HTMLButtonElement>('.global-comment').disabled = !!draft || captureBusy || !url;
+    if (commentOptions) {
+      commentOptions.disabled = !!draft || captureBusy || !url;
+      if (commentOptions.disabled) setCommentMenu(false);
+    }
+    journeyPanel?.render();
     for (const selector of ['.dock', '.minimize', '.settings-button', '.close']) $<HTMLButtonElement>(selector).disabled = captureBusy;
     scope.disabled = captureBusy || (native && !url);
     if (!draft) {
@@ -1019,7 +1048,31 @@ export function mount(runtime: Runtime): Controller {
     startGlobalComment();
   });
   $('.minimize').addEventListener('click', () => { void minimize(); });
-  $('.resume').addEventListener('click', () => { if (returnToDock && !mobile) void changeLayout('dock'); else setMinimized(false); });
+  // A floating panel would cover the page being recorded, and the recording
+  // strip already offers Stop, so the panel steps aside until the journey ends.
+  let minimizedForJourney = false;
+  const unwatchJourney = runtime.watchJourneyRecording?.(recording => {
+    if (!alive || native) return;
+    app.classList.toggle('journey-recording', recording);
+    if (recording) {
+      if (presentation === 'overlay' && !$('.panel').hidden && !draft && !captureBusy && !picking && !minimizing) {
+        minimizedForJourney = true;
+        returnToDock = false;
+        setMinimized(true);
+      }
+    } else {
+      // The panel now offers the journey's review.
+      journeyPanel?.refreshReview();
+      if (minimizedForJourney) {
+        minimizedForJourney = false;
+        if (presentation === 'overlay' && !$('.resume').hidden) setMinimized(false);
+      }
+    }
+  });
+  $('.resume').addEventListener('click', () => {
+    minimizedForJourney = false;
+    if (returnToDock && !mobile) void changeLayout('dock'); else setMinimized(false);
+  });
   $('.dock').addEventListener('click', () => { if (!mobile) void changeLayout(native ? 'overlay' : 'dock'); });
   $('.settings-button').addEventListener('click', () => {
     setSettings(!settings);
@@ -1159,7 +1212,8 @@ export function mount(runtime: Runtime): Controller {
       viewToken = createUuid();
       if (draft?.element) changeDraft(true);
       locatedId = null;
-      setPicking(false);
+      // Cancel selection without reopening a minimized panel.
+      if (picking) setPicking(false); else highlighted = null;
       if (draft) renderEditor();
       renderNotes();
       status(draft ? 'Page changed. Your draft will be saved to the page where you started the comment.' : 'Showing comments for this page.');
@@ -1184,6 +1238,7 @@ export function mount(runtime: Runtime): Controller {
     captureAbort?.abort();
     abort.abort();
     unsubscribe();
+    unwatchJourney?.();
     clearInterval(navigation);
     cancelAnimationFrame(frame);
     noteViews.forEach(dispose => dispose());
@@ -1251,6 +1306,7 @@ export function mount(runtime: Runtime): Controller {
       $<HTMLButtonElement>('.select').disabled = true;
       $<HTMLButtonElement>('.capture').disabled = true;
       $<HTMLButtonElement>('.global-comment').disabled = true;
+      if (commentOptions) commentOptions.disabled = true;
       scope.disabled = true;
       setConnectionWarning(true);
     }
@@ -1265,5 +1321,6 @@ export function mount(runtime: Runtime): Controller {
   renderPreamble();
   void loadPreamble();
   void refresh();
+  journeyPanel?.refreshReview();
   return controller;
 }

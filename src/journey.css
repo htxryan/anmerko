@@ -1,0 +1,81 @@
+.journey-view { box-sizing:border-box; max-width:760px; margin:0 auto; padding:24px; color:var(--text,#202b41); background:var(--surface,#fff); font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; overflow-wrap:anywhere; }
+.journey-view * { box-sizing:border-box; }
+.journey-view h1 { font-size:24px; line-height:1.25; margin:8px 0 16px; letter-spacing:-.5px; }
+.journey-view h2 { font-size:16px; line-height:1.4; margin:0 0 4px; }
+.journey-view p { margin:0 0 12px; }
+.journey-brand { font-size:16px; font-weight:750; color:var(--accent,#345ee9); }
+.journey-help,.journey-time { color:var(--muted,#647188); }
+.journey-time { font-size:12px; }
+.journey-notice { border-left:3px solid var(--accent,#345ee9); padding:12px; color:var(--text,#202b41); background:var(--accent-soft,#eef2ff); border-radius:0 6px 6px 0; }
+.journey-notice-error { border-left-color:var(--danger,#b1443f); background:var(--danger-bg,#fff2f0); }
+.journey-limitations { margin:0 0 12px; }
+.journey-limitations ul { margin:0; padding-left:20px; }
+/* The review's deadline warning stays in view while the reader scrolls, and
+   the tab or sidebar scrolls a focused control clear of it. */
+.journey-deadline { position:sticky; top:0; z-index:1; margin:0 0 12px; box-shadow:0 6px 16px #1b2b4926; }
+html:has(.journey-deadline), .journey-container:has(.journey-deadline) { scroll-padding-top:11rem; }
+/* Visually hidden live regions; screen readers still announce their text. */
+.journey-live { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+.journey-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
+.journey-start .journey-error { margin-top:12px!important; }
+.journey-view button { font:inherit; min-height:44px; border-radius:8px; padding:10px 16px; cursor:pointer; white-space:normal; }
+.journey-primary { color:#fff; background:var(--primary,#345ee9); border:1px solid var(--primary,#345ee9); }
+.journey-secondary { color:inherit; background:var(--surface,#fff); border:1px solid var(--border,#dce1ec); }
+.journey-danger-outline { color:var(--danger,#b1443f); background:var(--surface,#fff); border:1px solid currentColor; }
+.journey-view button:disabled { opacity:.55; cursor:default; }
+.journey-view :focus-visible { outline:3px solid var(--accent,#345ee9); outline-offset:3px; }
+/* A label that wraps keeps its checkbox full size, beside its first line. */
+.journey-option { display:flex; align-items:flex-start; gap:12px; min-height:44px; margin:16px 0; padding-block:11px; }
+.journey-option input { flex:none; width:20px; height:20px; margin:1px 0 0; }
+.journey-steps { list-style:none; padding:0; margin:24px 0; }
+.journey-steps li { padding:16px 0; border-top:1px solid var(--border,#dce1ec); }
+.journey-meta-label { font-size:12px; font-weight:650; margin-top:12px!important; margin-bottom:4px!important; }
+.journey-url { font:12px/1.5 ui-monospace,monospace; white-space:pre-wrap; word-break:break-word; }
+/* Width and aspect ratio are set per capture, so the whole screenshot shows. */
+.journey-image { display:block; max-width:100%; margin-top:8px; overflow:hidden; background:var(--badge,#edf0f6); border:1px solid var(--border,#dce1ec); border-radius:8px; }
+.journey-image-controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.journey-error { margin-top:8px!important; color:var(--danger,#b1443f); font-weight:600; }
+.journey-summary { margin:20px 0; }
+.journey-field { margin:0 0 16px; }
+.journey-field-label { display:block; font-weight:650; margin-bottom:4px; }
+.journey-textarea { width:100%; min-height:76px; font:inherit; color:inherit; background:var(--surface,#fff); padding:10px 12px; border:1px solid var(--border,#dce1ec); border-radius:8px; resize:vertical; }
+.journey-textarea:disabled { opacity:.55; }
+.journey-count { font-size:12px; margin-top:4px!important; }
+.journey-step-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+/* The panel's destructive fill: white text stays above 6:1 in both themes. */
+.journey-danger { color:#fff; background:#b42318; border:1px solid #b42318; }
+.journey-save { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
+.journey-save > .journey-primary { margin-bottom:8px; }
+.journey-reasons { margin:0 0 12px; padding-left:20px; color:var(--danger,#b1443f); }
+.journey-entered-value { margin-top:12px; padding:12px; border:1px solid var(--border,#dce1ec); border-radius:8px; overflow-wrap:anywhere; }
+.journey-value { font:13px/1.5 ui-monospace,monospace; white-space:pre-wrap; word-break:break-word; margin:0 0 8px!important; }
+.journey-edited { font-size:12px; font-weight:650; color:var(--accent,#345ee9); margin:0 0 8px!important; }
+.journey-value-editor { margin-top:8px; }
+.journey-input { width:100%; font:inherit; color:inherit; background:var(--surface,#fff); padding:10px 12px; border:1px solid var(--border,#dce1ec); border-radius:8px; }
+.journey-input:disabled { opacity:.55; }
+.journey-url-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.journey-image-actions { margin-top:12px; }
+.journey-saved-list { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
+.journey-saved-items { list-style:none; margin:8px 0 12px; padding:0; }
+.journey-saved-item { padding:12px 0; border-top:1px solid var(--border,#dce1ec); }
+.journey-saved-item:first-child { border-top:0; padding-top:4px; }
+.journey-view .journey-saved-title { margin:0 0 2px; font-weight:650; }
+.journey-view .journey-saved-meta { margin:0; font-size:13px; color:var(--muted,#647188); overflow-wrap:normal; }
+.journey-saved-spans { font-weight:650; color:var(--text,#202b41); white-space:nowrap; }
+.journey-saved-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.journey-saved-actions button, .journey-saved-delete-all button { padding-inline:14px; }
+.journey-saved-delete-all { display:flex; flex-direction:column; align-items:flex-start; gap:4px; margin-top:12px; }
+.journey-saved-delete-all .journey-step-actions { margin-top:0; }
+.journey-export { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
+.journey-export-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.journey-discard { margin-top:24px; }
+.journey-status { margin-top:12px!important; color:var(--success,#2f6b4f); }
+@media(max-width:420px) { .journey-view { padding:16px; } .journey-view h1 { font-size:22px; } }
+@media(max-width:260px) { .journey-view { padding:16px 12px; } .journey-view button { padding-inline:12px; } }
+/* The journey tab has no panel around it, so it carries the panel's colors
+   (panel.css .app) and follows the same Appearance setting: light unless Dark
+   is chosen. Firefox for Android lays the page out taller than its visible
+   area under the dynamic toolbar, so the last control needs room. */
+.journey-page { margin:0; background:var(--surface); color-scheme:light; --text:#202b41; --muted:#647188; --surface:#ffffff; --border:#dce1ec; --accent:#345ee9; --primary:#345ee9; --accent-soft:#eef2ff; --badge:#edf0f6; --danger:#b1443f; --danger-bg:#fff2f0; --success:#557760; }
+.journey-page[data-theme="dark"] { color-scheme:dark; --text:#e6eaf3; --muted:#acb8ce; --surface:#1c2535; --border:#354156; --accent:#a6baff; --primary:#4266d9; --accent-soft:#243759; --badge:#2b374b; --danger:#ffaaa5; --danger-bg:#442c32; --success:#a6dbb9; }
+.journey-page .journey-view { padding-bottom:max(env(safe-area-inset-bottom, 0px), 96px); }

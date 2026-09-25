@@ -1,14 +1,23 @@
 import { buildPrompt, screenshotFilename, type Note } from './core';
 
-// Store-only ZIP: PNG is already compressed. Keeps the export entirely local
-// and interoperable without a runtime dependency or a background upload.
+export interface ArchiveFile {
+  name: string;
+  data: Uint8Array;
+}
+
 export function feedbackArchive(notes: Note[], preamble: string): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
-  const files = [{ name: 'comments.md', data: encoder.encode(buildPrompt(notes, preamble)) },
+  return storedZip([{ name: 'comments.md', data: encoder.encode(buildPrompt(notes, preamble)) },
     ...notes.filter(note => note.screenshot).map(note => ({
       name: screenshotFilename(note),
       data: Uint8Array.from(atob(note.screenshot!.dataUrl.split(',')[1]), char => char.charCodeAt(0)),
-    }))];
+    }))]);
+}
+
+// Store-only ZIP: PNG is already compressed. Keeps the export entirely local
+// and interoperable without a runtime dependency or a background upload.
+export function storedZip(files: ArchiveFile[]): Uint8Array<ArrayBuffer> {
+  const encoder = new TextEncoder();
   const parts: Uint8Array[] = [];
   const directory: Uint8Array[] = [];
   let offset = 0;

@@ -14,4 +14,6 @@ anmerko is a browser extension that turns website comments and screenshots into 
 5. Give the prompt to your AI agent. For screenshot feedback, attach the exported image files listed in the prompt.
 6. Review the agent's changes and repeat the process for anything that still needs attention.
 
+To show a problem that takes several actions to reproduce, [record a journey](/docs/usage/#record-a-journey) of clicks and screenshots.
+
 Learn more about [adding comments](/docs/usage/) and [sending feedback to your agent](/docs/send-to-your-agent/).

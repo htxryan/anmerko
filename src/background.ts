@@ -1,4 +1,4 @@
-import { activateTab } from './activate';
+import { activateTab as injectPage } from './activate';
 import {
   COMPONENT_CONTEXT_KEY,
   COMPONENT_CONTEXT_MESSAGE_TYPE,
@@ -6,18 +6,109 @@ import {
   createExtensionComponentContextProbeRunner,
 } from './component-context-bridge';
 import { COMPONENT_CONTEXT_PROBES } from './component-context-dispatch';
-import { extensionApi } from './platform';
+import { extensionApi, firefoxExtension } from './platform';
 import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
-export { activateTab } from './activate';
+import { createCaptureService } from './capture-service';
+import { bindJourneyExtension } from './journey-extension';
+import { currentPlatform, iPhoneOrIPad, JOURNEYS_DECLINED_GLOBAL, journeysAvailable } from './journey-feature';
+
+declare const __TARGET_JOURNEYS__: boolean;
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
+const CAPTURE_SPACING_KEY = 'anmerko:capture-spacing:v1';
 const sidebarOwners = new Map<number, object>();
-// Screenshot captures are serialized with a short throttle so a rapid
-// double-activation cannot race two visible-tab captures into one crop.
-let capturePending = false;
-let lastCapture = 0;
+const sidebarPorts = new Map<number, { port: chrome.runtime.Port; version: number }>();
+const screenshotService = createCaptureService(
+  windowId => api.tabs.captureVisibleTab(windowId, { format: 'png' }),
+  () => Date.now(),
+  {
+    // Session-only API-start spacing: a worker wake restores the shared
+    // 600 ms budget without persisting image bytes or ordering steps.
+    loadLastStart: async () => {
+      try {
+        const stored = await api.storage.session.get([CAPTURE_SPACING_KEY]);
+        const value = stored[CAPTURE_SPACING_KEY];
+        return typeof value === 'number' ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    saveLastStart: async lastStart => {
+      try {
+        await api.storage.session.set({ [CAPTURE_SPACING_KEY]: lastStart });
+      } catch {
+        // Spacing persistence is best-effort; the in-memory budget still applies.
+      }
+    },
+  },
+);
+// Journeys are the build target's capability and need this browser to support
+// them. Read the define here rather than targetJourneys: esbuild folds it only
+// within this module, which drops the journey runtime from Orion's bundle.
+// Decide synchronously: a woken worker delivers an alarm or navigation only to
+// listeners added in its first turn. Without journeys, comments work as before.
+const journeys = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__
+  && journeysAvailable({ api, platform: currentPlatform() }) ? bindJourneyExtension(screenshotService) : undefined;
+async function platformInfoReportsIPhoneOrIPad() {
+  try { return iPhoneOrIPad({ os: (await api.runtime.getPlatformInfo()).os }); }
+  catch { return false; }
+}
+// Page scripts cannot see the APIs checked above, and a page's user agent may
+// be emulated, so a page learns before its overlay mounts that this background
+// declined journeys. getPlatformInfo() answers too late for the listeners but
+// still keeps iPhone and iPad pages from offering journeys.
+const journeysDeclined = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__
+  ? journeys ? platformInfoReportsIPhoneOrIPad() : Promise.resolve(true) : Promise.resolve(false);
+
+export async function activateTab(tabId: number, mode?: string, state?: unknown, canDock?: boolean, notifySidebar?: boolean): Promise<void> {
+  if (await journeysDeclined) {
+    try {
+      await api.scripting.executeScript({
+        target: { tabId }, args: [JOURNEYS_DECLINED_GLOBAL],
+        func: (name: string) => { (globalThis as typeof globalThis & Record<string, unknown>)[name] = true; },
+      });
+    } catch { /* Injecting the overlay reports an inaccessible page. */ }
+  }
+  await injectPage(tabId, mode, state, canDock, notifySidebar);
+}
+type LayoutMode = 'dock' | 'overlay' | 'minimized' | 'closed';
+const layoutModes = new Set<LayoutMode>(['dock', 'overlay', 'minimized', 'closed']);
+
+function sidebarReopened(windowId: number) {
+  const target = sidebarPorts.get(windowId);
+  return () => {
+    if (!target || sidebarPorts.get(windowId) !== target) return;
+    sidebarPorts.delete(windowId);
+    try {
+      target.port.postMessage({ type: 'ANMERKO_SIDEBAR_REOPENED', version: target.version });
+    } catch { /* A disconnected sidebar reconnects through its normal startup path. */ }
+  };
+}
+
+async function requireActiveTab(tabId: number, windowId: number) {
+  try {
+    const tab = await api.tabs.get(tabId);
+    if (tab.active && tab.windowId === windowId) return;
+  } catch { /* Use the same safe failure for missing and changed tabs. */ }
+  throw new Error('Could not change layout.');
+}
+
+async function changeLayout(tabId: number, windowId: number, mode: LayoutMode, state: unknown, mobile: boolean, fromSidebar: boolean) {
+  if (mode === 'dock' && (mobile || !supportsDocking())) throw new Error('Docking is unavailable on mobile.');
+  const reopened = mode === 'dock' ? sidebarReopened(windowId) : undefined;
+  try {
+    if (mode === 'dock') await openDock(windowId);
+    await activateTab(tabId, mode === 'dock' ? 'remote' : mode, state, supportsDocking());
+    reopened?.();
+  } catch {
+    // A sidebar can still be dismissed when the active tab is protected.
+    if (fromSidebar && ['closed', 'minimized'].includes(mode)) return;
+    throw new Error('Could not change layout.');
+  }
+}
+
 const componentContextBroker = createComponentContextBroker({
     extensionId: api.runtime.id,
     probes: COMPONENT_CONTEXT_PROBES,
@@ -30,20 +121,44 @@ api.storage.onChanged.addListener((changes, area) => {
   }
 });
 api.action.onClicked.addListener(tab => {
+  if (journeys?.stopIfRecording()) return;
+  // Journeys are unavailable in private windows: a click there opens comments,
+  // never a regular window's review.
+  const privateWindow = tab.incognito === true;
+  if (journeys?.openReviewIfAvailable(privateWindow)) return;
   if (!tab.id) return;
-  if (!tab.url || !/^https?:/.test(tab.url)) {
-    void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
+  const webPage = !!tab.url && /^https?:/.test(tab.url);
+  const openRequestedPage = (preservedDock?: Promise<void>) => {
+    if (!webPage) {
+      void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
+      return;
+    }
+    const reopened = sidebarReopened(tab.windowId);
+    const opening = supportsDocking() ? (preservedDock ?? openDock(tab.windowId)).then(() => {
+      // Firefox can keep an existing sidebar open after navigation. A fresh
+      // toolbar grant must retry its port-owned connection in that window.
+      if (firefoxExtension(api)) {
+        return api.runtime.sendMessage({ type: 'ANMERKO_CONNECT_SIDEBAR', windowId: tab.windowId }).catch(() => {});
+      }
+      return activateTab(tab.id!, 'remote', undefined, true);
+    }).then(reopened) : activateTab(tab.id!);
+    void opening.catch(() => activateTab(tab.id!)).catch(() => api.tabs.create({ url: api.runtime.getURL('unavailable.html') }));
+  };
+  if (!journeys) {
+    openRequestedPage();
     return;
   }
-  const opening = supportsDocking() ? openDock(tab.windowId).then(() => {
-    // Firefox can keep an existing sidebar open after navigation. A fresh
-    // toolbar grant must retry its port-owned connection in that window.
-    if ('sidebar_action' in api.runtime.getManifest()) {
-      return api.runtime.sendMessage({ type: 'ANMERKO_CONNECT_SIDEBAR', windowId: tab.windowId }).catch(() => {});
-    }
-    return activateTab(tab.id!, 'remote', undefined, true);
-  }) : activateTab(tab.id);
-  void opening.catch(() => activateTab(tab.id!)).catch(() => api.tabs.create({ url: api.runtime.getURL('unavailable.html') }));
+  // Native sidebar APIs must be entered from the toolbar gesture. Start that
+  // request while lifecycle restoration decides whether this click is Stop,
+  // but only for a web page: a protected page gets its explanation alone.
+  const preservedDock = webPage && supportsDocking() ? openDock(tab.windowId) : undefined;
+  // Toolbar Stop handles the click without awaiting the native dock request.
+  // Observe its rejection while retaining the original promise so an idle
+  // click can fall back to the overlay when docking fails.
+  void preservedDock?.catch(() => {});
+  void journeys.handleToolbarClick(privateWindow).then(handled => {
+    if (!handled) openRequestedPage(preservedDock);
+  }).catch(() => {});
 });
 api.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== api.runtime.id) return;
@@ -53,7 +168,6 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
     operation.then(value => respond({ ok: true, value }), () => respond({ ok: true, value: null }));
     return true;
   }
-  const fromSidebar = sender.url === sidebarUrl;
   const fromPage = !!sender.tab?.id && /^https?:/.test(sender.url || '');
   const reply = (operation: Promise<unknown>) => {
     operation.then(value => respond({ ok: true, value }), error => respond({ ok: false, error: String(error.message || error) }));
@@ -61,8 +175,6 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
   };
   if (message?.type === 'ANMERKO_CAPTURE_VISIBLE' && fromPage && sender.frameId === 0) {
     return reply((async () => {
-      if (capturePending || Date.now() - lastCapture < 600) throw new Error('Wait a moment before taking another screenshot.');
-      capturePending = true; lastCapture = Date.now();
       const tabId = sender.tab!.id!;
       const windowId = sender.tab!.windowId;
       let changed = false;
@@ -72,42 +184,44 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
       try {
         const before = await api.tabs.get(tabId);
         if (!before.active || before.url !== sender.url || !/^https?:/.test(before.url || '')) throw new Error('Return to the original page and try again.');
-        const dataUrl = await api.tabs.captureVisibleTab(windowId, { format: 'png' });
+        const dataUrl = await screenshotService.capture(windowId);
         const after = await api.tabs.get(tabId);
         if (changed || !after.active || after.url !== before.url) throw new Error('The page changed during capture. Try again.');
         return dataUrl;
       } finally {
-        api.tabs.onActivated.removeListener(activated); api.tabs.onUpdated.removeListener(updated); capturePending = false;
+        api.tabs.onActivated.removeListener(activated); api.tabs.onUpdated.removeListener(updated);
       }
     })());
   }
   if (message?.type === 'OPEN_ANMERKO' && sender.url === api.runtime.getURL('popup.html') && Number.isInteger(message.tabId)) {
     return reply(activateTab(message.tabId, 'overlay', undefined, supportsDocking()));
   }
-  if (message?.type === 'ANMERKO_LAYOUT' && (fromSidebar || fromPage)) {
-    const tabId = fromSidebar ? message.tabId : sender.tab!.id;
-    const windowId = fromSidebar ? message.windowId : sender.tab!.windowId;
-    if (!Number.isInteger(tabId) || !Number.isInteger(windowId) || !['dock', 'overlay', 'minimized', 'closed'].includes(message.mode)) return;
-    if (message.mode === 'dock' && (message.mobile || !supportsDocking())) { respond({ ok: false, error: 'Docking is unavailable on mobile.' }); return; }
-    const opening = message.mode === 'dock' ? openDock(windowId) : Promise.resolve();
-    return reply((async () => {
-      await opening;
-      try {
-        await activateTab(tabId, message.mode === 'dock' ? 'remote' : message.mode, message.state, supportsDocking());
-      } catch (error) {
-        // A sidebar can still be dismissed when the active tab is protected.
-        if (!fromSidebar || !['closed', 'minimized'].includes(message.mode)) throw error;
-      }
-    })());
+  if (message?.type === 'ANMERKO_LAYOUT' && fromPage) {
+    if (!layoutModes.has(message.mode)) return;
+    return reply(changeLayout(sender.tab!.id!, sender.tab!.windowId, message.mode, message.state, !!message.mobile, false));
   }
 });
 api.runtime.onConnect.addListener(port => {
-  if (port.name !== 'anmerko-sidebar' || port.sender?.url !== sidebarUrl) return;
+  if (port.name !== 'anmerko-sidebar' || port.sender?.id !== api.runtime.id || port.sender.url !== sidebarUrl || port.sender.tab) return;
   bindSidebarConnection(port, {
     // The port sends the startup snapshot. Broadcasting here would apply it
     // twice and could replace the editor during the user's first click.
-    activate: tabId => activateTab(tabId, 'remote', undefined, true, false),
+    activate: async (tabId, windowId) => {
+      await requireActiveTab(tabId, windowId);
+      await activateTab(tabId, 'remote', undefined, true, false);
+    },
     view: tabId => api.tabs.sendMessage(tabId, { type: 'ANMERKO_GET_VIEW' }),
     closed: tabId => api.tabs.sendMessage(tabId, { type: 'ANMERKO_SIDEBAR_CLOSED' }),
+    layout: async (tabId, windowId, mode, state) => {
+      await requireActiveTab(tabId, windowId);
+      await changeLayout(tabId, windowId, mode, state, false, true);
+    },
+    register: (windowId, version) => {
+      const target = { port, version };
+      sidebarPorts.set(windowId, target);
+      return () => {
+        if (sidebarPorts.get(windowId) === target) sidebarPorts.delete(windowId);
+      };
+    },
   }, sidebarOwners);
 });

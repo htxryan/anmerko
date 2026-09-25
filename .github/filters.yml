@@ -101,6 +101,19 @@ highrisk:
   - 'src/extension-*.ts'
   - 'src/runtime.ts'
   - 'src/sidebar*'
+  # Journey modules that bind browser APIs, messaging or extension entry points:
+  # navigation, tabs, alarms, scripting and session storage; the availability
+  # gate; page, tab and sidebar messaging with its sender check; and the saved
+  # store's extension-origin IndexedDB. Pure journey model, UI and export
+  # modules stay in the fast scope.
+  - 'src/journey-extension.ts'
+  - 'src/journey-feature.ts'
+  - 'src/journey-page-bridge.ts'
+  - 'src/journey-observer.ts'
+  - 'src/journey-page.ts'
+  - 'src/journey-client.ts'
+  - 'src/journey-messaging.ts'
+  - 'src/journey-store.ts'
   # Site, media and reporting helpers do not change browser behavior.
   - 'scripts/extension/build.mjs'
   - 'scripts/extension/build-version.mjs'

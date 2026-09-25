@@ -57,11 +57,52 @@ test('production permissions deny injection before activation and explain protec
 test('production action, native docking, comments, capture, export and restart', { timeout: 90000 }, async t => {
   const session = await createDesktopSession({ scenario: 'workflow' });
   t.after(() => session.close());
+  const lifecycleWorker = session.context.serviceWorkers().find(worker => worker.url().endsWith('/background.js'))
+    || await session.context.waitForEvent('serviceworker', { predicate: worker => worker.url().endsWith('/background.js') });
+  await lifecycleWorker.evaluate(() => {
+    globalThis.anmerkoSidebarLifecycle = [];
+    const record = entry => globalThis.anmerkoSidebarLifecycle.push({
+      sequence: globalThis.anmerkoSidebarLifecycle.length + 1, ...entry,
+    });
+    const recordPanel = type => info => record({
+      event: type,
+      windowId: Number.isInteger(info?.windowId) ? info.windowId : null,
+      tabId: Number.isInteger(info?.tabId) ? info.tabId : null,
+      path: typeof info?.path === 'string' ? info.path : null,
+    });
+    chrome.sidePanel?.onOpened?.addListener(recordPanel('side-panel-opened'));
+    chrome.sidePanel?.onClosed?.addListener(recordPanel('side-panel-closed'));
+    let connection = 0;
+    chrome.runtime.onConnect.addListener(port => {
+      if (port.name !== 'anmerko-sidebar') return;
+      const id = ++connection;
+      record({ event: 'sidebar-port-connected', connection: id });
+      port.onMessage.addListener(message => {
+        if (message?.type === 'ANMERKO_SIDEBAR_LAYOUT') {
+          record({
+            event: 'sidebar-layout-posted', connection: id,
+            version: Number.isInteger(message.version) ? message.version : null,
+            mode: ['overlay', 'minimized', 'closed'].includes(message.mode) ? message.mode : null,
+          });
+        } else if (Number.isInteger(message?.tabId) && Number.isInteger(message?.windowId) && Number.isInteger(message?.version)) {
+          record({
+            event: 'sidebar-startup-posted', connection: id,
+            tabId: message.tabId, windowId: message.windowId, version: message.version,
+          });
+        }
+      });
+      port.onDisconnect.addListener(() => record({ event: 'sidebar-port-disconnected', connection: id }));
+    });
+    globalThis.anmerkoSidePanelEventSupport = {
+      opened: !!chrome.sidePanel?.onOpened, closed: !!chrome.sidePanel?.onClosed,
+    };
+  });
   let page = session.page;
   const panel = () => page.getByRole('complementary', { name: 'anmerko feedback panel' });
   const width = await page.evaluate(() => innerWidth);
   await session.activate();
   let dock = await sidebar(session.context, page);
+  session.evidence.sidebarTargets = [dock.acquisition];
   await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(width - 200);
   assert.equal(session.evidence.manifest.host_permissions, undefined);
   assert.equal(session.evidence.manifest.background.service_worker, 'background.js');
@@ -80,9 +121,33 @@ test('production action, native docking, comments, capture, export and restart',
   await panel().getByLabel('Comment', { exact: true }).fill('Make this headline clearer.');
   await panel().getByRole('button', { name: 'Dock sidebar', exact: true }).click();
   dock = await sidebar(session.context, page);
+  session.evidence.sidebarTargets.push(dock.acquisition);
   await expect.poll(() => dock.value('#comment')).toBe('Make this headline clearer.');
+  session.evidence.sidebarFloat = { before: { targetId: dock.targetId } };
   await dock.click('.dock');
-  await expect(panel().getByLabel('Comment', { exact: true })).toHaveValue('Make this headline clearer.');
+  try {
+    await expect(panel().getByLabel('Comment', { exact: true })).toHaveValue('Make this headline clearer.');
+  } catch (error) {
+    const [targets, surface, sidePanelEvents] = await Promise.allSettled([
+      dock.targets(), dock.surface(), lifecycleWorker.evaluate(() => ({
+        support: globalThis.anmerkoSidePanelEventSupport,
+        events: globalThis.anmerkoSidebarLifecycle,
+      })),
+    ]);
+    session.evidence.sidebarFloat.after = {
+      targets: targets.status === 'fulfilled' ? targets.value : null,
+      surface: surface.status === 'fulfilled' ? surface.value : null,
+      sidePanelEvents: sidePanelEvents.status === 'fulfilled' ? sidePanelEvents.value : null,
+      page: await page.evaluate(() => {
+        const root = document.querySelector('anmerko-overlay')?.shadowRoot;
+        return {
+          host: !!root, panelHidden: root?.querySelector('.panel')?.hidden ?? null,
+          resumeHidden: root?.querySelector('.resume')?.hidden ?? null,
+        };
+      }),
+    };
+    throw error;
+  }
   await panel().getByLabel('Comment', { exact: true }).press('Control+Enter');
   await expect(panel().locator('.note')).toHaveCount(1);
   await panel().getByRole('button', { name: 'Minimize comments', exact: true }).click();
@@ -180,6 +245,8 @@ test('production action, native docking, comments, capture, export and restart',
   await expect(panel().locator('.note')).toHaveCount(1);
   await page.goto(`${session.origin}/pricing`); await session.activate();
   dock = await sidebar(session.context, page); await dock.click('.dock');
+  // A failed Float also shows no notes; report it here instead.
+  await expect(panel()).toBeVisible();
   await expect(panel().locator('.note')).toHaveCount(0);
   await panel().getByLabel('Comment scope').selectOption('all');
   await expect(panel().locator('.note')).toHaveCount(1);
@@ -241,6 +308,10 @@ test('production component context covers the native Chrome and Edge fixture mat
         await expect(extensionPanel(page)).toBeVisible();
         await extensionPanel(page).getByLabel('Comment', { exact: true }).fill('Persist the real component hint.');
         await extensionPanel(page).getByRole('button', { name: 'Save', exact: true }).click();
+        // Saving is async: storage write + refresh must land before the next
+        // navigation tears down this page. Otherwise the new page's startup
+        // snapshot can win the sidebar-port race and leave the panel hidden.
+        await expect(extensionPanel(page).locator('.note')).toHaveCount(1);
       } else {
         await extensionPanel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
       }

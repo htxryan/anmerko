@@ -2,6 +2,40 @@ import { copyPrompt } from '../shared/clipboard';
 import { test, expect } from '@playwright/test';
 const panel = (page: import('@playwright/test').Page) => page.getByRole('complementary', { name: 'anmerko feedback panel' });
 
+test('the demo shows the three comment actions and no journey launch without the extension', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Try the Demo' }).click();
+  const actions = panel(page).getByRole('group', { name: 'Comment Actions' });
+  await expect(actions.getByRole('button')).toHaveCount(3);
+  for (const name of ['Select Element', 'Take Screenshot', 'New Global Comment']) await expect(actions.getByRole('button', { name, exact: true })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: 'More Comment Options' })).toHaveCount(0);
+  await expect(panel(page).locator('#comment-menu')).toHaveCount(0);
+  await expect(panel(page).getByRole('menuitem', { name: 'Record journey' })).toHaveCount(0);
+});
+
+test('the demo compiles the shared panel without shipping the journey UI it cannot reach', async ({ page }) => {
+  const scripts = new Map<string, Promise<string>>();
+  page.on('response', response => {
+    // The body is read now but awaited later, so a body that can no longer be
+    // read (a redirect, or one the page dropped) must not reject unobserved.
+    if (response.request().resourceType() === 'script') {
+      scripts.set(new URL(response.url()).pathname, response.text().catch(() => ''));
+    }
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Try the Demo' }).click();
+  await expect(panel(page).getByRole('button', { name: 'Select Element' })).toBeVisible();
+  const runtime = [...scripts.keys()].filter(path => /^\/_astro\/demo-runtime\.[^/]+\.js$/.test(path));
+  expect(runtime).toHaveLength(1);
+  expect((await scripts.get(runtime[0]))!.includes('Select Element'), 'the demo compiles the shared panel').toBe(true);
+  for (const [path, body] of scripts) {
+    const text = await body;
+    for (const journeyUi of ['Record journey', 'Saved journeys', 'Discard journey', 'journeys.md', '__TARGET_JOURNEYS__']) {
+      expect(text.includes(journeyUi), `${path} ships ${journeyUi}`).toBe(false);
+    }
+  }
+});
+
 test('the built demo exposes the current shared settings and comment actions', async ({ page }) => {
   await page.clock.install();
   await page.goto('/');

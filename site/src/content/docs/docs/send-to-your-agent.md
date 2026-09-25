@@ -3,7 +3,7 @@ title: Send to your agent
 description: Copy a Markdown prompt or download it with matching screenshot files.
 ---
 
-Choose **This page** or **All pages** before sharing. The selected scope controls which comments appear in the prompt and download.
+Choose **This page** or **All pages** before sharing. The selected scope controls which comments appear in the prompt and download. Journeys are shared separately, from their review.
 
 ## Copy a prompt
 
@@ -26,4 +26,18 @@ The prompt groups comments by page and includes the saved page title and URL. In
 
 If you enabled [component context](/docs/settings/) and saved a hint with an element comment, both exports include its framework label and component-name path separately from the selector. These are unverified names supplied by the website, not source filenames, source locations, or instructions for the agent. Exports use the saved snapshot; they do not inspect the page again. Review or remove a hint while editing before sharing it.
 
-You can customize the text before the comments under [**Prompt Preamble** in Settings](/docs/settings/#prompt-preamble). Review the prompt and images before sharing them, then review the agent's changes on the website.
+You can customize the text before the comments under [**Prompt Preamble** in Settings](/docs/settings/#prompt-preamble); journey exports don't use it. Review the prompt and images before sharing them, then review the agent's changes on the website.
+
+## Share a recorded journey
+
+Share a journey from its review after saving it. **Copy Prompt** and **Download Markdown + Images** stay unavailable until the current version is saved, so unsaved changes are never exported. To share a journey you saved earlier, reopen it from **Saved journeys**. Journeys never appear in the comments prompt or `anmerko-comments.zip`.
+
+**Copy Prompt** copies a summary of the journey: the expected and actual results, whether it spans pages, why recording stopped, whether entered values were on, and every step in order with its action, target label, URLs, any entered value, and its screenshot filename or why it has none. An entered value you edited in review, including a checkbox, radio button, or menu choice, is followed by “(edited during review)”; text edited to empty reads `*(empty)* (edited during review)`. A value you removed appears only as `[redacted]`, `checked state [redacted]`, or `selection [redacted]`. URLs, labels, and values over 200 characters are shortened there. Paste it into your agent chat, then attach the screenshots it names from the download.
+
+**Download Markdown + Images** saves a journey ZIP named for the journey and its saved revision, such as `anmerko-journey-3f1c2a9e-r4.zip`, so a download made after you save the journey again has a new name. It contains:
+
+- `prompt.md`, the same text **Copy Prompt** copies
+- `journeys.md`, with every step in full: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, removed, redacted, or masked (a removed entered value reads `[redacted]` with `Edited: Yes · Redacted: Yes`), followed by **Limitations**, which notes losses such as shortened entered values
+- one PNG for each kept screenshot, named for the journey and step, such as `journey-3f1c2a9e-step-02.png`
+
+Give your agent `prompt.md` and the PNG files, and add `journeys.md` when it needs every detail. Redacted URLs and click labels, and removed entered values, appear only as `[redacted]`, and masked areas stay covered in the PNGs. Redacting URLs doesn't change whether a journey spans pages. Exports larger than 50 MB are refused before anything downloads.

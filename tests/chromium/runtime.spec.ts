@@ -373,3 +373,31 @@ test('failed deletion-preference writes keep confirmation on and a retry persist
   await panel(page).getByRole('button', { name: 'Feedback settings', exact: true }).click();
   await expect(preference).not.toBeChecked();
 });
+
+test('saved journeys list once each with human labels, local times, spans scope, and stay read-only', async ({ page }) => {
+  await run(page, `harness.setJourneys([
+    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true, expected: 'Checkout keeps the item' },
+    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+  ]); harness.open()`);
+  const section = panel(page).getByRole('region', { name: 'Saved journeys' });
+  await expect(section).toBeVisible();
+  const [first, second] = await page.evaluate(() => ['2026-09-21T01:00:00.000Z', '2026-09-21T02:00:00.000Z']
+    .map(iso => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(Date.parse(iso))));
+  await expect(section.locator('.saved-journey-title')).toHaveText(['Checkout keeps the item', 'Untitled journey']);
+  await expect(section.locator('.saved-journey-meta')).toHaveText([`Saved ${first} · 3 steps · Spans pages`, `Saved ${second} · 1 step`]);
+  await expect(section).not.toContainText('J1');
+  await expect(section).not.toContainText('revision');
+  await expect(section.getByText('Spans pages', { exact: true })).toHaveCount(1);
+  await expect(section.locator('li')).toHaveCount(2);
+  await expect(section.locator('button')).toHaveCount(0);
+  await panel(page).getByLabel('Comment scope').selectOption('all');
+  await expect(section.locator('li')).toHaveCount(2);
+});
+
+test('saved journeys hide when the list is empty or fails without an error wall', async ({ page }) => {
+  await run(page, 'harness.open()');
+  await expect(panel(page).getByRole('region', { name: 'Saved journeys' })).toHaveCount(0);
+  await run(page, 'harness.dispose(); harness.failJourneys(true); harness.open()');
+  await expect(panel(page).getByRole('region', { name: 'Saved journeys' })).toHaveCount(0);
+  await expect(panel(page).locator('.status')).toHaveText('');
+});

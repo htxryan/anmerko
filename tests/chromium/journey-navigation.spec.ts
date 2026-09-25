@@ -1,0 +1,1209 @@
+import { expect, test } from '@playwright/test';
+import { createJourneyController, type JourneyControllerAdapter, type JourneyPageIdentity } from '../../src/journey-controller';
+import { validateJourneyDraft, type JourneyDraftImage, type JourneySession, type ReviewingJourneySession } from '../../src/journey-core';
+import type { JourneyEventBatchV1 } from '../../src/journey-events';
+import { journeyDraftToManifest, journeyPrompt } from '../../src/journey-export';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
+
+const START_MS = Date.parse('2026-09-20T12:00:00.000Z');
+const START_URL = 'https://example.com/start';
+
+test('document commits are ordered synchronously and only the newest handshake can resume capture', async () => {
+  const b = deferred<JourneyPageIdentity>();
+  const c = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({
+    connect: (_tabId, expectedUrl) => expectedUrl.endsWith('/b') ? b.promise : c.promise,
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const oldToken = recording(controller.getState()).documentToken;
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://user:secret@example.com/b', kind: 'document' });
+  const afterB = recording(controller.getState());
+  expect(afterB.documentToken).not.toBe(oldToken);
+  expect(afterB.draft.steps.at(-1)?.navigation?.toUrl).toBe('https://example.com/b');
+
+  fixture.nowMs = START_MS + 1_100;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/c', kind: 'document' });
+  const afterC = recording(controller.getState());
+  expect(afterC.draft.steps.slice(-2).map(step => step.kind === 'navigation'
+    ? [step.sourceUrl, step.navigation.toUrl, step.image.status]
+    : [])).toEqual([
+    [START_URL, 'https://example.com/b', 'unavailable'],
+    ['https://example.com/b', 'https://example.com/c', 'pending'],
+  ]);
+
+  b.resolve(identity('document-b', 'https://example.com/b', 2));
+  await Promise.resolve();
+  expect(fixture.calls.begin).toHaveLength(1);
+
+  fixture.current = identity('document-c', 'https://example.com/c', 3);
+  c.resolve(fixture.current);
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(2));
+  expect(fixture.calls.begin[1].input).toMatchObject({ documentToken: 'document-c', expectedUrl: 'https://example.com/c' });
+  expect(recording(controller.getState()).documentToken).toBe('document-c');
+
+  fixture.nowMs = START_MS + 1_600;
+  fixture.resolveDelay(0, 1);
+  await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
+  expect(fixture.calls.capture[1].identity.url).toBe('https://example.com/c');
+});
+
+test('a same-document observation during a document handshake restarts that handshake for the latest URL', async () => {
+  const first = deferred<JourneyPageIdentity>();
+  const second = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({
+    connect: (_tabId, expectedUrl) => expectedUrl.endsWith('/next') ? first.promise : second.promise,
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+  const provisionalToken = recording(controller.getState()).documentToken;
+  fixture.nowMs = START_MS + 1_050;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next#details', kind: 'same-document' });
+
+  expect(fixture.calls.connect.map(call => call.expectedUrl)).toEqual([
+    'https://example.com/next', 'https://example.com/next#details',
+  ]);
+  expect(recording(controller.getState()).documentToken).toBe(provisionalToken);
+  first.resolve(identity('document-stale', 'https://example.com/next', 2));
+  await Promise.resolve();
+  expect(recording(controller.getState()).documentToken).toBe(provisionalToken);
+
+  fixture.current = identity('document-next', 'https://example.com/next#details', 3);
+  second.resolve(fixture.current);
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-next'));
+});
+
+test('a same-document observation while recorder begin is pending inherits the adopted handshake', async () => {
+  const firstBegin = deferred<void>();
+  let beginCount = 0;
+  const fixture = navigationFixture({
+    begin: async () => {
+      beginCount += 1;
+      if (beginCount === 2) await firstBegin.promise;
+    },
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity('document-next', 'https://example.com/next', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'document' });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(2));
+  expect(recording(controller.getState()).documentToken).toBe('document-next');
+
+  fixture.nowMs = START_MS + 1_050;
+  fixture.current = identity('document-next', 'https://example.com/next#details', 3);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(3));
+  expect(fixture.calls.connect.at(-1)?.expectedUrl).toBe('https://example.com/next#details');
+  expect(fixture.calls.begin.at(-1)?.input.expectedUrl).toBe('https://example.com/next#details');
+
+  firstBegin.resolve();
+  await Promise.resolve();
+  expect(recording(controller.getState()).documentToken).toBe('document-next');
+  expect(fixture.calls.end).toHaveLength(0);
+});
+
+test('a stale begin is ended only for its adopted document after a newer full commit', async () => {
+  const firstBegin = deferred<void>();
+  let beginCount = 0;
+  const fixture = navigationFixture({
+    connect: async (_tabId, expectedUrl) => expectedUrl.endsWith('/b')
+      ? identity('document-b', expectedUrl, 2)
+      : identity('document-c', expectedUrl, 3),
+    begin: async () => {
+      beginCount += 1;
+      if (beginCount === 2) await firstBegin.promise;
+    },
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/b', kind: 'document' });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(2));
+  fixture.nowMs = START_MS + 1_100;
+  fixture.current = identity('document-c', 'https://example.com/c', 3);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'document' });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(3));
+  expect(recording(controller.getState()).documentToken).toBe('document-c');
+
+  firstBegin.resolve();
+  await eventually(() => expect(fixture.calls.end).toHaveLength(1));
+  expect(fixture.calls.end[0].input).toMatchObject({ documentToken: 'document-b' });
+  expect(recording(controller.getState()).documentToken).toBe('document-c');
+});
+
+test('same-document commits retain the recorder token and counter after the document handshake', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL), 42);
+  state = recording(controller.getState());
+  const token = state.documentToken;
+
+  fixture.nowMs = START_MS + 500;
+  fixture.current = identity(token, `${START_URL}#one`, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 400;
+  fixture.current = identity(token, `${START_URL}#two`, 3);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+
+  state = recording(controller.getState());
+  expect(state.documentToken).toBe(token);
+  expect(state.documentCounters[token]).toBe(1);
+  expect(state.draft.steps.slice(-2).map(step => step.kind === 'navigation' && step.navigation.toUrl))
+    .toEqual([`${START_URL}#one`, `${START_URL}#two`]);
+  expect(state.draft.steps.slice(-2).map(step => step.elapsedMs)).toEqual([500, 500]);
+  expect(fixture.calls.connect).toHaveLength(0);
+});
+
+test('old-document and wrong-URL event batches are rejected after navigation', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const before = recording(controller.getState());
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  const provisional = recording(controller.getState());
+  controller.acceptBatch(clickBatch(before, 1, START_URL), 42);
+  expect(recording(controller.getState()).draft.steps).toHaveLength(2);
+
+  fixture.current = identity('document-reloaded', START_URL, 2);
+  connect.resolve(fixture.current);
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-reloaded'));
+  const current = recording(controller.getState());
+  controller.acceptBatch(clickBatch(current, 1, 'https://wrong.example/'), 42);
+  expect(recording(controller.getState()).draft.steps).toHaveLength(2);
+  expect(provisional.documentToken).not.toBe(current.documentToken);
+});
+
+test('a navigation keeps the time the browser reports, so a click on the new route made before processing still follows it', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+  const routeUrl = 'https://example.com/route';
+
+  // The route changed at 1 s; the background processed it at 1.3 s, after
+  // the reader had already clicked on the new route at 1.2 s.
+  fixture.nowMs = START_MS + 1_300;
+  fixture.current = identity(token, routeUrl, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: routeUrl, kind: 'same-document', timeStamp: START_MS + 1_000.4 });
+  let state = recording(controller.getState());
+  expect(state.draft.steps.at(-1)).toMatchObject({
+    kind: 'navigation', observedAt: new Date(START_MS + 1_000).toISOString(), elapsedMs: 1_000,
+  });
+
+  const click = clickBatch(state, 1, routeUrl, 'route-click-capture');
+  click.events[0].observedAt = new Date(START_MS + 1_200).toISOString();
+  click.events[0].elapsedMs = 1_200;
+  controller.acceptBatch(click, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps.slice(-2).map(step => [step.kind, step.elapsedMs])).toEqual([['navigation', 1_000], ['click', 1_200]]);
+  expect(state.draft.steps.at(-1)?.image).toEqual({ status: 'pending', captureId: 'route-click-capture' });
+});
+
+test('a reported navigation time never precedes the last step or lies in the future', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const initial = recording(controller.getState()).draft.steps[0];
+  const last = () => recording(controller.getState()).draft.steps.at(-1)!;
+
+  fixture.nowMs = START_MS + 2_000;
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#past`, kind: 'same-document', timeStamp: START_MS - 60_000 });
+  expect(last()).toMatchObject({ observedAt: initial.observedAt, elapsedMs: initial.elapsedMs });
+
+  fixture.nowMs = START_MS + 3_000;
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#future`, kind: 'same-document', timeStamp: START_MS + 60_000 });
+  expect(last()).toMatchObject({ observedAt: new Date(START_MS + 3_000).toISOString(), elapsedMs: 3_000 });
+
+  fixture.nowMs = START_MS + 4_000;
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#unknown`, kind: 'same-document', timeStamp: Number.NaN });
+  expect(last()).toMatchObject({ observedAt: new Date(START_MS + 4_000).toISOString(), elapsedMs: 4_000 });
+});
+
+test('document handshakes fall back to identify for adapters without connect', async () => {
+  const fixture = navigationFixture();
+  fixture.adapter.connect = undefined;
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const identifiesBeforeNavigation = fixture.calls.identify.length;
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity('document-next', 'https://example.com/next', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'document' });
+
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-next'));
+  expect(fixture.calls.identify.length).toBeGreaterThan(identifiesBeforeNavigation);
+  expect(fixture.calls.begin.at(-1)?.input.expectedUrl).toBe('https://example.com/next');
+});
+
+test('Stop during a document handshake prevents recorder begin and capture', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+  await controller.stop();
+  connect.resolve(identity('document-next', 'https://example.com/next', 2));
+  await Promise.resolve();
+
+  expect(controller.getState().phase).toBe('reviewing');
+  expect(fixture.calls.begin).toHaveLength(1);
+  expect(fixture.calls.capture).toHaveLength(1);
+  expect(fixture.calls.end.at(-1)?.input.documentToken).toBeUndefined();
+});
+
+test('a document handshake timeout records the outcome and cannot start late', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/slow-document', kind: 'document' });
+  fixture.nowMs = START_MS + 6_000;
+  fixture.resolveDelay(5_000, 0);
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after navigation timeout');
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'navigation-timeout' });
+
+  connect.resolve(identity('document-late', 'https://example.com/slow-document', 2));
+  await Promise.resolve();
+  expect(fixture.calls.begin).toHaveLength(1);
+  expect(fixture.calls.capture).toHaveLength(1);
+});
+
+test('navigation capture uses the destination URL and times out within five seconds', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  expect(fixture.calls.capture).toHaveLength(1);
+  fixture.nowMs = START_MS + 1_500;
+  fixture.resolveDelay(0, 0);
+  await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
+  await eventually(() => {
+    const step = recording(controller.getState()).draft.steps.at(-1)!;
+    expect(step.image.status).toBe('retained');
+    if (step.image.status === 'retained') {
+      expect(recording(controller.getState()).draft.images[step.image.imageId].captureUrl).toBe('https://example.com/result');
+    }
+  });
+
+  fixture.nowMs = START_MS + 2_000;
+  fixture.current = identity(token, 'https://example.com/slow', 3);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 7_000;
+  fixture.resolveDelay(3_100, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
+    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
+});
+
+test('a later-arriving action invalidates an earlier navigation image captured after the action occurred', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 1_500;
+  fixture.resolveDelay(0, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+
+  let state = recording(controller.getState());
+  const navigationStep = state.draft.steps.at(-1)!;
+  const navigationImageId = navigationStep.image.status === 'retained' ? navigationStep.image.imageId : '';
+  expect(state.draft.images[navigationImageId].capturedAt).toBe('2026-09-20T12:00:01.600Z');
+  fixture.nowMs = START_MS + 1_700;
+  const action = clickBatch(state, 1, fixture.current.url, 'late-action-capture');
+  action.events[0].observedAt = '2026-09-20T12:00:01.550Z';
+  action.events[0].elapsedMs = 1_550;
+  controller.acceptBatch(action, 42);
+
+  state = recording(controller.getState());
+  expect(state.draft.steps.at(-2)?.image).toEqual({ status: 'unavailable', reason: 'superseded' });
+  expect(state.draft.images).not.toHaveProperty(navigationImageId);
+  expect(state.draft.steps.at(-1)?.image).toEqual({ status: 'pending', captureId: 'late-action-capture' });
+});
+
+test('a terminal 30th action still invalidates an overlapping retained navigation image', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  const event = clickBatch(state, 1, START_URL).events[0];
+  controller.acceptBatch({
+    schemaVersion: 1,
+    sessionId: state.sessionId,
+    epoch: state.epoch,
+    documentToken: state.documentToken,
+    localCounter: 1,
+    events: Array.from({ length: 27 }, (_, index) => ({
+      ...event,
+      id: `setup-click-${index + 1}`,
+      observedAt: new Date(START_MS + (index + 1) * 100).toISOString(),
+      elapsedMs: (index + 1) * 100,
+    })),
+  }, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps).toHaveLength(28);
+
+  fixture.nowMs = START_MS + 3_000;
+  fixture.current = identity(state.documentToken, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 3_500;
+  fixture.resolveDelay(200, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  state = recording(controller.getState());
+  const imageState = state.draft.steps.at(-1)!.image;
+  const navigationImageId = imageState.status === 'retained' ? imageState.imageId : '';
+
+  fixture.nowMs = START_MS + 3_700;
+  const terminalAction = clickBatch(state, 2, fixture.current.url, 'terminal-action-capture');
+  terminalAction.events[0].observedAt = '2026-09-20T12:00:03.550Z';
+  terminalAction.events[0].elapsedMs = 3_550;
+  controller.acceptBatch(terminalAction, 42);
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review at the step limit');
+  expect(stopped.draft.stopReason).toBe('step-limit');
+  expect(stopped.draft.steps.at(-2)?.image).toEqual({ status: 'unavailable', reason: 'superseded' });
+  expect(stopped.draft.images).not.toHaveProperty(navigationImageId);
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'stopped' });
+});
+
+test('an oversized document destination stops for capture failure and tears down instead of silently ignoring navigation', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const oversizedUrl = `https://example.com/${'a'.repeat(JOURNEY_LIMITS.maxUrlBytes)}`;
+
+  controller.observeNavigation({ ownerTabId: 42, url: oversizedUrl, kind: 'document' });
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason).toBe('capture-failed');
+  expect(fixture.calls.connect).toEqual([]);
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('a non-HTTP document destination stops as a protected page', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  controller.observeNavigation({ ownerTabId: 42, url: 'chrome://settings/', kind: 'document' });
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason).toBe('protected-page');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('a cross-origin navigation stops the journey as left-site without recording a step', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://other.example/away', kind: 'document' });
+
+  const stopped = controller.getState();
+  expect(stopped.phase).toBe('reviewing');
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after leaving the site');
+  expect(stopped.draft.stopReason).toBe('left-site');
+  expect(stopped.draft.steps).toHaveLength(1);
+  expect(fixture.calls.connect).toEqual([]);
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('another subdomain, port, or scheme leaves the starting origin', async () => {
+  for (const url of ['https://shop.example.com/start', 'https://example.com:8443/start', 'http://example.com/start']) {
+    const fixture = navigationFixture();
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+    controller.observeNavigation({ ownerTabId: 42, url, kind: 'document' });
+    const stopped = controller.getState();
+    expect(stopped.phase, url).toBe('reviewing');
+    if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason, url).toBe('left-site');
+  }
+});
+
+test('same-origin path changes and same-URL reloads keep recording instead of leaving the origin', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const reloadUrl = `${START_URL}#one`;
+
+  fixture.nowMs = START_MS + 500;
+  controller.observeNavigation({ ownerTabId: 42, url: reloadUrl, kind: 'same-document' });
+  expect(recording(controller.getState()).draft.steps.at(-1)?.navigation?.toUrl).toBe(reloadUrl);
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity('document-reload', reloadUrl, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: reloadUrl, kind: 'document' });
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-reload'));
+
+  const state = recording(controller.getState());
+  expect(state.phase).toBe('recording');
+  expect(state.draft.stopReason).toBeUndefined();
+  expect(state.draft.steps.slice(-2).map(step => step.kind)).toEqual(['navigation', 'navigation']);
+  expect(state.draft.steps.slice(-2).map(step => step.kind === 'navigation' && step.navigation.toUrl)).toEqual([reloadUrl, reloadUrl]);
+});
+
+test('an idle same-origin reload gets its own capture window and keeps its destination screenshot', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  // Long after the last action, so no recent action's window can hold it.
+  fixture.nowMs = START_MS + 20_000;
+  fixture.current = identity('document-reload', START_URL, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  expect(fixture.pendingDelays()).toEqual([500, 5_000]);
+
+  connect.resolve(fixture.current);
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(2));
+  expect(fixture.calls.begin.at(-1)?.input).toMatchObject({ documentToken: 'document-reload', expectedUrl: START_URL });
+  expect(fixture.calls.capture).toHaveLength(1);
+
+  fixture.nowMs = START_MS + 20_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  const state = recording(controller.getState());
+  const step = state.draft.steps.at(-1)!;
+  if (step.image.status !== 'retained') throw new Error('Expected a retained reload screenshot');
+  expect(state.draft.images[step.image.imageId]).toMatchObject({
+    captureUrl: START_URL, capturedAt: new Date(START_MS + 20_600).toISOString(),
+  });
+  expect(state.documentToken).toBe('document-reload');
+  expect(state.draft.stopReason).toBeUndefined();
+});
+
+test('an unprompted same-document navigation after the action window still captures its destination', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL), 42);
+  state = recording(controller.getState());
+  const clickMs = Date.parse(state.draft.steps.at(-1)!.observedAt);
+
+  // A timer-driven route change exactly when the click's five-second window closes.
+  fixture.nowMs = clickMs + 5_000;
+  fixture.current = identity(state.documentToken, 'https://example.com/timer', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  expect(fixture.pendingDelays()).toEqual([500, 5_000]);
+  fixture.nowMs = clickMs + 5_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+});
+
+test('a navigation inside the last action window stays bound to that window', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL), 42);
+  state = recording(controller.getState());
+  const clickMs = Date.parse(state.draft.steps.at(-1)!.observedAt);
+
+  // One millisecond before the window closes the navigation is the click's
+  // result: it gets only what remains of the click's five seconds.
+  fixture.nowMs = clickMs + 4_999;
+  fixture.current = identity(state.documentToken, 'https://example.com/late-result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  expect(fixture.pendingDelays()).toEqual([0, 1]);
+  fixture.nowMs = clickMs + 5_000;
+  fixture.resolveDelay(1, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
+    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
+  expect(fixture.calls.capture).toHaveLength(1);
+});
+
+test('redirects after an unprompted reload share its window instead of restarting it', async () => {
+  const fixture = navigationFixture({
+    connect: async (_tabId, expectedUrl) => identity(expectedUrl.endsWith('/final') ? 'document-final' : 'document-reload', expectedUrl, 2),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 20_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  expect(fixture.pendingDelays()).toEqual([500, 5_000]);
+  fixture.nowMs = START_MS + 21_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/final', kind: 'document' });
+  // The redirect's screenshot has no settle delay left and must land by
+  // 25 s, five seconds after the reload; only its connection gets a fresh five.
+  expect(fixture.pendingDelays()).toEqual([500, 5_000, 0, 5_000]);
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-final'));
+  fixture.current = identity('document-final', 'https://example.com/final', 2);
+  fixture.nowMs = START_MS + 25_000;
+  fixture.resolveDelay(0, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
+    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
+  expect(recording(controller.getState()).draft.steps.slice(-2).map(step => step.image))
+    .toEqual([{ status: 'unavailable', reason: 'superseded' }, { status: 'unavailable', reason: 'navigation-timeout' }]);
+});
+
+test('a same-origin document load that withdraws page access stops promptly as page-access-lost', async () => {
+  let accessLost = false;
+  const fixture = navigationFixture({
+    connect: async () => { throw new Error('Missing host permission for the tab'); },
+    pageAccessLost: async () => accessLost,
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  // Firefox ties activeTab to one document: a reload keeps the origin but not access.
+  accessLost = true;
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
+  expect(stopped.draft.stopReason).toBe('page-access-lost');
+  // Review and journeys.md say the new page has no screenshot.
+  expect(stopped.draft.limitations).toEqual([JOURNEY_LIMITATIONS.pageAccessLost]);
+  expect(stopped.draft.steps.map(step => step.kind)).toEqual(['initial', 'navigation']);
+  expect(stopped.draft.steps[0].image.status).toBe('retained');
+  expect(stopped.draft.steps[1]).toMatchObject({
+    sourceUrl: START_URL, navigation: { toUrl: START_URL },
+    image: { status: 'unavailable', reason: 'capture-denied' },
+  });
+  // Detected from the failed handshake: neither navigation timer had to fire.
+  expect(fixture.pendingDelays()).toEqual([0, 5_000]);
+  expect(fixture.calls.begin).toHaveLength(1);
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('a document handshake that times out after page access was withdrawn stops as page-access-lost', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise, pageAccessLost: async () => true });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+  fixture.nowMs = START_MS + 6_000;
+  fixture.resolveDelay(5_000, 0);
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
+  expect(stopped.draft.stopReason).toBe('page-access-lost');
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'capture-denied' });
+
+  connect.resolve(identity('document-late', 'https://example.com/next', 2));
+  await Promise.resolve();
+  expect(fixture.calls.begin).toHaveLength(1);
+});
+
+test('a failed document handshake with page access intact still stops as capture-failed', async () => {
+  const fixture = navigationFixture({
+    connect: async () => { throw new Error('private injection failure'); },
+    pageAccessLost: async () => false,
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after a failed handshake');
+  expect(stopped.draft.stopReason).toBe('capture-failed');
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'capture-error' });
+});
+
+test('navigation while the initial recorder begin is pending cannot publish the old document', async () => {
+  const initialBegin = deferred<void>();
+  const fixture = navigationFixture({ begin: () => initialBegin.promise });
+  const controller = createJourneyController(fixture.adapter);
+  const starting = controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(1));
+
+  fixture.current = identity('document-next', 'https://example.com/next', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'document' });
+  initialBegin.resolve();
+
+  await expect(starting).rejects.toMatchObject({ code: 'initial-capture-failed' });
+  expect(controller.getState().phase).toBe('idle');
+  expect(fixture.calls.end).toHaveLength(1);
+  expect(fixture.calls.connect).toEqual([]);
+});
+
+test('an initial recorder begin that crosses the session deadline cannot publish recording', async () => {
+  const initialBegin = deferred<void>();
+  const fixture = navigationFixture({ begin: () => initialBegin.promise });
+  const controller = createJourneyController(fixture.adapter);
+  const starting = controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(1));
+
+  fixture.nowMs = START_MS + JOURNEY_LIMITS.maxDurationMs;
+  initialBegin.resolve();
+
+  await expect(starting).rejects.toMatchObject({ code: 'initial-capture-failed' });
+  expect(controller.getState().phase).toBe('idle');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('a navigation image-budget stop tears down the page recorder', async () => {
+  let capturedMs = START_MS + 100;
+  const fixture = navigationFixture({
+    capture: async (_tabId, pageIdentity) => ({
+      ...image(pageIdentity.url, capturedMs),
+      width: 1, height: 1,
+      byteLength: JOURNEY_LIMITS.maxImageBytes,
+      dataUrl: fixturePngDataUrl(JOURNEY_LIMITS.maxImageBytes),
+    }),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  for (let counter = 1; counter <= 5; counter += 1) {
+    const state = recording(controller.getState());
+    const actionAt = START_MS + counter * 1000;
+    const action = clickBatch(state, counter, START_URL, `budget-action-${counter}`);
+    action.events[0].observedAt = new Date(actionAt).toISOString();
+    action.events[0].elapsedMs = counter * 1000;
+    fixture.nowMs = actionAt;
+    controller.acceptBatch(action, 42);
+    capturedMs = actionAt + 500;
+    fixture.nowMs = actionAt + 500;
+    fixture.resolveDelay(500, counter - 1);
+    await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  }
+
+  const token = recording(controller.getState()).documentToken;
+  fixture.nowMs = START_MS + 6_500;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 7_000;
+  capturedMs = START_MS + 7_100;
+  fixture.resolveDelay(0, 0);
+
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review at the image budget');
+  expect(stopped.draft.stopReason).toBe('image-budget');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('navigation reaching the session deadline during capture stops for duration', async () => {
+  const navigationCapture = deferred<JourneyDraftImage>();
+  let captures = 0;
+  const fixture = navigationFixture({
+    capture: async (_tabId, pageIdentity) => {
+      captures += 1;
+      return captures === 1 ? image(pageIdentity.url, START_MS + 100) : navigationCapture.promise;
+    },
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  const token = recording(controller.getState()).documentToken;
+
+  fixture.nowMs = START_MS + 1_000;
+  fixture.current = identity(token, 'https://example.com/result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  fixture.nowMs = START_MS + 1_500;
+  fixture.resolveDelay(0, 0);
+  await eventually(() => expect(fixture.calls.capture).toHaveLength(2));
+
+  fixture.nowMs = START_MS + JOURNEY_LIMITS.maxDurationMs;
+  navigationCapture.resolve(image(fixture.current.url, START_MS + 1_600));
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review at the duration limit');
+  expect(stopped.draft.stopReason).toBe('duration-limit');
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+function navigationFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
+  const delays: Array<{ ms: number; wait: ReturnType<typeof deferred<void>>; resolved: boolean }> = [];
+  const calls = {
+    identify: [] as number[],
+    connect: [] as Array<{ tabId: number; expectedUrl: string }>,
+    capture: [] as Array<{ tabId: number; identity: JourneyPageIdentity; captureId: string }>,
+    begin: [] as Array<{ tabId: number; input: Parameters<JourneyControllerAdapter['begin']>[1] }>,
+    end: [] as Array<{ tabId: number; input: Parameters<JourneyControllerAdapter['end']>[1] }>,
+    changed: [] as JourneySession[],
+  };
+  const fixture = {
+    nowMs: START_MS,
+    current: identity('document-start', START_URL, 1),
+    calls,
+    pendingDelays: () => delays.filter(item => !item.resolved).map(item => item.ms),
+    resolveDelay(ms: number, occurrence: number) {
+      const delay = delays.filter(item => item.ms === ms)[occurrence];
+      if (!delay) throw new Error(`Missing ${ms} ms delay #${occurrence}`);
+      delay.resolved = true;
+      delay.wait.resolve();
+    },
+    adapter: undefined as unknown as JourneyControllerAdapter,
+  };
+  fixture.adapter = {
+    now: () => fixture.nowMs,
+    delay: ms => {
+      if (overrides.delay) return overrides.delay(ms);
+      const wait = deferred<void>();
+      delays.push({ ms, wait, resolved: false });
+      return wait.promise;
+    },
+    identify: async tabId => {
+      calls.identify.push(tabId);
+      return overrides.identify ? overrides.identify(tabId) : { ...fixture.current };
+    },
+    connect: async (tabId, expectedUrl) => {
+      calls.connect.push({ tabId, expectedUrl });
+      return overrides.connect ? overrides.connect(tabId, expectedUrl) : { ...fixture.current };
+    },
+    capture: async (tabId, pageIdentity, captureId) => {
+      calls.capture.push({ tabId, identity: pageIdentity, captureId });
+      return overrides.capture
+        ? overrides.capture(tabId, pageIdentity, captureId)
+        : image(pageIdentity.url, fixture.nowMs + 100);
+    },
+    begin: async (tabId, input) => {
+      calls.begin.push({ tabId, input });
+      await overrides.begin?.(tabId, input);
+    },
+    end: async (tabId, input) => {
+      calls.end.push({ tabId, input });
+      await overrides.end?.(tabId, input);
+    },
+    changed: next => { calls.changed.push(next); overrides.changed?.(next); },
+    ...(overrides.pageAccessLost ? { pageAccessLost: overrides.pageAccessLost } : {}),
+    ...(overrides.focusLost ? { focusLost: overrides.focusLost } : {}),
+  };
+  return fixture;
+}
+
+function identity(documentToken: string, url: string, generation: number): JourneyPageIdentity {
+  return {
+    documentToken, url, generation, visible: true,
+    viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+  };
+}
+
+function fixturePngDataUrl(byteLength: number): string {
+  const png = new Uint8Array(byteLength);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png.set([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 8);
+  png.set([0, 0, 0, 1, 0, 0, 0, 1], 16);
+  return `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
+}
+
+function image(captureUrl: string, capturedMs: number): JourneyDraftImage {
+  return {
+    capturedAt: new Date(capturedMs).toISOString(), captureUrl,
+    width: 1, height: 1, byteLength: 64,
+    dataUrl: fixturePngDataUrl(64),
+    viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+  };
+}
+
+function clickBatch(
+  state: Extract<JourneySession, { phase: 'recording' }>,
+  localCounter: number,
+  sourceUrl: string,
+  captureId?: string,
+): JourneyEventBatchV1 {
+  const elapsedMs = (state.draft.steps.at(-1)?.elapsedMs ?? 0) + 100;
+  return {
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+    documentToken: state.documentToken, localCounter,
+    events: [{
+      kind: 'click', id: `click-${localCounter}-${state.documentToken}`,
+      observedAt: new Date(START_MS + elapsedMs).toISOString(), elapsedMs,
+      sourceUrl,
+      target: {
+        tag: 'button', selectorPath: ['button'], label: 'Continue', editable: false,
+        viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 }, point: { x: 10, y: 10 },
+      },
+      image: captureId
+        ? { status: 'pending', captureId }
+        : { status: 'unavailable', reason: 'superseded' },
+    }],
+  };
+}
+
+function recording(state: JourneySession): Extract<JourneySession, { phase: 'recording' }> {
+  if (state.phase !== 'recording') throw new Error(`Expected recording, received ${state.phase}`);
+  return state;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
+
+async function eventually(assertion: () => void): Promise<void> {
+  await expect.poll(() => {
+    try { assertion(); return true; }
+    catch { return false; }
+  }).toBe(true);
+}
+
+test('navigations in a click\'s capture window, redirects and document loads included, are caused by that click', async () => {
+  const fixture = navigationFixture({
+    connect: async (_tabId, expectedUrl) => identity('document-done', expectedUrl, 3),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL, 'capture-click'), 42);
+  state = recording(controller.getState());
+  const click = state.draft.steps.at(-1)!;
+  const clickMs = Date.parse(click.observedAt);
+
+  // The click's route change and then its redirect both land in its window.
+  fixture.nowMs = clickMs + 300;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/result', kind: 'same-document' });
+  fixture.nowMs = clickMs + 800;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/redirected', kind: 'same-document' });
+  // The redirect still shares the click's window: no settle delay is left,
+  // and its screenshot must land 4.2 s later, five seconds after the click.
+  expect(fixture.pendingDelays().slice(-2)).toEqual([0, 4_200]);
+  fixture.nowMs = clickMs + 1_200;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/done', kind: 'document' });
+  state = recording(controller.getState());
+  expect(state.draft.steps.slice(1).map(step => [step.kind, step.image, step.kind === 'navigation' ? step.navigation.causedByStepId : null]))
+    .toEqual([
+      // Supersession is unchanged: each navigation displaces the pending screenshot before it.
+      ['click', { status: 'unavailable', reason: 'superseded' }, null],
+      ['navigation', { status: 'unavailable', reason: 'superseded' }, click.id],
+      ['navigation', { status: 'unavailable', reason: 'superseded' }, click.id],
+      ['navigation', { status: 'pending', captureId: expect.any(String) }, click.id],
+    ]);
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-done'));
+
+  // Once the click's window has closed, a navigation had no recent action.
+  fixture.nowMs = clickMs + 5_000;
+  fixture.current = identity('document-done', 'https://example.com/timer', 3);
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/timer', kind: 'same-document' });
+  state = recording(controller.getState());
+  expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/timer' });
+  expect(validateJourneyDraft(state.draft).ok).toBe(true);
+
+  // The prompt names the cause, and removing the click in review drops every link to it.
+  await controller.stop();
+  let review = controller.getState();
+  if (review.phase !== 'reviewing') throw new Error('Expected review');
+  const guards = (current: ReviewingJourneySession) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date(Math.max(fixture.nowMs, Date.parse(current.draft.updatedAt))).toISOString(),
+  });
+  await controller.updateSummary({ ...guards(review), expected: 'The result page stays.', actual: 'It redirects twice.' });
+  review = controller.getState();
+  if (review.phase !== 'reviewing') throw new Error('Expected review');
+  const prompt = journeyPrompt(journeyDraftToManifest(review.draft));
+  for (const seq of [3, 4, 5]) expect(prompt).toContain(`- **Step ${seq} · Navigation** from `);
+  expect(prompt.match(/, caused by step 2 · /g)).toHaveLength(3);
+  expect(prompt).not.toContain('caused by step 1 ');
+  await controller.removeStep({ ...guards(review), stepId: click.id });
+  review = controller.getState();
+  if (review.phase !== 'reviewing') throw new Error('Expected review');
+  expect(review.draft.steps.some(step => step.kind === 'navigation' && step.navigation.causedByStepId)).toBe(false);
+});
+
+test('a click that arrives after the route change it made is recorded as its cause', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  // The browser reports the route change before the click batch that made it.
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/route', kind: 'same-document' });
+  let state = recording(controller.getState());
+  expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/route' });
+  const late = clickBatch(state, 1, START_URL, 'capture-late');
+  late.events[0] = { ...late.events[0], id: 'late-click', observedAt: new Date(START_MS + 900).toISOString(), elapsedMs: 900 };
+  controller.acceptBatch(late, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps.map(step => step.kind === 'navigation' ? [step.id, step.navigation.causedByStepId] : [step.id]))
+    .toEqual([[state.draft.steps[0].id], ['late-click'], [state.draft.steps[2].id, 'late-click']]);
+  expect(validateJourneyDraft(state.draft).ok).toBe(true);
+
+  // A click more than five seconds before the route change did not make it.
+  fixture.nowMs = START_MS + 12_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/later', kind: 'same-document' });
+  state = recording(controller.getState());
+  const stale = clickBatch(state, 2, 'https://example.com/route', 'capture-stale');
+  stale.events[0] = { ...stale.events[0], id: 'stale-click', observedAt: new Date(START_MS + 6_500).toISOString(), elapsedMs: 6_500 };
+  controller.acceptBatch(stale, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps.slice(-2).map(step => step.id)).toEqual(['stale-click', state.draft.steps.at(-1)!.id]);
+  expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/later' });
+});
+
+test('a document handshake the reader interrupts by leaving the tab stops for where focus went', async () => {
+  const cases = [['user', 'user'], ['focus-lost', 'focus-lost'], [undefined, 'capture-failed']] as const;
+  for (const [where, reason] of cases) {
+    const fixture = navigationFixture({
+      connect: async () => { throw new Error('the owner tab is no longer focused'); },
+      pageAccessLost: async () => false,
+      focusLost: async () => where,
+    });
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+    fixture.nowMs = START_MS + 1_000;
+    controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+    await eventually(() => expect(controller.getState().phase, String(where)).toBe('reviewing'));
+    const stopped = controller.getState();
+    if (stopped.phase !== 'reviewing') throw new Error('Expected review after an interrupted handshake');
+    expect(stopped.draft.stopReason, String(where)).toBe(reason);
+    expect(stopped.draft.steps.at(-1)?.image, String(where))
+      .toEqual({ status: 'unavailable', reason: where ? 'capture-denied' : 'capture-error' });
+  }
+
+  // A withdrawn page grant still names itself first.
+  const asked: number[] = [];
+  const fixture = navigationFixture({
+    connect: async () => { throw new Error('Missing host permission for the tab'); },
+    pageAccessLost: async () => true,
+    focusLost: async tabId => { asked.push(tabId); return 'user'; },
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
+  expect(stopped.draft.stopReason).toBe('page-access-lost');
+  expect(asked).toEqual([]);
+});
+
+test('a late field commit before a route change leaves it uncaused, as it would in order', async () => {
+  const field = (state: Extract<JourneySession, { phase: 'recording' }>, localCounter: number, elapsedMs: number): JourneyEventBatchV1 => ({
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+    documentToken: state.documentToken, localCounter,
+    events: [{
+      kind: 'field-change', id: `field-${localCounter}`,
+      observedAt: new Date(START_MS + elapsedMs).toISOString(), elapsedMs,
+      sourceUrl: START_URL,
+      target: { tag: 'input', role: 'searchbox', selectorPath: ['input'], label: 'Search', editable: true, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 } },
+      enteredValue: { kind: 'text', value: 'green', truncated: false },
+      image: { status: 'unavailable', reason: 'superseded' },
+    }],
+  });
+  const record = async (order: 'in-order' | 'late') => {
+    const fixture = navigationFixture();
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+    let state = recording(controller.getState());
+    controller.acceptBatch(clickBatch(state, 1, START_URL, 'capture-click'), 42);
+    state = recording(controller.getState());
+    const click = state.draft.steps.at(-1)!;
+    const commit = field(state, 2, click.elapsedMs + 400);
+    if (order === 'in-order') controller.acceptBatch(commit, 42);
+    fixture.nowMs = START_MS + click.elapsedMs + 900;
+    controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/route', kind: 'same-document' });
+    state = recording(controller.getState());
+    if (order === 'late') {
+      // The click's window was open when the route change arrived alone.
+      expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/route', causedByStepId: click.id });
+      controller.acceptBatch(commit, 42);
+      state = recording(controller.getState());
+    }
+    expect(validateJourneyDraft(state.draft).ok).toBe(true);
+    return state.draft.steps.slice(1).map(step => step.kind === 'navigation' ? [step.kind, step.navigation] : [step.kind, step.id]);
+  };
+  const inOrder = await record('in-order');
+  expect(inOrder).toEqual([
+    ['click', 'click-1-document-start'],
+    ['field-change', 'field-2'],
+    ['navigation', { toUrl: 'https://example.com/route' }],
+  ]);
+  expect(await record('late')).toEqual(inOrder);
+});
+
+test('a history update that keeps the URL is not a step and leaves the pending screenshot alone', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL, 'capture-click'), 42);
+  const afterClick = controller.getState();
+  const published = fixture.calls.changed.length;
+  const delays = fixture.pendingDelays();
+
+  // The click's handler stamps history.state with history.replaceState, and
+  // the browser reports that as a same-document navigation to the same URL,
+  // which may carry the credentials the journey never keeps.
+  fixture.nowMs = START_MS + 250;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'same-document' });
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://user:secret@example.com/start', kind: 'same-document' });
+  expect(controller.getState()).toBe(afterClick);
+  expect(fixture.calls.changed).toHaveLength(published);
+  expect(fixture.pendingDelays()).toEqual(delays);
+  expect(fixture.calls.connect).toHaveLength(0);
+
+  fixture.nowMs = START_MS + 700;
+  fixture.resolveDelay(delays[0], 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.map(step => [step.kind, step.image.status]))
+    .toEqual([['initial', 'retained'], ['click', 'retained']]));
+
+  // Stamped after every click, it still costs no steps.
+  for (let index = 2; index <= 4; index += 1) {
+    state = recording(controller.getState());
+    controller.acceptBatch(clickBatch(state, index, START_URL), 42);
+    controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'same-document' });
+  }
+  state = recording(controller.getState());
+  expect(state.draft.steps.map(step => step.kind)).toEqual(['initial', 'click', 'click', 'click', 'click']);
+
+  // A fragment or path change is still a step.
+  controller.observeNavigation({ ownerTabId: 42, url: `${START_URL}#details`, kind: 'same-document' });
+  expect(recording(controller.getState()).draft.steps.at(-1)?.navigation).toMatchObject({ toUrl: `${START_URL}#details` });
+});
+
+test('a router stamping history.state as a new page loads keeps the page load\'s step and screenshot', async () => {
+  const appUrl = 'https://example.com/app';
+  const fixture = navigationFixture({ connect: async (_tabId, expectedUrl) => identity('document-app', expectedUrl, 2) });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 20_000;
+  controller.observeNavigation({ ownerTabId: 42, url: appUrl, kind: 'document' });
+  // React Router's replaceState({ idx: 0 }) on boot, before and after the
+  // new document connected.
+  controller.observeNavigation({ ownerTabId: 42, url: appUrl, kind: 'same-document' });
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-app'));
+  fixture.current = identity('document-app', appUrl, 2);
+  fixture.nowMs = START_MS + 20_150;
+  controller.observeNavigation({ ownerTabId: 42, url: appUrl, kind: 'same-document' });
+  expect(fixture.calls.connect.map(call => call.expectedUrl)).toEqual([appUrl]);
+
+  fixture.nowMs = START_MS + 20_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+  const state = recording(controller.getState());
+  expect(state.draft.steps.map(step => step.kind === 'navigation' ? [step.sourceUrl, step.navigation.toUrl] : step.kind))
+    .toEqual(['initial', [START_URL, appUrl]]);
+});
+
+test('a click into a text field never causes the navigation that typing and Enter make, while acting controls do', async () => {
+  const targets = {
+    'text input': { tag: 'input', role: 'textbox', editable: true, label: 'text field' },
+    'search box': { tag: 'input', role: 'searchbox', editable: true, label: 'text field' },
+    'combo box input': { tag: 'input', role: 'combobox', editable: true, label: 'text field' },
+    textarea: { tag: 'textarea', role: 'textbox', editable: true, label: 'text field' },
+    'contenteditable region': { tag: 'div', role: 'textbox', editable: true, label: 'text field' },
+    'text inside a contenteditable region': { tag: 'p', editable: true, label: 'text field' },
+    'submit input': { tag: 'input', role: 'button', editable: true, label: 'button' },
+    'image input': { tag: 'input', role: 'button', editable: true, label: 'button' },
+    button: { tag: 'button', role: 'button', editable: false, label: 'Search' },
+    'button inside a contenteditable region': { tag: 'button', role: 'button', editable: true, label: 'Bold' },
+    link: { tag: 'a', role: 'link', editable: false, label: 'Pricing' },
+    checkbox: { tag: 'input', role: 'checkbox', editable: true, label: 'checkbox' },
+    radio: { tag: 'input', role: 'radio', editable: true, label: 'radio button' },
+    select: { tag: 'select', role: 'combobox', editable: true, label: 'select field' },
+  } as const;
+  const causes: Record<string, boolean> = {};
+  const windows: Record<string, number[]> = {};
+  for (const [name, target] of Object.entries(targets)) {
+    for (const order of ['in-order', 'late'] as const) {
+      const fixture = navigationFixture();
+      const controller = createJourneyController(fixture.adapter);
+      await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+      let state = recording(controller.getState());
+      const batch = clickBatch(state, 1, START_URL, 'capture-click');
+      batch.events[0] = { ...batch.events[0], target: { ...batch.events[0].target, ...target } } as typeof batch.events[0];
+      const clickMs = Date.parse(batch.events[0].observedAt);
+      if (order === 'in-order') controller.acceptBatch(batch, 42);
+      // Typing takes 4.8 seconds before Enter changes the route.
+      fixture.nowMs = clickMs + 4_800;
+      controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search?q=shoes', kind: 'same-document' });
+      if (order === 'in-order') windows[name] = fixture.pendingDelays().slice(-2);
+      else controller.acceptBatch(batch, 42);
+      state = recording(controller.getState());
+      expect(state.draft.steps.map(step => step.kind), `${name} ${order}`).toEqual(['initial', 'click', 'navigation']);
+      expect(validateJourneyDraft(state.draft).ok, `${name} ${order}`).toBe(true);
+      const caused = state.draft.steps[2].navigation?.causedByStepId === state.draft.steps[1].id;
+      if (order === 'in-order') causes[name] = caused;
+      else expect(caused, `${name}: a late click is linked as it would be in order`).toBe(causes[name]);
+    }
+  }
+  expect(causes).toEqual({
+    'text input': false, 'search box': false, 'combo box input': false, textarea: false,
+    'contenteditable region': false, 'text inside a contenteditable region': false,
+    'submit input': true, 'image input': true, button: true, 'button inside a contenteditable region': true,
+    link: true, checkbox: true, radio: true, select: true,
+  });
+  // The navigation after a click into a text field gets a full window of its
+  // own, not the 200 ms left of the click's.
+  expect(windows['text input']).toEqual([500, 5_000]);
+  expect(windows.button).toEqual([0, 200]);
+});
+
+test('entered values that arrive after the page changed twice are noted as missing, never dropped silently', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+  let state = recording(controller.getState());
+  const commit: JourneyEventBatchV1 = {
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch, documentToken: state.documentToken, localCounter: 1,
+    events: [{
+      kind: 'field-change', id: 'field-1', observedAt: new Date(START_MS + 400).toISOString(), elapsedMs: 400,
+      sourceUrl: START_URL,
+      target: { tag: 'input', role: 'textbox', selectorPath: ['input'], label: 'text field', editable: true, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 } },
+      enteredValue: { kind: 'text', value: 'shoes', truncated: false },
+      image: { status: 'pending', captureId: 'capture-field' },
+    }],
+  };
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search', kind: 'same-document' });
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search?q=shoes', kind: 'same-document' });
+  const before = recording(controller.getState());
+  // A stale or replayed batch changes nothing.
+  controller.acceptBatch({ ...commit, localCounter: 0 }, 42);
+  controller.acceptBatch({ ...commit, documentToken: 'document-other' }, 42);
+  expect(controller.getState()).toBe(before);
+
+  controller.acceptBatch(commit, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps).toHaveLength(before.draft.steps.length);
+  expect(state.draft.limitations).toHaveLength(1);
+  expect(state.draft.limitations[0]).toMatch(/^Some entered values arrived only after the page had moved on/);
+  expect(state.draft.limitations).toStrictEqual([JOURNEY_LIMITATIONS.enteredValuesUnplaced]);
+  controller.acceptBatch({ ...commit, localCounter: 2, events: [{ ...commit.events[0], id: 'field-2' }] }, 42);
+  expect(recording(controller.getState()).draft.limitations).toStrictEqual([JOURNEY_LIMITATIONS.enteredValuesUnplaced]);
+  expect(validateJourneyDraft(recording(controller.getState()).draft).ok).toBe(true);
+
+  // Placed values, and journeys without entered values, record no such note.
+  const placed = navigationFixture();
+  const placing = createJourneyController(placed.adapter);
+  await placing.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+  state = recording(placing.getState());
+  placed.nowMs = START_MS + 1_000;
+  placing.observeNavigation({ ownerTabId: 42, url: 'https://example.com/search', kind: 'same-document' });
+  placing.acceptBatch({ ...commit, sessionId: state.sessionId, epoch: state.epoch, documentToken: state.documentToken }, 42);
+  state = recording(placing.getState());
+  expect(state.draft.steps.map(step => step.kind)).toEqual(['initial', 'field-change', 'navigation']);
+  expect(state.draft.limitations).toEqual([]);
+});

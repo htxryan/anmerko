@@ -9,7 +9,7 @@ Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and
 ## Ways of Working
 
 - Use pull requests for all changes.
-- Use git worktrees for all local work.
+- Use git worktrees for all local work. Verify the clone before acting: the original repository and the public snapshot are separate clones sharing a worktree parent, so confirm `git rev-parse --show-toplevel` and the issue's canonical branch/PR rather than assuming the current directory.
 - Keep implementation plans in the ignored `tasks/` directory or outside the
   repository. Never force-add plans to Git; use PR descriptions for concise,
   sanitized change and verification summaries.

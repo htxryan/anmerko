@@ -154,6 +154,36 @@ test('comment button bar focuses actions in order, page scope and mixed prompt e
   await expect(notes(other)).toHaveCount(2);
 });
 
+test('comment menu supports keyboard navigation and dismissal and disables during a draft', async ({ page, worker, activate }) => {
+  expect(await worker.evaluate(() => chrome.runtime.getManifest().permissions))
+    .toEqual(['activeTab', 'scripting', 'storage', 'clipboardWrite', 'sidePanel', 'alarms', 'webNavigation']);
+  await activate(page);
+  const toggle = panel(page).getByRole('button', { name: 'More Comment Options' });
+  const journey = panel(page).getByRole('menuitem', { name: 'Record journey', exact: true });
+  await toggle.press('ArrowDown');
+  await expect(journey).toBeFocused();
+  for (const key of ['ArrowDown', 'ArrowUp', 'End', 'Home']) {
+    await journey.press(key);
+    await expect(journey).toBeFocused();
+  }
+  await journey.press('Escape');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.press('ArrowUp');
+  await expect(journey).toBeFocused();
+  await journey.press('Tab');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.click();
+  await expect(journey).toBeVisible();
+  await page.locator('#hero-title').click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(journey).toBeHidden();
+  await panel(page).getByRole('button', { name: 'New Global Comment', exact: true }).click();
+  await expect(toggle).toBeDisabled();
+  await panel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(toggle).toBeEnabled();
+});
+
 for (const touch of [false, true]) test.describe(`minimized global comments (${touch ? 'touch' : 'desktop'})`, () => {
   test.use({ touch });
   test('quick action focuses a page comment, cancels or saves, and returns to the minimized controls', async ({ page, activate }) => {
@@ -185,6 +215,30 @@ for (const touch of [false, true]) test.describe(`minimized global comments (${t
     await expect(page.locator('.pin')).toHaveCount(0);
     await quick.getByRole('button', { name: 'Show anmerko comments' }).click();
     await expect(panel(page).getByLabel('Comment 1', { exact: true })).toHaveValue('Quick overall feedback.');
+  });
+});
+
+for (const touch of [false, true]) test.describe(`SPA route changes (${touch ? 'touch' : 'desktop'})`, () => {
+  test.use({ touch });
+  test('keep a minimized floating panel minimized and still cancel element selection', async ({ page, activate }) => {
+    await activate(page);
+    const quick = page.getByRole('group', { name: 'Quick Comment Actions' });
+    await panel(page).getByRole('button', { name: 'Minimize comments' }).click();
+    await expect(quick).toBeVisible();
+    await page.evaluate(() => history.pushState({}, '', '/minimized-route'));
+    // The hidden panel's status confirms the route poll handled the change.
+    await expect(page.locator('anmerko-overlay p.status')).toHaveText('Showing comments for this page.');
+    await expect(quick).toBeVisible();
+    await expect(panel(page)).toBeHidden();
+    await quick.getByRole('button', { name: 'Show anmerko comments' }).click();
+    await panel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
+    const picker = page.locator('anmerko-overlay .picker-bar');
+    await expect(picker).toBeVisible();
+    await page.evaluate(() => { location.hash = 'selecting'; });
+    await expect(picker).toBeHidden();
+    await expect(panel(page).getByRole('button', { name: 'Select Element', exact: true })).toBeVisible();
+    await page.locator('#hero-title').click();
+    await expect(panel(page).getByLabel('Comment', { exact: true })).toHaveCount(0);
   });
 });
 
@@ -1375,6 +1429,81 @@ test.describe('native desktop docking', () => {
     await other.bringToFront();
     await expect.poll(() => dock.value('#comment')).toBe('Second tab draft');
   });
+});
+
+test.describe('idle background sidebar layouts', () => {
+  test.use({ nativeWindow: true });
+  for (const [control, restored] of [['.dock', 'floating'], ['.minimize', 'minimized']] as const) {
+    test(`a docked sidebar applies ${restored} on the first click after the idle worker stops`, async ({ page, context, worker }) => {
+      await worker.evaluate(async url => {
+        const tab = (await chrome.tabs.query({})).find(t => t.url === url)!;
+        await chrome.scripting.executeScript({ target: { tabId: tab.id! }, files: ['content.js'] });
+        await chrome.tabs.sendMessage(tab.id!, { type: 'ANMERKO_PRESENT', mode: 'overlay', canDock: true });
+      }, page.url());
+      await page.getByRole('button', { name: 'Dock sidebar', exact: true }).click();
+      const dock = await sidebar(context, page);
+      await expect(panel(page)).toBeHidden();
+      // Chrome stops an idle worker after 30 seconds, which closes the sidebar's
+      // port while the sidebar still shows its connected editor.
+      const cdp = await context.newCDPSession(page);
+      const workerRunning = async () => (await cdp.send('Target.getTargets')).targetInfos
+        .some(target => target.type === 'service_worker' && target.url === worker.url());
+      expect(await workerRunning()).toBe(true);
+      await dock.command('ServiceWorker.enable');
+      await dock.command('ServiceWorker.stopAllWorkers');
+      await expect.poll(workerRunning).toBe(false);
+      // Let the sidebar observe its closed port before the click.
+      await page.waitForTimeout(500);
+      await dock.click(control);
+      if (restored === 'floating') await expect(panel(page)).toBeVisible();
+      else await expect(page.getByRole('button', { name: 'Show anmerko comments' })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(1300);
+      // The layout's port woke the worker again.
+      await expect.poll(workerRunning).toBe(true);
+    });
+  }
+});
+
+test('a stopped worker stays stopped for navigations and tab changes while no journey exists', async ({ context, page, worker }) => {
+  // Journey navigation and tab listeners would wake the worker for every tab.
+  // An idle worker removes them once it has restored the idle state.
+  await expect.poll(() => worker.evaluate(() => [
+    chrome.webNavigation.onCommitted, chrome.webNavigation.onHistoryStateUpdated, chrome.webNavigation.onReferenceFragmentUpdated,
+    chrome.tabs.onActivated, chrome.tabs.onUpdated, chrome.tabs.onRemoved, chrome.tabs.onReplaced, chrome.windows.onFocusChanged,
+  ].some(event => event.hasListeners()))).toBe(false);
+  const other = await context.newPage();
+  await other.goto(`${ORIGIN}/?other`);
+  // The ServiceWorker domain reports the extension's worker to its own pages.
+  const extensionOrigin = `chrome-extension://${new URL(worker.url()).host}`;
+  const control = await context.newPage();
+  await control.goto(`${extensionOrigin}/unavailable.html`);
+  const cdp = await context.newCDPSession(control);
+  let status = 'unknown';
+  let starts = 0;
+  cdp.on('ServiceWorker.workerVersionUpdated', ({ versions }) => {
+    for (const version of versions) {
+      if (!version.scriptURL.startsWith(extensionOrigin) || version.runningStatus === status) continue;
+      if (version.runningStatus === 'starting') starts += 1;
+      status = version.runningStatus;
+    }
+  });
+  await cdp.send('ServiceWorker.enable');
+  await expect.poll(() => status).toBe('running');
+  await cdp.send('ServiceWorker.stopAllWorkers');
+  await expect.poll(() => status).toBe('stopped');
+
+  await other.goto(`${ORIGIN}/?next`);
+  await other.evaluate(() => history.pushState({}, '', '/pushed-route'));
+  await other.evaluate(() => { location.hash = 'fragment'; });
+  await other.bringToFront();
+  await page.bringToFront();
+  const extra = await context.newPage();
+  await extra.goto(`${ORIGIN}/?extra`);
+  await extra.close();
+  await other.reload();
+  await page.waitForTimeout(2_000);
+  expect(starts).toBe(0);
+  expect(status).toBe('stopped');
 });
 
 test.describe('mobile docking exclusion', () => {

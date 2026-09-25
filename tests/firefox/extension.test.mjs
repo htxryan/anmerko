@@ -15,7 +15,7 @@ import { tmpdir, release, arch } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve, join, relative } from 'node:path';
-import { Builder, By, until } from 'selenium-webdriver';
+import { Builder, By, Key, until } from 'selenium-webdriver';
 import { Command } from 'selenium-webdriver/lib/command.js';
 import { Pointer } from 'selenium-webdriver/lib/input.js';
 import firefox from 'selenium-webdriver/firefox.js';
@@ -125,8 +125,10 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
     assert.equal(manifest.name, 'anmerko');
     assert.equal(manifest.version, JSON.parse(await readFile('package.json', 'utf8')).version);
-    assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite']);
+    assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite', 'alarms', 'webNavigation']);
     assert.equal(manifest.host_permissions, undefined);
+    assert.equal(manifest.optional_permissions, undefined);
+    assert.equal(manifest.optional_host_permissions, undefined);
     assert.equal(manifest.browser_specific_settings.gecko.id, FIREFOX_GUID);
     for (const file of (await readdir(extension, { recursive: true, withFileTypes: true })).filter(file => file.isFile())) {
       const path = join(file.parentPath, file.name);
@@ -559,6 +561,26 @@ test('Firefox reconnects its sidebar after idle background shutdown and a protec
   assert.equal(await (await ui('.panel')).isDisplayed(), false);
 }));
 
+test('Firefox floats and minimizes a docked sidebar on the first click after idle background shutdown', { timeout: 90000 }, async t => session(t, async ({ driver, ui, activateDock, docked, dockClick }) => {
+  const width = await driver.executeScript(() => innerWidth);
+  const dockedAndIdle = async () => {
+    await activateDock();
+    await driver.wait(async () => await driver.executeScript(() => innerWidth) < width - 150, 5000, 'docking reduces width');
+    await driver.wait(() => docked("return root?.querySelector('.connection-prompt')?.hidden === true && !!root.querySelector('.minimize')"), 5000);
+    // The unloaded event page closes the sidebar's port; the sidebar still shows its page.
+    await suspendBackground(driver);
+  };
+  await dockedAndIdle();
+  await dockClick('.dock');
+  await driver.wait(async () => await driver.executeScript(() => innerWidth) === width, 5000, 'floating after idle shutdown closes the sidebar');
+  await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'floating after idle shutdown shows the page panel');
+  await dockedAndIdle();
+  await dockClick('.minimize');
+  await driver.wait(async () => await driver.executeScript(() => innerWidth) === width, 5000, 'minimizing after idle shutdown closes the sidebar');
+  await driver.wait(async () => (await ui('.resume'))?.isDisplayed(), 5000, 'minimizing after idle shutdown shows the resume button');
+  assert.equal(await (await ui('.panel')).isDisplayed(), false);
+}));
+
 test('Firefox default process isolation reconnects after a protected tab and fresh toolbar activation', { timeout: 90000 }, async t => session(t, async ({ driver, ui, activateDock }) => {
   await activateDock();
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'initial remote sidebar handoff completes');
@@ -584,6 +606,262 @@ test('Firefox default process isolation reconnects an open sidebar after page re
   await activateDock();
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'fresh toolbar activation reconnects the existing remote sidebar');
 }, true));
+
+test('Firefox ends a journey on a same-origin reload with page-access-lost and explains it in review', { timeout: 90000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+  const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
+  await activateDock();
+  await dockClick('.comment-options');
+  await dockClick('.journey-record');
+  await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  assert.match(await journey(), /In Firefox, reloading the page or opening another page ends the journey there\. Navigation inside the page, such as a single-page app route change, keeps recording\./,
+    'the launch view warns up front that page loads end a Firefox journey');
+  // The Firefox page-load notice sits above Start, which can push it below a short sidebar's fold.
+  await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
+  await dockClick('.journey-container .journey-primary');
+  await driver.wait(async () => /Recording journey/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+  // The polite live region empties a few seconds after it announces, so record
+  // each announcement from before the reload instead of reading it afterwards.
+  await docked(`
+    const announced = [];
+    let last = root.querySelector('.journey-live [aria-live="polite"]')?.textContent ?? '';
+    window.anmerkoPoliteAnnouncements = announced;
+    new MutationObserver(() => {
+      const text = root.querySelector('.journey-live [aria-live="polite"]')?.textContent ?? '';
+      if (text === last) return;
+      last = text;
+      if (text) announced.push(text);
+    }).observe(root, { childList: true, characterData: true, subtree: true });
+  `);
+  // Firefox ties activeTab to the document: the reload keeps the origin but withdraws access.
+  await driver.navigate().refresh();
+  await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'the reload ends recording in review');
+  const review = await docked(`
+    const container = root.querySelector('.journey-container');
+    const notice = container.querySelector('.journey-stop-reason');
+    return {
+      notice: notice?.textContent, styled: notice?.classList.contains('journey-notice'),
+      announced: [...window.anmerkoPoliteAnnouncements],
+      steps: [...container.querySelectorAll('.journey-steps > li')].map(step => ({
+        heading: step.querySelector('h2')?.textContent, text: step.innerText,
+      })),
+    };
+  `);
+  assert.equal(review.styled, true);
+  assert.deepEqual(review.announced, [review.notice], 'the stop reason is announced once through the polite live region');
+  assert.match(review.notice, /^Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page\. Firefox does this on every page load/);
+  assert.deepEqual(review.steps.map(step => step.heading), ['Step 1 · Initial view', 'Step 2 · Navigation']);
+  assert.match(review.steps[1].text, new RegExp(`Destination URL\\s+${origin.replace(/[.]/g, '\\.')}/`));
+  assert.match(review.steps[1].text, /Screenshot unavailable: screenshot permission was denied\./);
+}));
+
+// Single-page apps stamp history.state without changing the URL, and submit
+// search forms with Enter by changing the route. Neither may cost a step, a
+// screenshot, or an entered value.
+test('Firefox records a single-page app journey without history-stamp steps and keeps a value submitted with Enter', { timeout: 90000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+  const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
+  await driver.executeScript(() => {
+    document.body.insertAdjacentHTML('afterbegin', '<div id="spa-fixture" style="position:fixed;top:8px;left:8px;z-index:2147483646;background:#fff;padding:8px">'
+      + '<button id="stamp" type="button">Remember tab</button> <form id="spa" style="display:inline"><input id="q" name="q" aria-label="Search"></form></div>');
+    const script = document.createElement('script');
+    script.textContent = `
+      document.querySelector('#stamp').addEventListener('click', () => history.replaceState({ tab: Math.random() }, ''));
+      document.querySelector('#spa').addEventListener('submit', event => {
+        event.preventDefault();
+        history.pushState({}, '', '/search?q=' + encodeURIComponent(document.querySelector('#q').value));
+      });`;
+    document.head.append(script);
+  });
+  await activateDock();
+  await dockClick('.comment-options');
+  await dockClick('.journey-record');
+  await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  await docked("root.querySelector('[data-focus-id=\"journey-include-values\"]').scrollIntoView({ block: 'center' })");
+  await dockClick('[data-focus-id="journey-include-values"]');
+  await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
+  await dockClick('.journey-container .journey-primary');
+  await driver.wait(async () => /1 step recorded/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+
+  await driver.findElement(By.id('stamp')).click();
+  await driver.wait(async () => /2 steps recorded/.test(await journey()), 5000, 'the click is recorded');
+  // Its screenshot is taken after half a second; a history-stamp step would supersede it.
+  await driver.sleep(1500);
+  assert.match(await journey(), /2 steps recorded/, 'replaceState on the same URL adds no navigation step');
+
+  await driver.findElement(By.id('q')).click();
+  await driver.findElement(By.id('q')).sendKeys('shoes', Key.ENTER);
+  await driver.wait(async () => (await driver.getCurrentUrl()).endsWith('/search?q=shoes'), 5000, 'Enter routes the single-page app');
+  await driver.wait(async () => /5 steps recorded/.test(await journey()), 5000, 'the click, entered value and route change are recorded');
+  await driver.sleep(1500);
+  await docked("root.querySelector('[data-focus-id=\"journey-stop\"]').click()");
+  await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'stopping opens the review');
+  const steps = await docked("return [...root.querySelectorAll('.journey-container .journey-steps > li')].map(step => ({ heading: step.querySelector('h2')?.textContent, text: step.innerText }))");
+  assert.deepEqual(steps.map(step => step.heading), [
+    'Step 1 · Initial view', 'Step 2 · Click: Remember tab', 'Step 3 · Click: text field',
+    'Step 4 · Entered value: text field', 'Step 5 · Navigation',
+  ]);
+  // The click keeps its own screenshot.
+  assert.match(steps[1].text, /Screenshot URL/);
+  assert.doesNotMatch(steps[1].text, /Screenshot unavailable/);
+  assert.match(steps[3].text, /shoes/);
+  assert.match(steps[4].text, /\/search\?q=shoes/);
+}));
+
+// The floating panel's journeys, as on Android, run in a journey tab. The next
+// Record journey reuses that tab once its journey is discarded, instead of
+// leaving one more tab behind for every journey.
+test('Firefox reuses the floating panel\'s journey tab for the next Record journey', { timeout: 90000 }, async t => session(t, async ({ driver, ui, click, activate }) => {
+  await activate();
+  const website = await driver.getWindowHandle();
+  const view = () => driver.executeScript(() => document.querySelector('.journey-view')?.innerText ?? '');
+  const recordJourney = async () => {
+    await driver.switchTo().window(website);
+    await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'the floating panel is shown');
+    await click('.comment-options');
+    await driver.wait(async () => (await ui('.journey-record'))?.isDisplayed(), 5000, 'More Comment Options offers Record journey');
+    await click('.journey-record');
+  };
+  const startButton = async () => {
+    const start = await driver.wait(until.elementLocated(By.css('[data-focus-id="journey-start"]')), 5000, 'the journey tab offers Start');
+    await driver.wait(until.elementIsEnabled(start), 5000);
+    return start;
+  };
+  await recordJourney();
+  await driver.wait(async () => (await driver.getAllWindowHandles()).length === 2, 5000, 'Record journey opens a journey tab');
+  const journeyTab = (await driver.getAllWindowHandles()).find(handle => handle !== website);
+  await driver.switchTo().window(journeyTab);
+  const firstLink = await driver.getCurrentUrl();
+  assert.match(firstLink, /\/journey\.html#launch=[\w-]+$/);
+  await (await startButton()).click();
+  await driver.wait(async () => /Recording journey/.test(await view()), 20000, 'recording starts after the initial screenshot');
+  // Selecting the journey tab stops the recording for review there.
+  await driver.switchTo().window(website);
+  await driver.switchTo().window(journeyTab);
+  await driver.wait(async () => /Review journey/.test(await view()), 15000, 'the journey tab reviews the journey');
+  await driver.findElement(By.css('[data-focus-id="journey-discard"]')).click();
+  await (await driver.wait(until.elementLocated(By.css('[data-focus-id="journey-confirm-discard"]')), 5000)).click();
+  await driver.wait(async () => /Record a journey/.test(await view()), 5000, 'discarding leaves the spent journey tab');
+
+  await recordJourney();
+  await driver.switchTo().window(journeyTab);
+  await driver.wait(async () => await driver.getCurrentUrl() !== firstLink, 5000, 'the journey tab takes a new launch link');
+  assert.match(await driver.getCurrentUrl(), /\/journey\.html#launch=[\w-]+$/);
+  await startButton();
+  assert.equal((await driver.getAllWindowHandles()).length, 2, 'no second journey tab opens');
+}));
+
+// A journey tab keeps nothing awake, so Firefox unloads the idle event page
+// long before its launch link expires. Its Start still starts the journey.
+test('Firefox starts a journey tab\'s journey after its event page unloaded', { timeout: 90000 }, async t => session(t, async ({ driver, ui, click, activate }) => {
+  await activate();
+  const website = await driver.getWindowHandle();
+  await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'the floating panel is shown');
+  await click('.comment-options');
+  await driver.wait(async () => (await ui('.journey-record'))?.isDisplayed(), 5000, 'More Comment Options offers Record journey');
+  await click('.journey-record');
+  await driver.wait(async () => (await driver.getAllWindowHandles()).length === 2, 5000, 'Record journey opens a journey tab');
+  await driver.switchTo().window((await driver.getAllWindowHandles()).find(handle => handle !== website));
+  const start = await driver.wait(until.elementLocated(By.css('[data-focus-id="journey-start"]')), 5000, 'the journey tab offers Start');
+  await driver.wait(until.elementIsEnabled(start), 5000);
+  await suspendBackground(driver);
+  await start.click();
+  const view = () => driver.executeScript(() => document.querySelector('.journey-view')?.innerText ?? '');
+  await driver.wait(async () => /Recording journey/.test(await view()), 20000, 'the woken event page starts the journey');
+  assert.doesNotMatch(await view(), /already opened/);
+}));
+
+test('Firefox wakes its unloaded event page for tab and navigation events only while a journey needs them', { timeout: 180000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+  const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
+  const privileged = async (script, ...args) => {
+    await driver.setContext('chrome');
+    try { return await driver.executeAsyncScript(script, ...args); } finally { await driver.setContext('content'); }
+  };
+  // Firefox wakes an unloaded event page for exactly the listeners it registered while starting.
+  const background = () => privileged((id, done) => {
+    const extension = WebExtensionPolicy.getByID(id).extension;
+    const primed = [];
+    for (const [module, events] of extension.persistentListeners ?? []) {
+      for (const [event, keys] of events) if (keys.size) primed.push(`${module}.${event}`);
+    }
+    done({ state: extension.backgroundState, journeyEvents: primed.filter(name => /^(tabs|webNavigation|windows)\./.test(name)).sort(), primed });
+  }, FIREFOX_GUID);
+  const hint = () => privileged((id, done) => {
+    done(WebExtensionPolicy.getByID(id).extension.backgroundContext?.xulBrowser?.contentWindow?.localStorage.getItem('anmerko:journey-listeners:v1') ?? null);
+  }, FIREFOX_GUID);
+  const settled = async (expected, message) => {
+    await driver.wait(async () => (await background()).state === 'running' && await hint() === expected, 10000, message);
+  };
+  // Loads a background tab; optionally also switches to it and closes it.
+  const elsewhere = (path, switchAndClose) => privileged((url, switchAndClose, done) => {
+    const { gBrowser } = Services.wm.getMostRecentWindow('navigator:browser');
+    const page = gBrowser.selectedTab;
+    const other = gBrowser.addTrustedTab(url, { inBackground: true });
+    setTimeout(() => {
+      if (!switchAndClose) { done(); return; }
+      gBrowser.selectedTab = other;
+      setTimeout(() => { gBrowser.selectedTab = page; gBrowser.removeTab(other); setTimeout(done, 500); }, 500);
+    }, 1500);
+  }, `${origin}/${path}`, switchAndClose);
+  const all = ['tabs.onActivated', 'tabs.onRemoved', 'tabs.onUpdated', 'webNavigation.onCommitted',
+    'webNavigation.onHistoryStateUpdated', 'webNavigation.onReferenceFragmentUpdated', 'windows.onFocusChanged'];
+
+  // A first start has no hint yet, so it registers every journey listener once.
+  await settled('idle', 'the first start restores an idle journey state');
+  const first = await background();
+  assert.deepEqual(first.journeyEvents, all);
+  assert.ok(first.primed.includes('alarms.onAlarm'));
+  await suspendBackground(driver);
+  await elsewhere('?first-wake', false);
+  // The next start follows the idle hint and drops them.
+  await settled('idle', 'a navigation wakes the first-run registrations once');
+  const idle = await background();
+  assert.deepEqual(idle.journeyEvents, []);
+  assert.ok(idle.primed.includes('alarms.onAlarm'), 'alarms stay registered; only journeys schedule them');
+  await suspendBackground(driver);
+  await elsewhere('?idle', true);
+  assert.equal((await background()).state, 'stopped', 'navigating, switching and closing another tab leave the idle event page unloaded');
+
+  // A journey started after an idle start keeps the page awake instead. The
+  // shorter idle timeout would unload it during the wait below otherwise.
+  await privileged(done => { Services.prefs.setIntPref('extensions.background.idle.timeout', 15000); done(); });
+  await activateDock();
+  await dockClick('.comment-options');
+  await dockClick('.journey-record');
+  await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
+  await dockClick('.journey-container .journey-primary');
+  await driver.wait(async () => /Recording journey/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+  assert.equal(await hint(), 'live');
+  assert.deepEqual((await background()).journeyEvents, [], 'listeners added after starting are not registered for waking');
+  await driver.sleep(22000);
+  assert.equal((await background()).state, 'running', 'the recording keeps its event page past the idle timeout');
+  assert.match(await journey(), /Recording journey/);
+
+  // A start during the journey registers them, so a navigation elsewhere wakes it.
+  await suspendBackground(driver);
+  await privileged((id, done) => { WebExtensionPolicy.getByID(id).extension.wakeupBackground().then(() => done()); }, FIREFOX_GUID);
+  await settled('live', 'a live journey restores after a wake');
+  assert.deepEqual((await background()).journeyEvents, all);
+  await driver.sleep(1000);
+  assert.match(await journey(), /Recording journey/, 'the woken event page recovers the recording');
+  await suspendBackground(driver);
+  await elsewhere('?recording', false);
+  assert.equal((await background()).state, 'running', 'another tab loading wakes the event page during a recording');
+  await driver.sleep(1000);
+  assert.match(await journey(), /Recording journey/, 'the other tab does not end the journey');
+
+  // Once the journey ends, the page idles again and the next start drops the listeners.
+  await dockClick('[data-focus-id="journey-stop"]');
+  await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'stopping opens the review');
+  assert.equal(await hint(), 'idle');
+  await driver.wait(async () => (await background()).state === 'stopped', 30000, 'the review lets the event page unload when idle');
+  // The start during the journey registered them, so it can wake once more; that start drops them.
+  await elsewhere('?after-journey', false);
+  if ((await background()).state !== 'stopped') await settled('idle', 'the review restores after the extra wake');
+  assert.deepEqual((await background()).journeyEvents, []);
+  await suspendBackground(driver);
+  await elsewhere('?after-review', false);
+  assert.equal((await background()).state, 'stopped', 'a navigation after the journey leaves the event page unloaded');
+}));
 
 test('Firefox production extension covers the shared component-context fixture matrix', { timeout: 180000 }, async t => session(t, async ({
   copiedPrompt, driver, ui, click, activate, activateDock, docked, dockClick, save, evidence, extensionId,
