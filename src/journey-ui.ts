@@ -181,6 +181,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let summaryPending: { expected: string; actual: string } | null = null;
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
   let summarySaving = false;
+  // Whether the rendered review offers export for a saved revision.
+  let renderedSaved = false;
   let confirmingRemove: string | null = null;
   let removing = false;
   let confirmingDiscard: string | null = null;
@@ -436,8 +438,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   }
 
   // Exporting needs the exact revision in storage; raw drafts never export.
+  // A typed summary that has not reached the draft yet makes it unsaved too.
   function draftIsSaved(draft: JourneyDraftV1): boolean {
-    return savedRevision(draft)?.revision === draft.revision;
+    const saved = savedRevision(draft);
+    return summaryPending === null && !summarySaving && saved !== undefined && saved.revision === draft.revision;
   }
 
   function renderSummaries(draft: JourneyDraftV1): HTMLElement {
@@ -463,11 +467,15 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       area.setAttribute('data-focus-id', field.id);
       const counter = node('p', `${codePoints(field.value)} / 4000 characters`, 'journey-count');
       counter.id = `${field.id}-count`;
-      area.addEventListener('input', () => {
+      area.addEventListener('input', event => {
         counter.textContent = `${codePoints(area.value)} / 4000 characters`;
         summaryPending = { expected: areas.expected.value, actual: areas.actual.value };
         scheduleSummarySave();
+        // The first edit of a saved revision withdraws export and one-step
+        // discard at once, without interrupting an IME composition.
+        if (renderedSaved && !(event as InputEvent).isComposing) render();
       });
+      area.addEventListener('compositionend', () => { if (renderedSaved && summaryPending) render(); });
       area.addEventListener('blur', () => {
         // Re-renders detach the focused field, which fires blur synchronously
         // mid-render; only a user leaving a settled field should flush an edit.
@@ -611,7 +619,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     preview.style.width = enlarged
       ? `min(100%, ${width}px)`
       : `min(100%, ${Math.round(IMAGE_FIT_HEIGHT * width / height * 100) / 100}px)`;
-    if (height <= width) return [preview];
+    // A capture that already fits at full size has nothing to enlarge.
+    if (height <= width || height <= IMAGE_FIT_HEIGHT) return [preview];
     const size = node('button', `${enlarged ? 'Fit' : 'Enlarge'} screenshot for step ${step.seq}`, 'journey-secondary journey-image-size');
     size.type = 'button';
     size.setAttribute('data-focus-id', `size-image-${step.id}`);
@@ -1078,7 +1087,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function renderDiscard(draft: JourneyDraftV1): HTMLElement {
     const section = node('div', undefined, 'journey-discard');
     const saved = savedRevision(draft);
-    if (saved !== undefined && saved.revision === draft.revision) {
+    if (draftIsSaved(draft)) {
       const note = node('p', 'Discarding closes this review. The saved copy stays in Saved journeys.', 'journey-help');
       note.id = 'journey-discard-note';
       const discard = action('Discard journey', () => client.discard(), 'secondary', false, 'journey-discard');
@@ -1439,6 +1448,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     rendering = true;
     try { view.replaceChildren(); } finally { rendering = false; }
+    renderedSaved = false;
     view.append(node('p', 'anmerko', 'journey-brand'));
     if (state.phase === 'idle') {
       view.append(heading('Record a journey'));
@@ -1471,7 +1481,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const sharing = renderExport({ journeyId, revision: state.revision }, true, true);
       if (sharing) view.append(sharing);
       const buttons = node('div', undefined, 'journey-actions');
-      buttons.append(action('Record another journey', () => client.discard(), 'secondary', false, 'journey-record-another'));
+      // A surface that cannot start again closes the confirmation instead.
+      const next = client.canStart?.() === false ? 'Done' : 'Record another journey';
+      buttons.append(action(next, () => client.discard(), 'secondary', false, 'journey-record-another'));
       view.append(buttons);
     } else if (state.phase === 'starting' || state.phase === 'recording') {
       const recording = state.phase === 'recording';
@@ -1493,7 +1505,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const list = node('ol', undefined, 'journey-steps');
       for (const step of draft.steps) list.append(renderStep(step, draft, sharedSteps));
       view.append(list, renderSave(draft));
-      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, draftIsSaved(draft));
+      renderedSaved = draftIsSaved(draft);
+      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, renderedSaved);
       if (sharing) view.append(sharing);
       view.append(renderDiscard(draft));
     } else {

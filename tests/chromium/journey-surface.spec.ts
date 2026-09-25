@@ -83,6 +83,18 @@ test('performs a native start without requesting optional access', async ({ page
     .some(entry => entry.kind === 'permission'))).toBe(false);
 });
 
+test('the client says page loads end a journey only under a Firefox manifest', async ({ page }) => {
+  await page.addScriptTag({ content: clientBundle });
+  expect(await page.evaluate(() => {
+    const { clientModule, surfaceHarness } = globalThis as HarnessWindow;
+    const owner = () => ({ ownerTabId: 1, ownerWindowId: 1 });
+    const chromium = clientModule.createJourneyClient(owner).pageLoadsEndJourney;
+    surfaceHarness.manifest = { background: { scripts: ['background.js'] }, sidebar_action: { default_panel: 'sidebar.html' } };
+    const firefox = clientModule.createJourneyClient(owner).pageLoadsEndJourney;
+    return { chromium, firefox };
+  })).toEqual({ chromium: false, firefox: true });
+});
+
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   await page.evaluate(() => {

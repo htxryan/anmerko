@@ -24,6 +24,7 @@ const bundle = () => buildSync({ stdin: { contents: `
   // Held gates keep a screenshot change or save in flight until released.
   let reviewImageGate = null;
   let saveGate = null;
+  let summaryGate = null;
   const gate = () => { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release }; };
   let summaryError = null;
   let removeError = null;
@@ -58,6 +59,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     discard: async () => { state = { phase: 'idle', epoch: 9 }; changed(); },
     updateSummary: async (expected, actual) => {
       summaryCalls.push([expected, actual]);
+      if (summaryGate) await summaryGate.promise;
       if (summaryError) throw summaryError;
       state = { ...state, draft: { ...state.draft, expected, actual, revision: state.draft.revision + 1 } };
       changed();
@@ -268,6 +270,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     holdReviewImage: () => { reviewImageGate = gate(); },
     releaseReviewImage: () => { const held = reviewImageGate; reviewImageGate = null; held?.release(); },
     holdSave: () => { saveGate = gate(); },
+    holdSummary: () => { summaryGate = gate(); },
     releaseSave: () => { const held = saveGate; saveGate = null; held?.release(); },
     failReviewImage: () => {
       reviewImageError = Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
@@ -304,7 +307,7 @@ const bundle = () => buildSync({ stdin: { contents: `
       changed();
     },
     // One portrait phone capture and one landscape desktop capture.
-    setReviewingWithSizedImages: () => {
+    setReviewingWithSizedImages: (portrait = [390, 844]) => {
       const draft = reviewingDraft([
         step('S1', 1, 'initial', { status: 'retained', imageId: 'I1' }),
         step('S2', 2, 'click', { status: 'retained', imageId: 'I2' }, { target: { label: 'Checkout' } }),
@@ -320,7 +323,7 @@ const bundle = () => buildSync({ stdin: { contents: `
         const dataUrl = canvas.toDataURL('image/png');
         return { dataUrl, width, height, byteLength: atob(dataUrl.split(',')[1]).length };
       };
-      draft.images.I1 = { ...draft.images.I1, ...sized(390, 844) };
+      draft.images.I1 = { ...draft.images.I1, ...sized(portrait[0], portrait[1]) };
       draft.images.I2 = { ...draft.images.I2, ...sized(1280, 720) };
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft };
@@ -895,6 +898,22 @@ test('save enables when ready, saves with acknowledgement, and shows confirmatio
   await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Record another journey', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeFocused();
+});
+
+test('a surface that cannot start again closes the saved screen with Done', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setStartable(false)');
+  await page.getByLabel('Expected result').fill('Keeps the item in the cart.');
+  await page.getByLabel('Actual result').fill('Checkout is empty.');
+  await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
+  const save = page.getByRole('button', { name: 'Save journey', exact: true });
+  await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
+  await save.click();
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Record another journey', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeFocused();
+  await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeVisible();
 });
 
 test('the saved screen copies and downloads the saved revision', async ({ page, context }) => {
@@ -1537,12 +1556,62 @@ test('an unchanged reopened journey exports and discards in one step, keeping it
   const discard = page.getByRole('button', { name: 'Discard journey', exact: true });
   await expect(discard).toHaveAccessibleDescription('Discarding closes this review. The saved copy stays in Saved journeys.');
 
-  // An edit makes the draft differ from its saved revision again.
+  // An edit makes the draft differ from its saved revision again. The keyboard
+  // activates Discard even if the summary autosave re-renders the view meanwhile.
   await page.getByLabel('Expected result').fill('Edited after reopening');
-  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled({ timeout: 10_000 });
-  await discard.click();
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled();
+  await discard.focus();
+  await page.keyboard.press('Enter');
   await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true }))
     .toHaveAccessibleDescription('Discard your unsaved changes? The last saved copy stays in Saved journeys.');
+});
+
+test('typing into an unchanged reopened journey withdraws export and one-step discard before the autosave lands', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate(`journeyReviewHarness.setList([
+    { journeyId: 'J1', revision: 0, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' },
+  ])`);
+  const copy = page.getByRole('button', { name: 'Copy Prompt', exact: true });
+  await expect(copy).toBeEnabled();
+  // The autosave is held, so the draft still matches its saved revision in storage.
+  await page.evaluate('journeyReviewHarness.holdSummary()');
+  const expected = page.getByLabel('Expected result');
+  await expected.pressSequentially('Edited', { delay: 20 });
+  await expect(copy).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeDisabled();
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toBeVisible();
+  // Typing continues in place: the re-render keeps focus and every character.
+  await expect(expected).toBeFocused();
+  await expect(expected).toHaveValue('Edited');
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true }))
+    .toHaveAccessibleDescription('Discard your unsaved changes? The last saved copy stays in Saved journeys.');
+});
+
+test('a failed summary autosave keeps an unchanged journey from exporting its older saved revision', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate(`journeyReviewHarness.setList([
+    { journeyId: 'J1', revision: 0, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' },
+  ])`);
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeEnabled();
+  await page.evaluate('journeyReviewHarness.failSummary()');
+  await page.getByLabel('Expected result').fill('Edited after reopening');
+  await expect(page.getByRole('alert')).toHaveText('Another review tab changed this journey. Reload the review and try again.', { timeout: 10_000 });
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true }))
+    .toHaveAccessibleDescription('Discard your unsaved changes? The last saved copy stays in Saved journeys.');
+});
+
+test('a portrait screenshot that already fits whole offers no Enlarge', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setReviewingWithSizedImages([200, 400])');
+  await expect(page.locator('.journey-image')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: /^Enlarge screenshot/ })).toHaveCount(0);
+  const box = (await page.locator('.journey-image').first().boundingBox())!;
+  expect(Math.abs((box.width - 2) / (box.height - 2) - 200 / 400)).toBeLessThan(0.02);
 });
 
 test('screenshots show whole at every width and tall ones can be enlarged', async ({ page }) => {
