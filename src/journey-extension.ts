@@ -214,9 +214,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let imageReviewsInFlight = 0;
   let normalizationTurn: Promise<void> = Promise.resolve();
   let releaseNormalizationTurn: () => void = () => {};
+  type NavigationDetails = { tabId: number; frameId: number; url: string; documentLifecycle?: string; timeStamp?: number };
   type PendingWakeEvent = {
     type: 'navigation';
-    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string };
+    details: NavigationDetails;
     kind: 'document' | 'same-document';
   } | {
     type: 'batch';
@@ -241,6 +242,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return true;
   };
   const wakeEventsWaiting = () => wakeQueueOverflowedTabs.size > 0 || pendingWakeEvents.length > 0;
+  // Only events routing could act on wait for initialization: top-frame
+  // navigations and batches of any tab until the persisted journey is read,
+  // then only its owner's. Subframe commits alone would otherwise fill the
+  // buffer and stop a journey that nothing had disturbed.
+  let persistedStateRead = false;
+  const wakeEventRelevant = (tabId: number, frameId = 0, documentLifecycle?: string): boolean => {
+    if (frameId !== 0 || (documentLifecycle !== undefined && documentLifecycle !== 'active')) return false;
+    if (!persistedStateRead) return true;
+    const state = controller.getState();
+    return activeState(state) && tabId === state.ownerTabId;
+  };
 
   const enqueueRoutedEvent = (operation: () => Promise<void> | void, runAfterInitializationError = false) => {
     routedEvents = routedEvents.then(async () => {
@@ -647,10 +659,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   controller = makeController();
 
-  const routeNavigationNow = (
-    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
-    kind: 'document' | 'same-document',
-  ) => {
+  const routeNavigationNow = (details: NavigationDetails, kind: 'document' | 'same-document') => {
     const state = controller.getState();
     if (!activeState(state) || details.tabId !== state.ownerTabId || details.frameId !== 0
       || (details.documentLifecycle !== undefined && details.documentLifecycle !== 'active')) return;
@@ -660,16 +669,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       void controller.stop('protected-page');
       return;
     }
-    controller.observeNavigation({ ownerTabId: details.tabId, url, kind });
+    controller.observeNavigation({ ownerTabId: details.tabId, url, kind, timeStamp: details.timeStamp });
   };
-  const routeNavigation = (
-    details: { tabId: number; frameId: number; url: string; documentLifecycle?: string },
-    kind: 'document' | 'same-document',
-  ) => {
+  const routeNavigation = (details: NavigationDetails, kind: 'document' | 'same-document') => {
     if (!initialized) {
-      const state = controller.getState();
-      if (activeState(state) && (details.tabId !== state.ownerTabId || details.frameId !== 0)) return;
-      bufferWakeEvent({ type: 'navigation', details: { ...details }, kind });
+      if (wakeEventRelevant(details.tabId, details.frameId, details.documentLifecycle)) {
+        bufferWakeEvent({ type: 'navigation', details: { ...details }, kind });
+      }
       return;
     }
     enqueueRoutedEvent(async () => { routeNavigationNow(details, kind); });
@@ -970,6 +976,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const initialize = async () => {
     const restored = await sessionStore.read(Date.now());
     controller = makeController(restored);
+    persistedStateRead = true;
     const state = controller.getState();
     decorateForState(state);
     if (JSON.stringify(state) !== JSON.stringify(restored)) await persistState(state);
@@ -1365,7 +1372,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         finally { discard(); }
       };
       if (!initialized) {
-        if (!bufferWakeEvent({ type: 'batch', tabId: senderTabId, run, discard })) disconnectPort(port);
+        if (!wakeEventRelevant(senderTabId)) discard();
+        else if (!bufferWakeEvent({ type: 'batch', tabId: senderTabId, run, discard })) disconnectPort(port);
         return;
       }
       enqueueRoutedEvent(run);

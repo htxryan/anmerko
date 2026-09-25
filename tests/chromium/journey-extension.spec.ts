@@ -592,6 +592,26 @@ for (const wake of [
   });
 }
 
+for (const noise of [
+  { name: 'subframe commits', details: (index: number) => ({ tabId: 1, frameId: index + 1, url: `https://ads.example/slot-${index}`, documentLifecycle: 'active' }) },
+  { name: 'prerendered commits', details: (index: number) => ({ tabId: 1, frameId: 0, url: `https://example.test/prerender-${index}`, documentLifecycle: 'prerender' }) },
+]) test(`${noise.name} during a cold wake are not buffered and cannot stop the journey`, async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const commits = Array.from({ length: 20 }, (_, index) => noise.details(index));
+  await page.evaluate(commits => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.reboot();
+    // More commits routing ignores than the wake buffer holds, all before
+    // the persisted journey is read.
+    for (const details of commits) harness.events.committed.emit(details);
+  }, commits);
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  const after = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(after).toMatchObject({ phase: 'recording', sessionId: before.sessionId, epoch: before.epoch });
+  expect(after.draft.steps).toEqual(before.draft.steps);
+});
+
 test('rejects a cold-wake click observed after its same-document navigation', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
@@ -2137,6 +2157,39 @@ test('keeps an authenticated document port across a same-document URL change', a
   }, { port, state: { sessionId: before.sessionId, epoch: before.epoch, documentToken: before.documentToken }, url: nextUrl });
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
     .toBe(stepsBefore + 1);
+});
+
+test('a click on a new route made before the background processed the route change still follows it', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const port = await page.evaluate(owner => (globalThis as HarnessWindow).harness
+    .connectPort('anmerko-journey-events-v1', owner), ownerPage);
+  await page.waitForTimeout(400);
+  const routeUrl = 'https://example.test/path?item=5#route';
+  await page.evaluate(({ port, state, url }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    // The route changed 300 ms ago and the reader clicked on it 100 ms later;
+    // the background only now processes the route change.
+    const navigatedAt = Date.now() - 300;
+    const clickedAt = navigatedAt + 100;
+    harness.tabs[1].url = url;
+    harness.identity.url = url;
+    harness.events.history.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active', timeStamp: navigatedAt });
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: 'route-click', observedAt: new Date(clickedAt).toISOString(),
+        elapsedMs: clickedAt - Date.parse(state.draft.startedAt), sourceUrl: url,
+        target: { tag: 'button', selectorPath: ['button'], label: 'Details', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: 'route-click-capture' },
+      }],
+    } });
+  }, { port, state: before, url: routeUrl });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+    .slice(1).map((step: any) => step.kind === 'navigation' ? step.navigation.toUrl : step.id))
+    .toEqual([routeUrl, 'route-click']);
 });
 
 test('authenticates event ports, allows the initial starting connection, and rejects stale or unrelated messages', async ({ page }) => {
