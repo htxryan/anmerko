@@ -316,9 +316,11 @@ test('the native side panel records, masks, saves and exports a same-origin jour
   });
   await dock.click(control('journey-download'));
   const files = archiveEntries(await readFile(path.join(downloads, await downloaded)));
-  // The archive is named for the journey, not as a comments export.
-  expect(filename).toMatch(/^anmerko-journey-[\w.~-]{1,8}\.zip$/);
-  expect(filename).toBe(journeyArchiveName(draft.id));
+  // The archive is named for the journey and its saved revision, not as a comments export.
+  const saved = await state();
+  if (saved?.phase !== 'saved') throw new Error(`Expected the saved journey, not ${saved?.phase}.`);
+  expect(filename).toMatch(/^anmerko-journey-[\w.~-]{1,8}-r\d+\.zip$/);
+  expect(filename).toBe(journeyArchiveName(draft.id, saved.revision));
   // journeys.md, prompt.md (the copied prompt), and the PNGs journeys.md names.
   const journeysMd = files.get('journeys.md')!.toString('utf8');
   const names = screenshotNames(journeysMd);

@@ -14,7 +14,8 @@ import {
   type ReviewedText,
   type SafeTarget,
 } from './journey-core';
-import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
+import { CAPTURE_FAILURE_DESCRIPTIONS } from './journey-capture-failures';
+import { JOURNEY_LIMITS, type StopReason } from './journey-limits';
 import { formatJourneySelectorPath } from './journey-selector';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
@@ -119,9 +120,11 @@ export function journeyImageFilename(journeyId: string, seq: number): string {
   return `journey-${journeyTag(journeyId)}-step-${String(seq).padStart(2, '0')}.png`;
 }
 
-export function journeyArchiveName(journeyId: string): string {
-  if (!validId(journeyId)) throw new TypeError('Journey IDs are invalid.');
-  return `anmerko-journey-${journeyTag(journeyId)}.zip`;
+// The saved revision is in the name, so a download made after the journey
+// was saved again never passes for the earlier one.
+export function journeyArchiveName(journeyId: string, revision: number): string {
+  if (!validId(journeyId) || !Number.isSafeInteger(revision) || revision < 0) throw new TypeError('Journey archive names are invalid.');
+  return `anmerko-journey-${journeyTag(journeyId)}-r${revision}.zip`;
 }
 
 // A screenshot shared by a click and the navigation it caused is named for
@@ -252,21 +255,6 @@ const STOP_DESCRIPTIONS: Record<StopReason, string> = {
   'page-access-lost': 'the browser withdrew page access when a page loaded',
 };
 
-// Why a step has no screenshot, in the review's words; journeys.md keeps the
-// code.
-const CAPTURE_DESCRIPTIONS: Record<CaptureFailure, string> = {
-  superseded: 'superseded by a later action',
-  'navigation-timeout': 'the destination did not become ready in time',
-  'capture-denied': 'screenshot permission was denied',
-  'protected-page': 'the browser protects this page',
-  'page-document-changed': 'the page changed during capture',
-  'viewport-changed': 'the viewport changed during capture',
-  'too-large': 'the image exceeded the size limit',
-  'storage-limit': 'the journey reached its storage limit',
-  stopped: 'recording stopped before capture completed',
-  'capture-error': 'the screenshot could not be captured',
-};
-
 // The prompt stays bounded however long a URL, label, or value is;
 // journeys.md keeps every one in full.
 const PROMPT_TEXT_CHARACTERS = 200;
@@ -298,7 +286,7 @@ function promptValue(value: ReviewedFieldValue): string {
 
 function promptImage(manifest: JourneyManifestV1, step: JourneyStep, names: Map<string, string>): string {
   if (step.image.status === 'removed') return 'no screenshot (removed during review)';
-  if (step.image.status === 'unavailable') return `no screenshot (${CAPTURE_DESCRIPTIONS[step.image.reason]})`;
+  if (step.image.status === 'unavailable') return `no screenshot (${CAPTURE_FAILURE_DESCRIPTIONS[step.image.reason]})`;
   const masked = manifest.images[step.image.imageId].redacted ? ' (parts masked during review)' : '';
   return `screenshot ${inlineCode(names.get(step.image.imageId)!)}${masked}`;
 }
@@ -318,6 +306,12 @@ function promptStep(manifest: JourneyManifestV1, step: JourneyStep, names: Map<s
       : `${head} ${target} on ${source}, ${promptValue(step.enteredValue)}`;
   }
   return `${action} · ${promptImage(manifest, step, names)}`;
+}
+
+// Steps keep their recorded numbers, so a step removed in review leaves a
+// gap that the step count alone would not explain.
+function stepGap(manifest: JourneyManifestV1): string[] {
+  return manifest.steps.at(-1)!.seq !== manifest.steps.length ? ['Missing step numbers are steps removed during review.'] : [];
 }
 
 // Copy Prompt and the ZIP's prompt.md: everything an agent needs apart from
@@ -345,8 +339,7 @@ export function journeyPrompt(manifest: JourneyManifestV1): string {
     '## Expected', '', literalBlock(reviewed.expected), '',
     '## Actual', '', literalBlock(reviewed.actual), '',
     '## Steps', '',
-    // Steps keep their recorded numbers, so a removed step leaves a gap.
-    ...(reviewed.steps.at(-1)!.seq !== reviewed.steps.length ? ['Missing step numbers are steps removed during review.', ''] : []),
+    ...stepGap(reviewed).flatMap(note => [note, '']),
     ...reviewed.steps.map(step => promptStep(reviewed, step, names)),
   ];
   return `${lines.join('\n')}\n`;
@@ -405,7 +398,7 @@ export function formatJourneyMarkdown(manifest: JourneyManifestV1, index = 1): s
     `Stopped: ${inlineCode(reviewed.stoppedAt)}`,
     `Stop reason: ${inlineCode(reviewed.stopReason)}`,
     `Entered values: ${reviewed.includeEnteredValues ? 'On' : 'Off'}`,
-    `Retained steps: ${reviewed.steps.length}`, '',
+    `Retained steps: ${reviewed.steps.length}`, ...stepGap(reviewed), '',
     'Expected:', literalBlock(reviewed.expected), '',
     'Actual:', literalBlock(reviewed.actual), '',
   ];

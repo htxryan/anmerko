@@ -1072,11 +1072,14 @@ test('the saved screen copies and downloads the saved revision', async ({ page, 
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:4173' });
   await page.getByRole('button', { name: 'Copy Prompt', exact: true }).click();
   await expect(page.getByText('Journey prompt copied. Paste it into your agent chat, then use Download Markdown + Images for the screenshots; its journeys.md has full step detail.', { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('# Recorded journey\n');
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain('# Recorded journey\n');
+  expect(copied).toContain('- **Revision:** 4\n');
   await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeFocused();
   const downloading = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
-  expect((await downloading).suggestedFilename()).toBe('anmerko-journey-J1.zip');
+  // The ZIP names the revision the prompt names, so a later save downloads under a new name.
+  expect((await downloading).suggestedFilename()).toBe('anmerko-journey-J1-r4.zip');
   expect(await page.evaluate('journeyReviewHarness.openSnapshotCalls()')).toEqual(['J1', 'J1']);
 });
 
@@ -1271,11 +1274,30 @@ test('download produces a ZIP with journeys.md and the PNG', async ({ page }) =>
   const downloading = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
   const archive = await downloading;
-  expect(archive.suggestedFilename()).toBe('anmerko-journey-J1.zip');
+  expect(archive.suggestedFilename()).toBe('anmerko-journey-J1-r2.zip');
   const bytes = await readFile((await archive.path())!);
   expect(centralDirectoryNames(bytes)).toEqual(['prompt.md', 'journeys.md', 'journey-J1-step-02.png']);
   expect(bytes.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
   await expect(page.getByText('Journey download started. Extract the ZIP and give your agent prompt.md with the screenshots it names; add journeys.md for full step detail.', { exact: true })).toBeVisible();
+});
+
+test('a download after the journey is saved again has a new name', async ({ page }) => {
+  await saveReviewWithoutLeaving(page);
+  const download = async () => {
+    const downloading = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
+    return (await downloading).suggestedFilename();
+  };
+  const first = await download();
+  expect(first).toBe('anmerko-journey-J1-r2.zip');
+  await page.getByLabel('Actual result').fill('Checkout is empty after a reload.');
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeDisabled({ timeout: 10_000 });
+  const save = page.getByRole('button', { name: 'Save journey', exact: true });
+  await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
+  await save.click();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeEnabled({ timeout: 10_000 });
+  const second = await download();
+  expect(second).toBe('anmerko-journey-J1-r3.zip');
 });
 
 test('download surfaces the export size limit and keeps the review', async ({ page }) => {

@@ -34,7 +34,7 @@ Share a journey from its review after saving it. **Copy Prompt** and **Download 
 
 **Copy Prompt** copies a summary of the journey: the expected and actual results, whether it spans pages, why recording stopped, whether entered values were on, and every step in order with its action, target label, URLs, any entered value, and its screenshot filename or why it has none. URLs, labels, and values over 200 characters are shortened there. Paste it into your agent chat, then attach the screenshots it names from the download.
 
-**Download Markdown + Images** saves a journey ZIP named for the journey, such as `anmerko-journey-3f1c2a9e.zip`, containing:
+**Download Markdown + Images** saves a journey ZIP named for the journey and its saved revision, such as `anmerko-journey-3f1c2a9e-r4.zip`, so a download made after you save the journey again has a new name. It contains:
 
 - `prompt.md`, the same text **Copy Prompt** copies
 - `journeys.md`, with every step in full: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, redacted, or masked, followed by **Limitations**, which notes losses such as shortened entered values
