@@ -337,7 +337,13 @@ export function createJourneyController(
   }): Promise<void> {
     const settledMs = now();
     const minimum = delay(Math.max(0, input.observedMs + POST_ACTION_DELAY_MS - settledMs), input.signal);
-    const timeout = delay(Math.max(0, input.observedMs + NAVIGATION_WINDOW_MS - settledMs), input.signal).then(() => 'timeout' as const);
+    // Screenshots stay bound to the action window, but a new document gets a
+    // full window to connect even when no recent action caused it (a reload
+    // or back/forward long after the last click would otherwise time out now).
+    const windowEndMs = input.handshake
+      ? Math.max(input.observedMs, settledMs) + NAVIGATION_WINDOW_MS
+      : input.observedMs + NAVIGATION_WINDOW_MS;
+    const timeout = delay(Math.max(0, windowEndMs - settledMs), input.signal).then(() => 'timeout' as const);
     const work = performNavigation(input, minimum).then(() => 'complete' as const, error => {
       if (isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
         settleCapture(input.captureId, captureFailureFromError(error));
@@ -416,6 +422,10 @@ export function createJourneyController(
 
     await minimum;
     if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl) || state.phase !== 'recording') return;
+    if (now() >= input.observedMs + NAVIGATION_WINDOW_MS) {
+      settleCapture(input.captureId, 'navigation-timeout');
+      return;
+    }
     const current = state;
     const before = await adapter.identify(current.ownerTabId);
     if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl)) return;

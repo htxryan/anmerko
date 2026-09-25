@@ -228,7 +228,7 @@ test('a document handshake timeout records the outcome and cannot start late', a
   fixture.nowMs = START_MS + 1_000;
   controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/slow-document', kind: 'document' });
   fixture.nowMs = START_MS + 6_000;
-  fixture.resolveDelay(4_100, 0);
+  fixture.resolveDelay(5_000, 0);
   await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
   const stopped = controller.getState();
   if (stopped.phase !== 'reviewing') throw new Error('Expected review after navigation timeout');
@@ -412,6 +412,33 @@ test('same-origin path changes and same-URL reloads keep recording instead of le
   expect(state.draft.steps.slice(-2).map(step => step.kind === 'navigation' && step.navigation.toUrl)).toEqual([reloadUrl, reloadUrl]);
 });
 
+test('an idle same-origin reload gets its own window to reconnect and keeps recording', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  // Long after the last action, so the screenshot window has already passed.
+  fixture.nowMs = START_MS + 20_000;
+  fixture.current = identity('document-reload', START_URL, 2);
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  expect(fixture.pendingDelays()).toEqual([0, 5_000]);
+  // A real zero-delay timer fires before the browser answers the handshake.
+  fixture.resolveDelay(0, 0);
+  await Promise.resolve();
+  expect(controller.getState().phase).toBe('recording');
+
+  connect.resolve(fixture.current);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
+    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
+  const state = recording(controller.getState());
+  expect(state.documentToken).toBe('document-reload');
+  expect(state.draft.stopReason).toBeUndefined();
+  expect(fixture.calls.begin.at(-1)?.input).toMatchObject({ documentToken: 'document-reload', expectedUrl: START_URL });
+  // The late destination is not captured only to be discarded.
+  expect(fixture.calls.capture).toHaveLength(1);
+});
+
 test('navigation while the initial recorder begin is pending cannot publish the old document', async () => {
   const initialBegin = deferred<void>();
   const fixture = navigationFixture({ begin: () => initialBegin.promise });
@@ -529,6 +556,7 @@ function navigationFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
     nowMs: START_MS,
     current: identity('document-start', START_URL, 1),
     calls,
+    pendingDelays: () => delays.filter(item => !item.resolved).map(item => item.ms),
     resolveDelay(ms: number, occurrence: number) {
       const delay = delays.filter(item => item.ms === ms)[occurrence];
       if (!delay) throw new Error(`Missing ${ms} ms delay #${occurrence}`);
