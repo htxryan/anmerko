@@ -13,6 +13,25 @@ test('the demo shows the three comment actions and no journey launch without the
   await expect(panel(page).getByRole('menuitem', { name: 'Record journey' })).toHaveCount(0);
 });
 
+test('the demo compiles the shared panel without shipping the journey UI it cannot reach', async ({ page }) => {
+  const scripts = new Map<string, Promise<string>>();
+  page.on('response', response => {
+    if (response.request().resourceType() === 'script') scripts.set(new URL(response.url()).pathname, response.text());
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Try the Demo' }).click();
+  await expect(panel(page).getByRole('button', { name: 'Select Element' })).toBeVisible();
+  const runtime = [...scripts.keys()].filter(path => /^\/_astro\/demo-runtime\.[^/]+\.js$/.test(path));
+  expect(runtime).toHaveLength(1);
+  expect((await scripts.get(runtime[0]))!.includes('Select Element'), 'the demo compiles the shared panel').toBe(true);
+  for (const [path, body] of scripts) {
+    const text = await body;
+    for (const journeyUi of ['Record journey', 'Saved journeys', 'Discard journey', 'journeys.md', '__TARGET_JOURNEYS__']) {
+      expect(text.includes(journeyUi), `${path} ships ${journeyUi}`).toBe(false);
+    }
+  }
+});
+
 test('the built demo exposes the current shared settings and comment actions', async ({ page }) => {
   await page.clock.install();
   await page.goto('/');
