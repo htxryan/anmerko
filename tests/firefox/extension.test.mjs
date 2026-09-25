@@ -641,6 +641,49 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
   assert.match(review.steps[1].text, /Screenshot unavailable: screenshot permission was denied\./);
 }));
 
+// The floating panel's journeys, as on Android, run in a journey tab. The next
+// Record journey reuses that tab once its journey is discarded, instead of
+// leaving one more tab behind for every journey.
+test('Firefox reuses the floating panel\'s journey tab for the next Record journey', { timeout: 90000 }, async t => session(t, async ({ driver, ui, click, activate }) => {
+  await activate();
+  const website = await driver.getWindowHandle();
+  const view = () => driver.executeScript(() => document.querySelector('.journey-view')?.innerText ?? '');
+  const recordJourney = async () => {
+    await driver.switchTo().window(website);
+    await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'the floating panel is shown');
+    await click('.comment-options');
+    await driver.wait(async () => (await ui('.journey-record'))?.isDisplayed(), 5000, 'More Comment Options offers Record journey');
+    await click('.journey-record');
+  };
+  const startButton = async () => {
+    const start = await driver.wait(until.elementLocated(By.css('[data-focus-id="journey-start"]')), 5000, 'the journey tab offers Start');
+    await driver.wait(until.elementIsEnabled(start), 5000);
+    return start;
+  };
+  await recordJourney();
+  await driver.wait(async () => (await driver.getAllWindowHandles()).length === 2, 5000, 'Record journey opens a journey tab');
+  const journeyTab = (await driver.getAllWindowHandles()).find(handle => handle !== website);
+  await driver.switchTo().window(journeyTab);
+  const firstLink = await driver.getCurrentUrl();
+  assert.match(firstLink, /\/journey\.html#launch=[\w-]+$/);
+  await (await startButton()).click();
+  await driver.wait(async () => /Recording journey/.test(await view()), 20000, 'recording starts after the initial screenshot');
+  // Selecting the journey tab stops the recording for review there.
+  await driver.switchTo().window(website);
+  await driver.switchTo().window(journeyTab);
+  await driver.wait(async () => /Review journey/.test(await view()), 15000, 'the journey tab reviews the journey');
+  await driver.findElement(By.css('[data-focus-id="journey-discard"]')).click();
+  await (await driver.wait(until.elementLocated(By.css('[data-focus-id="journey-confirm-discard"]')), 5000)).click();
+  await driver.wait(async () => /Record a journey/.test(await view()), 5000, 'discarding leaves the spent journey tab');
+
+  await recordJourney();
+  await driver.switchTo().window(journeyTab);
+  await driver.wait(async () => await driver.getCurrentUrl() !== firstLink, 5000, 'the journey tab takes a new launch link');
+  assert.match(await driver.getCurrentUrl(), /\/journey\.html#launch=[\w-]+$/);
+  await startButton();
+  assert.equal((await driver.getAllWindowHandles()).length, 2, 'no second journey tab opens');
+}));
+
 test('Firefox wakes its unloaded event page for tab and navigation events only while a journey needs them', { timeout: 180000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
   const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
   const privileged = async (script, ...args) => {

@@ -1163,26 +1163,30 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     // confirmation; the snapshot itself stays in Saved journeys.
     if (controller.getState().phase === 'saved') await controller.discard();
     // One launch tab waits at a time. A pending one for this same page comes
-    // forward; one for another page or document is replaced.
+    // forward; one for another page or document is replaced: its tab takes the
+    // new link when it is in this window, and closes otherwise.
+    const reusable: number[] = [];
     for (const [id, pending] of Array.from(launchIntents)) {
       const tabId = pending.launchTabId;
-      const open = tabId !== undefined
-        && (await journeyTabs(tabId)).some(tab => tab.url === `${journeyUrl}#launch=${id}`);
+      const tab = tabId === undefined ? undefined
+        : (await journeyTabs(tabId)).find(candidate => candidate.url === `${journeyUrl}#launch=${id}`);
       if (launchIntents.get(id) !== pending) continue;
-      if (open && pending.ownerTabId === senderTabId && pending.ownerWindowId === senderWindowId
+      if (tab && pending.ownerTabId === senderTabId && pending.ownerWindowId === senderWindowId
         && pending.documentToken === identity.documentToken && pending.url === identity.url) {
         try {
-          await focusTab(tabId);
+          await focusTab(tab.tabId);
           pending.expiresAt = Date.now() + LAUNCH_TTL_MS;
           return;
         } catch { /* Replaced below. */ }
       }
       launchIntents.delete(id);
-      if (open) await api.tabs.remove(tabId).catch(() => {});
+      if (tab?.windowId === senderWindowId) reusable.push(tab.tabId);
+      else if (tab) await api.tabs.remove(tab.tabId).catch(() => {});
     }
     syncListeners();
     if (!journeyStartable(controller.getState())) throw new JourneyCommandError('owner-unavailable');
     const id = crypto.randomUUID();
+    const url = `${journeyUrl}#launch=${id}`;
     const intent: LaunchIntent = {
       ownerTabId: senderTabId, ownerWindowId: senderWindowId,
       documentToken: identity.documentToken, url: identity.url,
@@ -1190,9 +1194,34 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     };
     launchIntents.set(id, intent);
     syncListeners();
+    // No journey is under way, so every journey tab in this window is spent: a
+    // replaced launch, or a saved or discarded journey's review. The first
+    // that can takes the new launch link and comes forward, so journeys never
+    // leave a trail of tabs. The one this background last used goes first.
+    // journey.html loads afresh for its new link.
+    const known = reviewTabId === undefined ? [] : await journeyTabs(reviewTabId);
+    for (const tab of [...known, ...await journeyTabs()]) {
+      if (tab.windowId === senderWindowId && !reusable.includes(tab.tabId)) reusable.push(tab.tabId);
+    }
+    for (const tabId of reusable) {
+      if (launchIntents.get(id) !== intent) throw new Error(GENERIC_ERROR);
+      // Set first, so the start the new link sends finds its tab.
+      intent.launchTabId = tabId;
+      let reused: chrome.tabs.Tab | undefined;
+      try { reused = await api.tabs.update(tabId, { url, active: true }); }
+      catch { /* Try the next journey tab, then open one. */ }
+      if (!reused) {
+        if (launchIntents.get(id) === intent) intent.launchTabId = undefined;
+        continue;
+      }
+      if (launchIntents.get(id) !== intent) throw new Error(GENERIC_ERROR);
+      reviewTabId = tabId;
+      if (windowsApi?.update && validInteger(reused.windowId)) await windowsApi.update(reused.windowId, { focused: true }).catch(() => {});
+      return;
+    }
     let created: chrome.tabs.Tab;
     try {
-      created = await api.tabs.create({ url: `${journeyUrl}#launch=${id}` });
+      created = await api.tabs.create({ url });
     } catch (error) {
       if (launchIntents.get(id) === intent) launchIntents.delete(id);
       throw error;

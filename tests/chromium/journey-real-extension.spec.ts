@@ -426,3 +426,74 @@ test('a floating panel journey records past a page load and is reviewed in a jou
   expect(draft.steps.at(-1)?.sourceUrl).toBe(`${SHOP}/pricing`);
   await expectShopScreenshots(review, page, draft);
 });
+
+// A floating panel reviews in a journey tab. Each later Record journey reuses
+// that tab once its journey is discarded or saved, so journeys never leave a
+// trail of tabs behind (as they did on Android, one per journey).
+test('each Record journey from a floating panel reuses the journey tab of the last one', async ({ journey }) => {
+  test.setTimeout(60_000);
+  const { context, page, state, activate } = journey;
+  const dock = await activate();
+  await dock.click('.dock');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await expect(panel).toBeVisible();
+  const journeyTabs = () => context.pages().filter(tab => tab.url().includes('/journey.html'));
+  // An idle journey leaves nothing in session storage.
+  const phase = async () => (await state())?.phase ?? 'idle';
+  const recordJourney = async () => {
+    await page.bringToFront();
+    await expect(panel).toBeVisible();
+    await panel.getByRole('button', { name: 'More Comment Options' }).click();
+    await panel.getByRole('menuitem', { name: 'Record journey', exact: true }).click();
+  };
+  // Start in the journey tab, click once on the website, then return to the
+  // journey tab, which stops the recording for review there.
+  const recordIn = async (tab: Page) => {
+    await expect(tab.locator(control('journey-start'))).toBeEnabled();
+    await tab.locator(control('journey-start')).click();
+    await expect.poll(phase).toBe('recording');
+    await page.locator('#add').click();
+    await expect.poll(() => lastStep(state)).toBe(`click ${SHOP}/ retained`);
+    await tab.bringToFront();
+    await expect.poll(async () => { const current = await state(); return current?.phase === 'reviewing' && current.draft.stopReason; }).toBe('user');
+    const review = await journeyTab(context, tab);
+    await expect.poll(() => heading(review)).toBe('Review journey');
+  };
+
+  const opened = context.waitForEvent('page', { predicate: tab => tab.url().includes('/journey.html#launch='), timeout: 5_000 });
+  await recordJourney();
+  const tab = await opened;
+  const firstLink = tab.url();
+  await recordIn(tab);
+  // Discard it in the journey tab.
+  await tab.locator(control('journey-discard')).click();
+  await tab.locator(control('journey-confirm-discard')).click();
+  await expect.poll(phase).toBe('idle');
+
+  // No new tab opens: the journey tab takes a fresh link and offers Start.
+  let extraTabs = 0;
+  context.on('page', () => { extraTabs += 1; });
+  await recordJourney();
+  await expect.poll(() => tab.url()).not.toBe(firstLink);
+  expect(tab.url()).toMatch(/\/journey\.html#launch=[\w-]+$/);
+  const secondLink = tab.url();
+  await expect.poll(() => tab.evaluate(async () => (await chrome.tabs.getCurrent())?.active)).toBe(true);
+  await recordIn(tab);
+  // Save it there; the saved confirmation stays until the next Record journey.
+  await tab.locator('#journey-expected').fill('The cart shows one item.');
+  await tab.locator('#journey-actual').fill('The cart shows one item.');
+  await tab.locator(control('journey-ack')).check();
+  await expect(tab.locator(control('journey-save'))).toBeEnabled({ timeout: 10_000 });
+  await tab.locator(control('journey-save')).click();
+  await expect.poll(phase).toBe('saved');
+  await expect(tab.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+
+  await recordJourney();
+  await expect.poll(() => tab.url()).not.toBe(secondLink);
+  expect(tab.url()).toMatch(/\/journey\.html#launch=[\w-]+$/);
+  await expect(tab.locator(control('journey-start'))).toBeEnabled();
+  await expect.poll(phase).toBe('idle');
+  expect(extraTabs).toBe(0);
+  expect(journeyTabs()).toHaveLength(1);
+  expect(journeyTabs()[0]).toBe(tab);
+});

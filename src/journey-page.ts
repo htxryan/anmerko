@@ -49,6 +49,9 @@ if (!journeysAvailable({ platform: currentPlatform(), api: extensionApi() })) {
   section.append(brand, heading, explanation);
   root.append(section);
 } else {
+  // The next Record journey reuses a spent journey tab by giving it a new
+  // launch link. The link changes only the hash, so the tab loads afresh for it.
+  window.addEventListener('hashchange', () => location.reload());
   const intent = launchIntent(location.hash);
   // Each launch link starts one journey: the background consumes it on the
   // first Start, even one that fails. A review tab opened from the toolbar has
