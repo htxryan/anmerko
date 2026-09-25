@@ -188,6 +188,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const windowsApi = api.windows as typeof chrome.windows | undefined;
   const launchIntents = new Map<string, LaunchIntent>();
   let decoratedTabId: number | undefined;
+  let reviewWarningTabId: number | undefined;
   let launchGeneration = 0;
   let launchOpening = false;
   let reviewTabId: number | undefined;
@@ -588,6 +589,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   const changed = (state: JourneySession) => {
     decorateForState(state);
+    // A review edit restarts the idle window, so an expiry warning no longer
+    // applies; nor does it once the review is saved or discarded.
+    if (reviewWarningTabId !== undefined && (state.phase === 'idle' || state.phase === 'saved'
+      || (state.phase === 'reviewing' && Date.now() < Date.parse(state.warningAt)))) {
+      if (reviewWarningTabId !== decoratedTabId) resetAction(reviewWarningTabId);
+      reviewWarningTabId = undefined;
+    }
     if (state.phase === 'recording') {
       void pageCommand(state.ownerTabId, {
         type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: state.sessionId,
@@ -847,6 +855,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
 
   const showReviewWarning = (state: Extract<JourneySession, { phase: 'reviewing' }>) => {
+    reviewWarningTabId = state.ownerTabId;
     void api.action.setBadgeText({ tabId: state.ownerTabId, text: '!' }).catch(() => {});
     void api.action.setTitle({ tabId: state.ownerTabId, title: 'Journey review expires soon' }).catch(() => {});
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});

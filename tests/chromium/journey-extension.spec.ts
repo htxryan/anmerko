@@ -508,6 +508,62 @@ test('persists lifecycle state and enforces recording and review deadlines from 
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('idle');
 });
 
+test('a review edit restarts the idle window and its alarms, so the review outlives its first expiry', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped.phase).toBe('reviewing');
+
+  // The expiry warning shows on the toolbar two minutes before the window ends.
+  await page.evaluate(warningAt => {
+    const harness = (globalThis as HarnessWindow).harness;
+    Date.now = () => Date.parse(warningAt);
+    harness.events.alarm.emit({ name: 'anmerko-journey-review-warning' });
+  }, stopped.warningAt);
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.actions.at(-1)))
+    .toEqual({ method: 'title', details: { tabId: 1, title: 'Journey review expires soon' } });
+
+  // A minute before that window ends, the reviewer edits the summary.
+  const editMs = Date.parse(stopped.expiresAt) - 60_000;
+  await page.evaluate(ms => { Date.now = () => ms; }, editMs);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId,
+    revision: stopped.draft.revision, updatedAt: new Date(editMs).toISOString(),
+    expected: 'The review stays open.', actual: 'It was discarded mid-edit.',
+  })).toEqual({ ok: true });
+  const edited = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(edited).toMatchObject({
+    phase: 'reviewing',
+    warningAt: new Date(editMs + 28 * 60_000).toISOString(),
+    expiresAt: new Date(editMs + 30 * 60_000).toISOString(),
+  });
+  await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.alarmCreates.slice(-2))).toEqual([
+    { name: 'anmerko-journey-review-warning', info: { when: Date.parse(edited.warningAt) } },
+    { name: 'anmerko-journey-review-expiry', info: { when: Date.parse(edited.expiresAt) } },
+  ]);
+  // The warning no longer applies.
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.actions.slice(-2))).toEqual([
+    { method: 'badge', details: { tabId: 1, text: '' } },
+    { method: 'title', details: { tabId: 1, title: 'Annotate with anmerko' } },
+  ]);
+
+  // The expiry the review had after Stop passes without discarding it.
+  await page.evaluate(expiresAt => {
+    Date.now = () => Date.parse(expiresAt);
+    (globalThis as HarnessWindow).harness.events.alarm.emit({ name: 'anmerko-journey-review-expiry' });
+  }, stopped.expiresAt);
+  await page.waitForTimeout(50);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({
+    phase: 'reviewing', draft: { expected: 'The review stays open.' },
+  });
+
+  await page.evaluate(expiresAt => {
+    Date.now = () => Date.parse(expiresAt);
+    (globalThis as HarnessWindow).harness.events.alarm.emit({ name: 'anmerko-journey-review-expiry' });
+  }, edited.expiresAt);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('idle');
+});
+
 test('recovers a recorder across background reboot and accepts a port batch posted before initialization', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;

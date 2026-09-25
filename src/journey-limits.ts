@@ -56,3 +56,13 @@ export const STOP_REASONS = [
 ] as const;
 
 export type StopReason = typeof STOP_REASONS[number];
+
+// What a draft lost while recording, in plain language. A draft records each
+// once; review and journeys.md show them verbatim.
+export const JOURNEY_LIMITATIONS = {
+  enteredValuesTruncated: `Entered values reached the journey's ${JOURNEY_LIMITS.maxJourneyFieldTextBytes / 1_024} KB text limit. Values after that point were shortened or left empty and are marked truncated.`,
+  sessionStorage: 'Temporary journey storage filled up or failed, so recording stopped early. The latest action or screenshot may be missing.',
+  pageAccessLost: 'The browser withdrew page access when a new page loaded, so recording stopped there. That page has no screenshot, and nothing done on it was recorded.',
+  imageBudget: `Screenshots reached the journey's ${JOURNEY_LIMITS.maxJourneyImageBytes / (1_024 * 1_024)} MB storage limit, so recording stopped and the last screenshot was not kept.`,
+  captureFailed: 'anmerko lost track of the page after it changed, so recording stopped early. The latest page change or action may be missing.',
+} as const;

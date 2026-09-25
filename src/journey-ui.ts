@@ -1595,6 +1595,19 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return node('p', text, `journey-notice journey-stop-reason${storage ? ' journey-notice-error' : ''}`);
   }
 
+  // What recording lost, shown before the steps so no one shares the journey
+  // believing it complete. journeys.md lists the same limitations.
+  function renderLimitations(draft: JourneyDraftV1): HTMLElement | null {
+    const limitations: unknown = draft.limitations;
+    if (!Array.isArray(limitations) || limitations.length === 0) return null;
+    const section = node('section', undefined, 'journey-notice journey-limitations');
+    section.setAttribute('aria-label', 'Limitations');
+    const list = node('ul');
+    for (const limitation of limitations) list.append(node('li', String(limitation)));
+    section.append(node('h2', 'Limitations'), list);
+    return section;
+  }
+
   function render() {
     if (!alive) return;
     const activeElement = scopeActiveElement();
@@ -1664,6 +1677,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       view.append(node('p', `${count(draft.steps.length, 'retained step')} · Entered values: ${draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
       const notice = announceStop(draft);
       if (notice) view.append(notice);
+      const limitations = renderLimitations(draft);
+      if (limitations) view.append(limitations);
       view.append(renderSummaries(draft));
       const sharedSteps = new Map<string, number[]>();
       for (const step of draft.steps) {

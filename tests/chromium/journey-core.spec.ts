@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
   acceptInitialImage,
   acceptJourneyEventBatch,
+  acceptLateJourneyEventBatch,
   commitJourneyNavigation,
   createJourneySession,
   editJourneyValue,
@@ -21,8 +22,10 @@ import {
   type JourneyManifestV1,
   type JourneySession,
 } from '../../src/journey-core';
-import { stripUrlCredentials, validateJourneyEventBatch } from '../../src/journey-events';
-import { JOURNEY_LIMITS } from '../../src/journey-limits';
+import { stripUrlCredentials, validateJourneyEventBatch, type JourneyInputEvent } from '../../src/journey-events';
+import { formatJourneyMarkdown, journeyDraftToManifest } from '../../src/journey-export';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
+import { applyJourneyImageReview } from '../../src/journey-review';
 
 const reviewed = (text: string) => ({ text, edited: false, redacted: false });
 const MINIMAL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC';
@@ -863,7 +866,7 @@ test('reviewed destination URLs follow the redacted-implies-edited rule', () => 
   if (!unedited.ok) expect(unedited.errors).toContain('journey.steps[2].navigation.toUrl.text must be a complete HTTP(S) URL');
 });
 
-test('batches cannot reuse pending capture IDs or cross the aggregate field-text budget', () => {
+test('batches cannot reuse pending capture IDs, and selections past the aggregate field-text budget keep what fits', () => {
   const recording = recordingSession();
   const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
   expect(acceptJourneyEventBatch(withClick, clickBatch(2, 'capture-click'))).toBe(withClick);
@@ -871,11 +874,165 @@ test('batches cannot reuse pending capture IDs or cross the aggregate field-text
   const selection = Array.from({ length: 9 }, () => 'x'.repeat(1_000));
   const first = acceptJourneyEventBatch(recording, fieldBatch(1, 'capture-field-1', selection));
   expect(first).not.toBe(recording);
-  expect(acceptJourneyEventBatch(first, fieldBatch(2, 'capture-field-2', selection))).toBe(first);
+  // Seven more values fit in the 16 KiB budget: the step keeps whole values
+  // up to it, marked truncated, and the draft says values were cut.
+  const second = acceptJourneyEventBatch(first, fieldBatch(2, 'capture-field-2', selection));
+  if (second.phase !== 'recording') throw new Error('expected recording state');
+  expect(second.draft.steps.at(-1)).toMatchObject({
+    id: 'step-field-2',
+    enteredValue: { kind: 'selection', values: selection.slice(0, 7), multiple: true, truncated: true },
+  });
+  expect(second.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  expect(validateJourneyDraft(second.draft).ok).toBe(true);
 
   const fabricated = clickBatch(1, 'capture-fabricated') as unknown as { events: Array<Record<string, unknown>> };
   fabricated.events[0].image = { status: 'retained', imageId: 'made-up' };
   expect(validateJourneyEventBatch(fabricated).ok).toBe(false);
+});
+
+test('a click whose field commits cross the text budget is kept, with each value cut to what fits and marked truncated', () => {
+  let state: JourneySession = recordingSession();
+  // Eight 2,000-character values leave 384 bytes of the 16 KiB budget.
+  state = acceptJourneyEventBatch(state, eventBatch(1, Array.from({ length: 8 }, (_, index) => (
+    textFieldEvent(`fill-${index}`, 1_000 + index, 'a'.repeat(2_000))))));
+  if (state.phase !== 'recording') throw new Error('expected recording state');
+  expect(state.draft.steps).toHaveLength(9);
+  expect(state.draft.limitations).toEqual([]);
+
+  const click = clickBatch(2, 'capture-carrier').events[0];
+  const carrier = acceptJourneyEventBatch(state, eventBatch(2, [
+    textFieldEvent('two-byte', 2_000, 'é'.repeat(300)),
+    textFieldEvent('no-room', 2_000, 'later'),
+    { ...click, id: 'carrier-click', elapsedMs: 2_000 },
+  ]));
+  if (carrier.phase !== 'recording') throw new Error('expected recording state');
+  expect(carrier.draft.steps.slice(-3).map(step => [step.id, step.kind === 'field-change' ? step.enteredValue : step.image])).toEqual([
+    ['two-byte', { kind: 'text', value: 'é'.repeat(192), truncated: true }],
+    ['no-room', { kind: 'text', value: '', truncated: true }],
+    ['carrier-click', { status: 'pending', captureId: 'capture-carrier' }],
+  ]);
+  expect(carrier.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  expect(validateJourneyDraft(carrier.draft).ok).toBe(true);
+
+  // A later value finds no room either; the limitation is recorded once.
+  const later = acceptJourneyEventBatch(carrier, eventBatch(3, [textFieldEvent('after', 3_000, 'x')]));
+  if (later.phase !== 'recording') throw new Error('expected recording state');
+  expect(later.draft.steps.at(-1)).toMatchObject({ id: 'after', enteredValue: { kind: 'text', value: '', truncated: true } });
+  expect(later.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+
+  const stopped = stopJourney(later, { epoch: 1, stoppedAt: '2026-09-20T12:00:04.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const summarized = updateJourneySummary(stopped, {
+    ...reviewGuards(stopped), expected: 'Every value is kept.', actual: 'Later values were cut.',
+  });
+  if (summarized.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(summarized).not.toBe(stopped);
+  const markdown = formatJourneyMarkdown(journeyDraftToManifest(summarized.draft));
+  expect(markdown).toContain(JOURNEY_LIMITATIONS.enteredValuesTruncated);
+  expect(markdown).toContain('Entered text truncated: Yes');
+  expect(markdown).not.toContain('None recorded.');
+});
+
+test('a late batch after a same-document navigation shares the field-text budget', () => {
+  let state: JourneySession = recordingSession();
+  state = acceptJourneyEventBatch(state, eventBatch(1, Array.from({ length: 8 }, (_, index) => (
+    textFieldEvent(`fill-${index}`, 1_000 + index, 'a'.repeat(2_000))))));
+  if (state.phase !== 'recording') throw new Error('expected recording state');
+  const navigated = commitJourneyNavigation(state, {
+    epoch: 1, id: 'step-route', observedAt: '2026-09-20T12:00:03.000Z', elapsedMs: 3_000,
+    sourceUrl: 'https://example.com/start', toUrl: 'https://example.com/start#next',
+    previousDocumentToken: 'document-1', documentToken: 'document-1',
+    image: { status: 'pending', captureId: 'capture-route' },
+  });
+  // Field commits the route change overtook, delivered with the click that
+  // triggered it: before the fix they pushed the draft past its budget.
+  const late = acceptLateJourneyEventBatch(navigated, eventBatch(2, [
+    textFieldEvent('late-value', 2_500, 'b'.repeat(2_000)),
+    { ...clickBatch(2, 'capture-late').events[0], id: 'late-click', observedAt: '2026-09-20T12:00:02.600Z', elapsedMs: 2_600 },
+  ]));
+  if (late.phase !== 'recording') throw new Error('expected recording state');
+  expect(late.draft.steps.slice(-3).map(step => step.id)).toEqual(['late-value', 'late-click', 'step-route']);
+  expect(late.draft.steps.at(-3)).toMatchObject({ enteredValue: { kind: 'text', value: 'b'.repeat(384), truncated: true } });
+  expect(late.draft.limitations).toEqual([JOURNEY_LIMITATIONS.enteredValuesTruncated]);
+  expect(validateJourneyDraft(late.draft).ok).toBe(true);
+
+  // The draft stays editable: review edits validate the whole draft.
+  const stopped = stopJourney(late, { epoch: 1, stoppedAt: '2026-09-20T12:00:04.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(updateJourneySummary(stopped, { ...reviewGuards(stopped), expected: 'Kept.', actual: 'Cut.' })).not.toBe(stopped);
+});
+
+test('lossy stops record what is missing once, and ordinary stops record nothing', () => {
+  const recording = recordingSession();
+  const stoppedAt = '2026-09-20T12:00:02.000Z';
+  const limitations = (reason: 'user' | 'left-site' | 'page-access-lost' | 'session-storage-limit' | 'image-budget' | 'capture-failed') => {
+    const stopped = stopJourney(recording, { epoch: 1, stoppedAt, reason });
+    if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+    return stopped.draft.limitations;
+  };
+  expect(limitations('user')).toEqual([]);
+  expect(limitations('left-site')).toEqual([]);
+  expect(limitations('page-access-lost')).toEqual([JOURNEY_LIMITATIONS.pageAccessLost]);
+  expect(limitations('session-storage-limit')).toEqual([JOURNEY_LIMITATIONS.sessionStorage]);
+  expect(limitations('image-budget')).toEqual([JOURNEY_LIMITATIONS.imageBudget]);
+  expect(limitations('capture-failed')).toEqual([JOURNEY_LIMITATIONS.captureFailed]);
+  for (const text of Object.values(JOURNEY_LIMITATIONS)) {
+    expect(Array.from(text).length).toBeLessThanOrEqual(JOURNEY_LIMITS.maxLimitationCharacters);
+  }
+
+  // A batch that no longer fits in session storage stops the journey and
+  // says the latest action may be missing.
+  const previous = nearSessionLimitRecording();
+  const overflowed = acceptJourneyEventBatch(previous, {
+    ...clickBatch(7, 'capture-overflow'),
+    events: [{ ...clickBatch(7, 'capture-overflow').events[0], id: 'overflow-click', observedAt: stoppedAt, elapsedMs: 40_000,
+      sourceUrl: maximumFixtureUrl('overflow-source') }],
+  });
+  if (overflowed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(overflowed.draft.stopReason).toBe('session-storage-limit');
+  expect(overflowed.draft.limitations).toEqual([JOURNEY_LIMITATIONS.sessionStorage]);
+  expect(Buffer.byteLength(JSON.stringify(overflowed)))
+    .toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes);
+});
+
+test('every accepted review edit restarts the idle window from its own time', () => {
+  const stopMs = Date.parse('2026-09-20T12:01:00.000Z');
+  const windowFrom = (ms: number) => ({
+    warningAt: new Date(ms + JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs).toISOString(),
+    expiresAt: new Date(ms + JOURNEY_LIMITS.maxReviewIdleMs).toISOString(),
+  });
+  const withField = reviewingWithField();
+  expect(withField).toMatchObject(windowFrom(stopMs));
+  // Each edit lands a minute before the window it was made in would expire.
+  let state: JourneySession = withField;
+  let editMs = stopMs;
+  const edit = (apply: (guards: ReturnType<typeof reviewGuards>) => JourneySession) => {
+    if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+    editMs += JOURNEY_LIMITS.maxReviewIdleMs - 60_000;
+    const next = apply({ ...reviewGuards(state), updatedAt: new Date(editMs).toISOString() });
+    expect(next).not.toBe(state);
+    expect(next).toMatchObject({ phase: 'reviewing', ...windowFrom(editMs) });
+    state = next;
+  };
+  const fieldId = withField.draft.steps[1].id;
+  edit(guards => updateJourneySummary(state, { ...guards, expected: 'Kept.', actual: 'Lost.' }));
+  edit(guards => editJourneyValue(state, { ...guards, stepId: fieldId, value: { kind: 'selection', values: [], multiple: true, truncated: false } }));
+  edit(guards => redactJourneyUrl(state, { ...guards, stepId: 'step-initial', url: 'source' }));
+  edit(guards => removeJourneyStep(state, { ...guards, stepId: fieldId }));
+  edit(guards => {
+    const result = applyJourneyImageReview(state, { operation: 'remove', ...guards, imageId: 'image-initial' });
+    if (!result.ok) throw new Error(result.errors.join(', '));
+    return result.value;
+  });
+  // Two hours after Stop, the review is still open to edits.
+  expect(editMs - stopMs).toBeGreaterThan(2 * 60 * 60 * 1_000);
+
+  // A refused edit leaves the window alone.
+  if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const refused = updateJourneySummary(state, {
+    ...reviewGuards(state), updatedAt: state.expiresAt, expected: 'Late.', actual: 'Late.',
+  });
+  expect(refused).toBe(state);
 });
 
 test('Stop increments the epoch before cleanup, rejects late work, marks pending captures, and is idempotent', () => {
@@ -1031,6 +1188,20 @@ function clickBatch(localCounter: number, captureId: string) {
       target: { tag: 'button', selectorPath: ['button'], label: 'Go', editable: false, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 }, point: { x: 100, y: 100 } },
       image: { status: 'pending' as const, captureId },
     }],
+  };
+}
+
+function eventBatch(localCounter: number, events: JourneyInputEvent[]) {
+  return { schemaVersion: 1 as const, sessionId: 'session-1', epoch: 1, documentToken: 'document-1', localCounter, events };
+}
+
+function textFieldEvent(id: string, elapsedMs: number, value: string): JourneyInputEvent {
+  return {
+    kind: 'field-change', id, observedAt: new Date(Date.parse('2026-09-20T12:00:00.000Z') + elapsedMs).toISOString(), elapsedMs,
+    sourceUrl: 'https://example.com/start',
+    target: { tag: 'input', selectorPath: ['input'], label: 'Notes', editable: true, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 } },
+    enteredValue: { kind: 'text', value, truncated: false },
+    image: { status: 'unavailable', reason: 'superseded' },
   };
 }
 

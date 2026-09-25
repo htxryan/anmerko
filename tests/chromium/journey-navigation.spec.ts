@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { createJourneyController, type JourneyControllerAdapter, type JourneyPageIdentity } from '../../src/journey-controller';
 import type { JourneyDraftImage, JourneySession } from '../../src/journey-core';
 import type { JourneyEventBatchV1 } from '../../src/journey-events';
-import { JOURNEY_LIMITS } from '../../src/journey-limits';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
 
 const START_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const START_URL = 'https://example.com/start';
@@ -584,6 +584,8 @@ test('a same-origin document load that withdraws page access stops promptly as p
   const stopped = controller.getState();
   if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
   expect(stopped.draft.stopReason).toBe('page-access-lost');
+  // Review and journeys.md say the new page has no screenshot.
+  expect(stopped.draft.limitations).toEqual([JOURNEY_LIMITATIONS.pageAccessLost]);
   expect(stopped.draft.steps.map(step => step.kind)).toEqual(['initial', 'navigation']);
   expect(stopped.draft.steps[0].image.status).toBe('retained');
   expect(stopped.draft.steps[1]).toMatchObject({
