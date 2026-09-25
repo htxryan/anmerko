@@ -44,6 +44,28 @@ A missing/disabled installation, wrong profile, build error, or missing acknowle
 
 The updater briefly creates development helpers and a loopback listener. Wait for the update to finish before starting another build. Normal builds remove the helpers, and packaging rejects them.
 
+## Claude Code cloud sessions
+
+Cloud sessions run on Ubuntu 24.04 x86_64 VMs as root, with Node 22 and Xvfb preinstalled. The repository's SessionStart hook ([.claude/settings.json](../.claude/settings.json)) runs [scripts/cloud/session-start.sh](../scripts/cloud/session-start.sh) only when `CLAUDE_CODE_REMOTE=true`. It adds Node 24 to `PATH` and starts [scripts/cloud/setup.sh](../scripts/cloud/setup.sh) in the background, logging to `/tmp/anmerko-cloud-setup.log`. The setup script installs Node 24, npm and fixture dependencies, Playwright Chromium, stable Chrome and Edge, and Firefox stable and 142.0 with geckodriver. Repeat runs skip current dependencies.
+
+```sh
+scripts/cloud/e2e.sh                  # every suite, in CI order
+scripts/cloud/e2e.sh chrome firefox   # any of: static chrome edge chromium firefox android
+```
+
+`e2e.sh` waits for provisioning. It runs lint and typecheck, stable Chrome and Edge with the production manifest under `xvfb-run`, then `npm run package`, installer tests and the Playwright Chromium suite, including touch and Edge Android emulation. Firefox stable and 142.0 follow, then `npm run package:firefox`, which lints the package that Firefox for Android installs. It prints a pass/fail summary and exits non-zero on any failure.
+
+Provisioning downloads from `nodejs.org`, `dl.google.com`, `packages.microsoft.com`, the Playwright CDN, and Mozilla's `ftp.mozilla.org` and `product-details.mozilla.org`. Several of these hosts are outside the default Trusted allowlist. Choose **Full** network access, or add them to a **Custom** list. To cache provisioning in the environment snapshot, set the environment's setup script to:
+
+```sh
+#!/bin/bash
+# The repository is cloned before this runs.
+script=$(find /home -maxdepth 4 -path '*/scripts/cloud/setup.sh' -print -quit)
+[ -n "$script" ] && bash "$script" >/tmp/anmerko-cloud-setup.log 2>&1 || true
+```
+
+A cold run takes about four minutes, within the five-minute setup-script limit. Cloud VMs are Firecracker microVMs without `/dev/kvm`, so the Android emulator cannot run there. Validate Firefox for Android installation in an emulator on a KVM-capable host or on a device (`npm run firefox:android`).
+
 ## Website and documentation
 
 ```sh
