@@ -3,7 +3,7 @@ import { requestComponentContext } from './component-context-bridge';
 import styles from './panel.css';
 import type { DraftTargetIdentity, Presentation, Runtime } from './runtime';
 
-import { extensionApi } from './platform';
+import { extensionApi, firefoxExtension } from './platform';
 import type { Store } from './runtime';
 import { currentPlatform, journeysAvailable } from './journey-feature';
 import { createJourneyClient } from './journey-client';
@@ -67,7 +67,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   }
   const presentation: Presentation = {
     native,
-    dockViaToolbar: 'sidebar_action' in api.runtime.getManifest(),
+    // Firefox opens its sidebar only from the toolbar gesture.
+    dockViaToolbar: firefoxExtension(api),
     async sync(state, remote) {
       if (native) {
         // Settings remain usable while disconnected, but an empty page identity
@@ -215,7 +216,9 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       };
       // Chrome can show a closed sidebar's document again. Once a closing layout
       // hands the page its view, that document keeps the connection prompt until
-      // a fresh owner answers, so a stale panel never offers a refused Float.
+      // a fresh owner answers. Like a fresh sidebar that is not connected yet,
+      // it still shows Float, and refuses it with guidance above the prompt's
+      // shade instead of moving a page it no longer owns.
       sidebarHandedOff = version => {
         if (!signal.aborted && closingLayoutVersion === version) controller.connectionFailed();
       };

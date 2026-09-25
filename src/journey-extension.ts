@@ -13,7 +13,7 @@ import type { StopReason } from './journey-limits';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
 import { deleteJourneySnapshot, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
-import { extensionApi } from './platform';
+import { extensionApi, firefoxExtension } from './platform';
 
 export interface JourneyScreenshotService {
   capture(windowId: number): Promise<string>;
@@ -852,12 +852,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   // change that no queued event describes. Chromium keeps the grant across
   // same-origin documents, so the tab left the starting origin: that is
   // left-site, although a browser-protected page hides its URL the same way.
-  // Firefox (the only engine with runtime.getBrowserInfo) withdraws the grant
-  // on every document load, so page-access-lost is true either way; whether
-  // that load also left the site is unknowable without the URL.
-  const hiddenOwnerUrlReason = (): StopReason => (
-    typeof (api.runtime as { getBrowserInfo?: unknown }).getBrowserInfo === 'function' ? 'page-access-lost' : 'left-site'
-  );
+  // Firefox withdraws the grant on every document load, so page-access-lost
+  // is true either way; whether that load also left the site is unknowable
+  // without the URL.
+  const hiddenOwnerUrlReason = (): StopReason => (firefoxExtension(api) ? 'page-access-lost' : 'left-site');
 
   const recoverRecordingOwner = async (): Promise<void> => {
     let state = controller.getState();

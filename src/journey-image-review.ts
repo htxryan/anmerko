@@ -66,6 +66,113 @@ function activeElementFor(node: Node): HTMLElement | null {
   return document.activeElement instanceof HTMLElement ? document.activeElement : null;
 }
 
+// Tab and Shift+Tab cycle through the dialog's visible, enabled controls.
+function keepTabInside(view: HTMLElement, heading: HTMLElement, event: KeyboardEvent): void {
+  const controls = [...view.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+  )].filter(control => control.getClientRects().length > 0);
+  const first = controls[0];
+  const last = controls.at(-1);
+  const active = activeElementFor(view);
+  if (!first || !last) return;
+  if (event.shiftKey && (active === heading || active === first || !view.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || !view.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+export interface JourneyImageViewInput {
+  dataUrl: string;
+  width: number;
+  height: number;
+  // Names the dialog and the image, such as "Screenshot for step 2".
+  label: string;
+}
+
+// Shows a screenshot at its full pixel size, so a capture shrunk to fit a
+// narrow sidebar or phone can be read. The pixels stay in a closed shadow
+// root like every preview; no URL is created for them.
+export function viewJourneyImage(
+  root: HTMLElement,
+  input: JourneyImageViewInput,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  const returnFocus = activeElementFor(root);
+  const view = element('dialog', 'journey-image-viewer');
+  view.setAttribute('aria-label', input.label);
+  const bar = element('div', 'journey-image-viewer__bar');
+  const heading = element('h2', 'journey-image-viewer__heading');
+  heading.textContent = input.label;
+  heading.tabIndex = -1;
+  const actions = element('div', 'journey-image-viewer__actions');
+  const size = element('button', 'journey-image-review__button');
+  size.type = 'button';
+  const close = element('button', 'journey-image-review__button journey-image-review__button--primary');
+  close.type = 'button';
+  close.textContent = 'Close';
+  actions.append(size, close);
+  bar.append(heading, actions);
+  // Focusable, so arrow keys and Page Up/Down pan an image larger than the screen.
+  const scroller = element('div', 'journey-image-viewer__scroller');
+  scroller.tabIndex = 0;
+  scroller.setAttribute('role', 'group');
+  scroller.setAttribute('aria-label', `${input.label}, ${input.width} by ${input.height} pixels`);
+  const image = privateImage(input.dataUrl, input.label);
+  image.className = 'journey-image-viewer__image';
+  scroller.append(image);
+  view.append(bar, scroller);
+
+  let fitted = false;
+  function layout() {
+    size.textContent = fitted ? 'Actual size' : 'Fit to window';
+    Object.assign(image.style, fitted
+      ? { width: '100%', height: '100%' }
+      : { width: `${input.width}px`, height: `${input.height}px` });
+  }
+  layout();
+  root.replaceChildren(view);
+  view.showModal();
+
+  return new Promise(resolve => {
+    const listeners = new AbortController();
+    let alive = true;
+    function finish() {
+      if (!alive) return;
+      alive = false;
+      listeners.abort();
+      signal.removeEventListener('abort', finish);
+      image.remove();
+      if (view.open) view.close();
+      view.remove();
+      if (returnFocus?.isConnected) returnFocus.focus();
+      resolve();
+    }
+    signal.addEventListener('abort', finish, { once: true });
+    view.addEventListener('cancel', event => {
+      event.preventDefault();
+      finish();
+    }, { signal: listeners.signal });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        finish();
+      } else if (event.key === 'Tab') keepTabInside(view, heading, event);
+    }, { capture: true, signal: listeners.signal });
+    size.addEventListener('click', () => {
+      fitted = !fitted;
+      layout();
+      scroller.scrollTo(0, 0);
+    }, { signal: listeners.signal });
+    close.addEventListener('click', finish, { signal: listeners.signal });
+    scroller.focus();
+  });
+}
+
 export function reviewJourneyImage(
   root: HTMLElement,
   input: JourneyImageReviewInput,
@@ -333,21 +440,7 @@ export function reviewJourneyImage(
         finish({ kind: 'cancelled' });
         return;
       }
-      if (event.key !== 'Tab') return;
-      const controls = [...view.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
-      )].filter(control => control.getClientRects().length > 0);
-      const first = controls[0];
-      const last = controls.at(-1);
-      const active = activeElementFor(view);
-      if (!first || !last) return;
-      if (event.shiftKey && (active === heading || active === first || !view.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (active === last || !view.contains(active))) {
-        event.preventDefault();
-        first.focus();
-      }
+      if (event.key === 'Tab') keepTabInside(view, heading, event);
     }, { capture: true, signal: listeners.signal });
 
     cancel.addEventListener('click', () => finish({ kind: 'cancelled' }), { signal: listeners.signal });

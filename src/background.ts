@@ -6,7 +6,7 @@ import {
   createExtensionComponentContextProbeRunner,
 } from './component-context-bridge';
 import { COMPONENT_CONTEXT_PROBES } from './component-context-dispatch';
-import { extensionApi } from './platform';
+import { extensionApi, firefoxExtension } from './platform';
 import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
 import { createCaptureService } from './capture-service';
@@ -133,7 +133,7 @@ api.action.onClicked.addListener(tab => {
     const opening = supportsDocking() ? (preservedDock ?? openDock(tab.windowId)).then(() => {
       // Firefox can keep an existing sidebar open after navigation. A fresh
       // toolbar grant must retry its port-owned connection in that window.
-      if ('sidebar_action' in api.runtime.getManifest()) {
+      if (firefoxExtension(api)) {
         return api.runtime.sendMessage({ type: 'ANMERKO_CONNECT_SIDEBAR', windowId: tab.windowId }).catch(() => {});
       }
       return activateTab(tab.id!, 'remote', undefined, true);

@@ -85,16 +85,80 @@ test('performs a native start without requesting optional access', async ({ page
     .some(entry => entry.kind === 'permission'))).toBe(false);
 });
 
-test('the client says page loads end a journey only under a Firefox manifest', async ({ page }) => {
+test('the client says page loads end a journey only in Firefox, on desktop or Android', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   expect(await page.evaluate(() => {
     const { clientModule, surfaceHarness } = globalThis as HarnessWindow;
-    const owner = () => ({ ownerTabId: 1, ownerWindowId: 1 });
-    const chromium = clientModule.createJourneyClient(owner).pageLoadsEndJourney;
+    const runtime = (globalThis as any).chrome.runtime;
+    const loadsEnd = () => clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })).pageLoadsEndJourney;
+    const chromium = loadsEnd();
+    // A manifest key is no browser signal.
     surfaceHarness.manifest = { background: { scripts: ['background.js'] }, sidebar_action: { default_panel: 'sidebar.html' } };
-    const firefox = clientModule.createJourneyClient(owner).pageLoadsEndJourney;
-    return { chromium, firefox };
-  })).toEqual({ chromium: false, firefox: true });
+    const chromiumWithSidebarAction = loadsEnd();
+    // Firefox implements getBrowserInfo and serves moz-extension: pages.
+    runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    runtime.getURL = (path: string) => `moz-extension://0b5e4b36-5f6d-4c2e-9b7a-1e2f3a4b5c6d/${path}`;
+    const firefoxDesktop = loadsEnd();
+    // Firefox for Android does not support sidebar_action, so its manifest may lack it.
+    surfaceHarness.manifest = { background: { scripts: ['background.js'] } };
+    const firefoxAndroid = loadsEnd();
+    delete runtime.getBrowserInfo;
+    const mozExtensionPageOnly = loadsEnd();
+    runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    runtime.getURL = (path: string) => `chrome-extension://test-extension/${path}`;
+    const browserInfoOnly = loadsEnd();
+    return { chromium, chromiumWithSidebarAction, firefoxDesktop, firefoxAndroid, mozExtensionPageOnly, browserInfoOnly };
+  })).toEqual({
+    chromium: false, chromiumWithSidebarAction: false, firefoxDesktop: true, firefoxAndroid: true,
+    mozExtensionPageOnly: true, browserInfoOnly: true,
+  });
+});
+
+test('review edits refused by a save in progress say so, and real staleness still blames the other tab', async ({ page }) => {
+  await page.addScriptTag({ content: clientBundle });
+  const outcomes = await page.evaluate(async () => {
+    const { clientModule } = globalThis as HarnessWindow;
+    const runtime = (globalThis as any).chrome.runtime;
+    const reviewing = (revision: number) => ({ phase: 'reviewing', epoch: 2, sessionId: 'S', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+      warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+      draft: { id: 'J1', revision, images: { I1: { dataUrl: 'data:image/png;base64,AAAA' } }, steps: [] } });
+    const saving = { ...reviewing(3), phase: 'saving' };
+    // Each case lists the states read in order and whether the edit itself is refused as stale.
+    const run = async (states: unknown[], refused: boolean, edit: (client: any) => Promise<void>) => {
+      const sent: string[] = [];
+      let read = 0;
+      runtime.sendMessage = async (message: { type: string }) => {
+        sent.push(message.type);
+        if (message.type === 'ANMERKO_JOURNEY_STATE') return { ok: true, value: states[Math.min(read++, states.length - 1)] };
+        return refused ? { ok: false, error: 'Journey command unavailable.', code: 'stale-review' } : { ok: true };
+      };
+      try {
+        await edit(clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })));
+        return { sent, outcome: 'ok' };
+      } catch (error) {
+        return { sent, outcome: `${(error as { code?: string }).code ?? 'none'}: ${(error as Error).message}` };
+      }
+    };
+    const summary = (client: any) => client.updateSummary('Expected', 'Actual');
+    return {
+      savingBeforeEdit: await run([saving], false, summary),
+      savingAfterRefusal: await run([reviewing(3), saving], true, client => client.removeStep('S1')),
+      saveFailedSince: await run([reviewing(3), reviewing(3)], true, client => client.redactUrl('S1', 'source')),
+      savedSince: await run([reviewing(3), { phase: 'saved', epoch: 3, journeyId: 'J1', revision: 4 }], true, client => client.editValue('S1', null)),
+      imageDuringSave: await run([saving], false, client => client.reviewImage('I1', { operation: 'remove' })),
+      changedElsewhere: await run([reviewing(3), reviewing(4)], true, summary),
+    };
+  });
+  const saving = 'save-in-progress: This journey is being saved. Wait for the save to finish, then try again.';
+  const stale = 'stale-review: Another review tab changed this journey. Reload the review and try again.';
+  expect(outcomes).toEqual({
+    savingBeforeEdit: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: saving },
+    savingAfterRefusal: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_STATE'], outcome: saving },
+    saveFailedSince: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_STATE'], outcome: saving },
+    savedSince: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_STATE'], outcome: saving },
+    imageDuringSave: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: saving },
+    changedElsewhere: { sent: ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_STATE'], outcome: stale },
+  });
 });
 
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
