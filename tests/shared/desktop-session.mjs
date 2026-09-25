@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { desktopScenarios } from './desktop-scenarios.mjs';
 import { startFixtureServer } from '../fixtures/component-context/server.mjs';
+import { browserManifest, browserTarget } from '../../scripts/extension/browser-targets.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -56,8 +57,8 @@ export async function createDesktopSession({ scenario = 'manual' } = {}) {
       payload[absolute.slice(extension.length + 1).replaceAll('\\', '/')] = hash(await readFile(absolute));
     }
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
-    const expected = JSON.parse(await readFile('public/manifest.json', 'utf8'));
-    expected.version = JSON.parse(await readFile('package.json', 'utf8')).version;
+    const expected = browserManifest(JSON.parse(await readFile('public/manifest.json', 'utf8')),
+      JSON.parse(await readFile('package.json', 'utf8')).version, browserTarget(['--target', 'chromium']));
     assert.deepEqual(manifest, expected, 'Build the unchanged production Chrome manifest first');
     assert.ok(!files.some(file => /anmerko-dev-install|test-bootstrap/.test(file.name)), 'Development helpers must not enter acceptance');
     const html = await readFile('tests/fixtures/demo/index.html');
