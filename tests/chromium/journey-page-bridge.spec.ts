@@ -15,7 +15,9 @@ type BridgeHarness = {
   response: unknown;
   rejectSend: boolean;
   shortenHideTimeout: boolean;
-  strip(): { text: string; buttonHeight: number; hostMarkup: string; buttonRect: { x: number; y: number; width: number; height: number } } | null;
+  strip(): { text: string; buttonHeight: number; hostMarkup: string; buttonRect: { x: number; y: number; width: number; height: number };
+    hostRect: { x: number; y: number; width: number; height: number }; groupLabel: string | null; buttonLabel: string | null;
+    alert: string | null } | null;
   listenerCount(): number;
 };
 type BridgeWindow = typeof globalThis & {
@@ -115,9 +117,14 @@ test.beforeEach(async ({ page }) => {
         const button = stripRoot?.querySelector('button');
         if (!host || !stripRoot || !button) return null;
         const rect = button.getBoundingClientRect();
+        const hostRect = host.getBoundingClientRect();
         return {
           text: stripRoot.textContent || '', buttonHeight: rect.height, hostMarkup: host.outerHTML,
           buttonRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          hostRect: { x: hostRect.x, y: hostRect.y, width: hostRect.width, height: hostRect.height },
+          groupLabel: stripRoot.querySelector('[role="group"]')?.getAttribute('aria-label') ?? null,
+          buttonLabel: button.getAttribute('aria-label'),
+          alert: stripRoot.querySelector('[role="alert"]')?.textContent ?? null,
         };
       },
       listenerCount: () => listeners.length,
@@ -399,25 +406,47 @@ test('the strip follows the visual viewport above an on-screen keyboard, reports
   // The floating panel reserves the bottom 72px while recording (panel.css); the strip fits inside it.
   expect((await page.locator('anmerko-journey-strip').boundingBox())!.y).toBeGreaterThanOrEqual(viewportHeight - 72);
 
-  // A 300px keyboard covers the bottom of the layout viewport.
+  // A collapsing browser toolbar covers less than a keyboard: the strip stays
+  // on the visible bottom edge.
+  await page.evaluate(() => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.height = innerHeight - 60;
+    fake.dispatchEvent(new Event('resize'));
+  });
+  const lifted = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
+  expect(lifted.y + lifted.height).toBeLessThanOrEqual(viewportHeight - 60 - 12);
+  expect(lifted.y + lifted.height).toBeGreaterThan(viewportHeight - 60 - 40);
+
+  // A 300px keyboard covers the bottom of the layout viewport, where the
+  // browser scrolls the field being typed into: the strip moves to the top.
   await page.evaluate(() => {
     const fake = (window as any).anmerkoVisualViewportFake;
     fake.height = innerHeight - 300;
     fake.dispatchEvent(new Event('resize'));
   });
-  const raised = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
+  const raised = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.hostRect;
+  expect(raised.y).toBe(12);
   expect(raised.y + raised.height).toBeLessThanOrEqual(viewportHeight - 300 - 12);
-  expect(raised.y).toBeGreaterThan(0);
 
-  // Scrolling the visual viewport while the keyboard is open keeps it on the visible bottom edge.
+  // Scrolling the visual viewport while the keyboard is open keeps it on the visible top edge.
   await page.evaluate(() => {
     const fake = (window as any).anmerkoVisualViewportFake;
     fake.offsetTop = 100;
     fake.dispatchEvent(new Event('scroll'));
   });
-  const panned = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
-  expect(panned.y + panned.height).toBeLessThanOrEqual(viewportHeight - 200 - 12);
-  expect(panned.y + panned.height).toBeGreaterThan(viewportHeight - 200 - 40);
+  const panned = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.hostRect;
+  expect(panned.y).toBe(112);
+
+  // Once the keyboard closes the strip returns to the bottom edge.
+  await page.evaluate(() => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.offsetTop = 0;
+    fake.height = innerHeight;
+    fake.dispatchEvent(new Event('resize'));
+  });
+  const lowered = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
+  expect(lowered.y + lowered.height).toBeLessThanOrEqual(viewportHeight - 12);
+  expect(lowered.y + lowered.height).toBeGreaterThan(viewportHeight - 40);
 
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'session-1', epoch: 1 })).toMatchObject({ ok: true });
   await expect(page.locator('anmerko-journey-strip')).toHaveCount(0);
@@ -425,6 +454,90 @@ test('the strip follows the visual viewport above an on-screen keyboard, reports
   const signals = await page.evaluate(() => ((window as any).anmerkoStripSignals as AbortSignal[]).map(signal => signal.aborted));
   expect(signals.length).toBeGreaterThan(0);
   expect(signals.every(Boolean)).toBe(true);
+});
+
+// Firefox for Android with its keyboard open: the focused field sits at the
+// bottom of a 526px visual viewport (493–530), where the strip used to be.
+test('the strip keeps clear of the field being typed into while the keyboard is open', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => {
+    const viewing = globalThis as BridgeWindow;
+    viewing.disposeJourneyPage();
+    const fake = Object.assign(new EventTarget(), { width: innerWidth, height: innerHeight, offsetLeft: 0, offsetTop: 0, scale: 1 });
+    Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+    (window as any).anmerkoVisualViewportFake = fake;
+    document.body.innerHTML = `
+      <input id="low" aria-label="Low field" style="position:fixed;left:20px;top:493px;height:37px;width:260px;margin:0;box-sizing:border-box">
+      <textarea id="high" aria-label="High field" style="position:fixed;left:20px;top:14px;height:40px;width:260px;margin:0;box-sizing:border-box"></textarea>
+      <button id="plain" style="position:fixed;left:20px;top:300px">Plain</button>`;
+    viewing.disposeJourneyPage = viewing.anmerkoJourneyPageBridge.bindJourneyPage();
+  });
+  const identity = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt: new Date().toISOString() })).toMatchObject({ ok: true });
+  const keyboard = (height: number) => page.evaluate(value => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.height = value;
+    fake.dispatchEvent(new Event('resize'));
+  }, height);
+  const clear = async (selector: string, visibleHeight: number) => {
+    const strip = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.hostRect;
+    const field = (await page.locator(selector).boundingBox())!;
+    const overlaps = strip.y < field.y + field.height && field.y < strip.y + strip.height;
+    expect(overlaps, `${selector}: strip ${JSON.stringify(strip)} field ${JSON.stringify(field)}`).toBe(false);
+    expect(strip.y).toBeGreaterThanOrEqual(0);
+    expect(strip.y + strip.height).toBeLessThanOrEqual(visibleHeight);
+    return strip;
+  };
+
+  await page.locator('#low').focus();
+  await keyboard(526);
+  expect((await clear('#low', 526)).y).toBe(12);
+  // Focus alone moves it too, before the keyboard resizes anything.
+  await keyboard(844);
+  await page.locator('#plain').focus();
+  await expect.poll(async () => (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.hostRect.y).toBeGreaterThan(700);
+  await page.locator('#low').focus();
+  expect((await clear('#low', 844)).y).toBe(12);
+
+  // A field at the top keeps the strip on the bottom edge, above the keyboard.
+  await page.locator('#high').focus();
+  await keyboard(526);
+  const low = await clear('#high', 526);
+  expect(low.y + low.height).toBeGreaterThan(526 - 40);
+
+  // Leaving the fields returns the strip to the bottom edge.
+  await keyboard(844);
+  await page.locator('#plain').focus();
+  await expect.poll(async () => {
+    const strip = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.hostRect;
+    return strip.y + strip.height;
+  }).toBe(844 - 12);
+});
+
+test('the strip is a labelled group whose Stop names the journey and whose failure wraps and is announced', async ({ page }) => {
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 700 });
+    const identity = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: `session-${width}`, epoch: 1,
+      documentToken: identity.documentToken, expectedUrl: identity.url, count: 12, startedAt: new Date().toISOString() })).toMatchObject({ ok: true });
+    let strip = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!;
+    expect(strip.groupLabel).toBe('anmerko journey recording');
+    expect(strip.buttonLabel).toBe('Stop recording journey');
+    expect(strip.alert).toBe('');
+    await page.evaluate(() => { (globalThis as BridgeWindow).bridgeHarness.response = { ok: false, error: 'private failure' }; });
+    await page.mouse.click(strip.buttonRect.x + strip.buttonRect.width / 2, strip.buttonRect.y + strip.buttonRect.height / 2);
+    await expect.poll(async () => (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.alert)
+      .toBe('Could not stop the journey. Try again.');
+    strip = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!;
+    expect(strip.hostRect.x).toBe(12);
+    expect(strip.hostRect.x + strip.hostRect.width, `${width}px`).toBeLessThanOrEqual(width - 12);
+    expect(strip.hostRect.y + strip.hostRect.height, `${width}px`).toBeLessThanOrEqual(700 - 12);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `${width}px`).toBeLessThanOrEqual(width);
+    expect(strip.buttonRect.height).toBeGreaterThanOrEqual(44);
+    await page.evaluate(() => { (globalThis as BridgeWindow).bridgeHarness.response = { ok: true }; });
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: `session-${width}`, epoch: 1 })).toMatchObject({ ok: true });
+  }
 });
 
 test('entered values collect only with an explicit flag and merge before the click', async ({ page }) => {
