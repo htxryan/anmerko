@@ -25,7 +25,7 @@ Keep the draft open. Export saved feedback before deleting comments to free stor
 
 ## Journeys aren't available
 
-Journeys work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android. They aren't available on iPhone or iPad. They also aren't available in private or incognito windows, even if you allow anmerko to run there; open the website in a normal window to record one. Comments still work in both cases.
+Journeys work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android. They aren't available on iPhone or iPad. They also aren't available in private or incognito windows, even if you allow anmerko to run there; open the website in a normal window to record one. In a private window, **Record journey** says “Journeys aren't available in private windows.”, and clicking anmerko in the toolbar opens comments rather than a waiting review. Comments still work in both cases.
 
 ## A journey review is gone or won't save
 
