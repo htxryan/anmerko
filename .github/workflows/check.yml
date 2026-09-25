@@ -199,7 +199,7 @@ jobs:
     # The x86_64 emulator needs KVM, which hosted x64 Linux runners provide and
     # the local ARM64 runner cannot, so this job always uses a hosted runner.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
@@ -221,6 +221,7 @@ jobs:
           target: google_apis
           arch: x86_64
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          cores: 4
           ram-size: 4096M
           disable-animations: true
           script: npm run test:android
