@@ -57,6 +57,7 @@ chrome:
 firefox:
   - *extension
   - 'tests/firefox/**'
+  - 'tests/android/**'
   - 'tests/shared/**'
   - 'scripts/browsers/web-ext.mjs'
   - 'scripts/release/sign-firefox.mjs'
@@ -128,6 +129,7 @@ highrisk:
   - 'tests/shared/**'
   - 'tests/desktop/**'
   - 'tests/firefox/**'
+  - 'tests/android/**'
   - 'site/installers/**'
   - 'site/firefox-release.json'
   - 'releases/**'

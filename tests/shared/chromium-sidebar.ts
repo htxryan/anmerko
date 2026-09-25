@@ -6,6 +6,8 @@ export async function sidebar(context: BrowserContext, page: Page) {
   const cdp = await context.newCDPSession(page);
   let targetId = '';
   let acquisition: { selectedTargetId: string; targets: { targetId: string; type: string; attached: boolean }[] } | undefined;
+  // Hosted macOS runners can take several seconds to open and connect a native panel.
+  const opening = { timeout: 15_000 };
   await expect.poll(async () => {
     const targets = (await cdp.send('Target.getTargets')).targetInfos.filter(target => target.url.endsWith('/sidebar.html'));
     targetId = targets[0]?.targetId || '';
@@ -14,7 +16,7 @@ export async function sidebar(context: BrowserContext, page: Page) {
       targets: targets.map(target => ({ targetId: target.targetId, type: target.type, attached: target.attached })),
     };
     return targetId;
-  }).not.toBe('');
+  }, opening).not.toBe('');
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: false });
   let id = 0;
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -72,7 +74,7 @@ export async function sidebar(context: BrowserContext, page: Page) {
     promptHidden: root?.querySelector('.connection-prompt')?.hidden ?? null,
     statusText: root?.querySelector('.status')?.textContent?.trim() || ''
   }`);
-  await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden")).toBe(true);
+  await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden"), opening).toBe(true);
   return {
     targetId, acquisition: acquisition!, evaluate, command, click, press, targets, surface,
     value: (selector: string) => evaluate(`return root.querySelector(${JSON.stringify(selector)})?.value`),
