@@ -12,7 +12,7 @@ import { Command } from 'selenium-webdriver/lib/command.js';
 import { Pointer } from 'selenium-webdriver/lib/input.js';
 import { binaryPaths } from 'selenium-webdriver/common/seleniumManager.js';
 import { FIREFOX_GUID } from '../../scripts/release/release-names.mjs';
-import { adb, deviceSerial, firefoxApk, installedVersion, screencap, shell } from './device.mjs';
+import { adb, deviceSerial, firefoxApk, installedVersion, rootDevice, screencap, shell } from './device.mjs';
 
 // Release Firefox for Android on a disposable emulator or device. geckodriver
 // enables Marionette through GeckoView's automation config; the unchanged
@@ -20,10 +20,13 @@ import { adb, deviceSerial, firefoxApk, installedVersion, screencap, shell } fro
 const firefoxPackage = 'org.mozilla.firefox';
 const expectedHost = 'anmerko-overlay';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-let server, origin, serial, apk, addon, payload, geckodriver, output, temp;
+let server, origin, serial, rooted, apk, addon, payload, geckodriver, output, temp;
 
 before(async () => {
   serial = deviceSerial();
+  // Android 11+ rejects adb pushes into app-specific external storage, so a
+  // rootable emulator keeps the geckodriver profile in /data/local/tmp.
+  rooted = rootDevice();
   temp = await mkdtemp(join(tmpdir(), 'anmerko-android-'));
   output = resolve('artifacts', `android-firefox-${Date.now()}`);
   await mkdir(output, { recursive: true });
@@ -66,8 +69,13 @@ after(async () => {
 async function session(t, run) {
   const options = new firefox.Options().enableMobile(firefoxPackage)
     .setPreference('dom.events.testing.asyncClipboard', true);
-  // geckodriver's device capability is androidDeviceSerial.
-  options.get('moz:firefoxOptions').androidDeviceSerial = serial;
+  Object.assign(options.get('moz:firefoxOptions'), {
+    // geckodriver's device capability is androidDeviceSerial.
+    androidDeviceSerial: serial,
+    androidStorage: rooted ? 'internal' : 'auto',
+    // Firefox for Android 153+ skips onboarding only for automation launches.
+    androidIntentArguments: ['-a', 'android.intent.action.VIEW', '-d', 'about:blank', '--ez', 'automationtest', 'true'],
+  });
   // System access lets chrome-context scripts reach GeckoView's extension
   // bridge. Only this disposable profile on a disposable device receives it.
   const driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options)
@@ -75,7 +83,7 @@ async function session(t, run) {
   const evidence = {
     date: new Date().toISOString(), scenario: t.name, result: 'failed', browser: 'firefox-android',
     package: firefoxPackage, firefoxVersion: apk.version, abi: apk.abi, apkSha256: hash(await readFile(apk.file)),
-    device: { serial, model: shell('getprop ro.product.model'), release: shell('getprop ro.build.version.release'),
+    device: { serial, rooted, model: shell('getprop ro.product.model'), release: shell('getprop ro.build.version.release'),
       sdk: shell('getprop ro.build.version.sdk') },
     engine: (await driver.getCapabilities()).get('browserVersion'),
     route: 'temporary unchanged production build; GeckoView browser action click',
@@ -101,7 +109,16 @@ async function session(t, run) {
     try {
       const error = await driver.executeAsyncScript((id, done) => {
         const { GeckoViewWebExtension } = ChromeUtils.importESModule('resource://gre/modules/GeckoViewWebExtension.sys.mjs');
-        GeckoViewWebExtension.browserActionClick(id).then(() => done(null), reason => done(String(reason)));
+        // browserActionClick ignores extensions whose action has not registered yet.
+        const click = attempt => {
+          if (!GeckoViewWebExtension.browserActions.get(WebExtensionPolicy.getByID(id)?.extension)) {
+            if (attempt < 100) setTimeout(click, 100, attempt + 1);
+            else done('the browser action never registered');
+            return;
+          }
+          GeckoViewWebExtension.browserActionClick(id).then(() => done(null), reason => done(String(reason)));
+        };
+        click(0);
       }, FIREFOX_GUID);
       assert.equal(error, null);
     } finally { await driver.setContext('content'); }

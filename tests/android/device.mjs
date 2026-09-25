@@ -28,6 +28,17 @@ export function deviceSerial() {
   return serial;
 }
 
+// Restarts adbd as root where the image allows it, as emulator images without
+// Google Play do. geckodriver then also makes SELinux permissive.
+export function rootDevice() {
+  try { adb('root'); } catch { return false; }
+  adb('wait-for-device');
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try { return shell('id -u') === '0'; } catch { execFileSync('sleep', ['0.2']); }
+  }
+  return false;
+}
+
 // Release Firefox for Android, x86_64 for emulators unless FIREFOX_ANDROID_ABI says otherwise.
 export async function firefoxApk(cacheDirectory, version = process.env.FIREFOX_ANDROID_VERSION || 'stable') {
   const resolved = version === 'stable'
