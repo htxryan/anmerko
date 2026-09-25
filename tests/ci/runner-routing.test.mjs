@@ -93,6 +93,16 @@ test('all compatible Linux jobs prefer local and support explicit hosted routing
   assert.deepEqual(evaluate(field('desktop', 'desktop', 'runs-on'), { os: 'ubuntu-latest' }), ['ubuntu-latest']);
 });
 
+test('the Android emulator always uses a hosted KVM runner and gates Firefox / Android', () => {
+  // The local runner is ARM64 Docker without KVM; x86_64 emulators need hosted x64.
+  assert.equal(field('check', 'android', 'runs-on'), 'ubuntu-latest');
+  assert.equal(field('check', 'android', 'if'), field('check', 'firefox', 'if'));
+  assert.match(field('check', 'firefox', 'needs'), /\bandroid\b/);
+  const workflow = readFileSync('.github/workflows/check.yml', 'utf8');
+  assert.match(workflow, /name: Require the Firefox for Android emulator suite\n\s+if: needs\.android\.result != 'success'/);
+  assert.match(workflow, /reactivecircus\/android-emulator-runner@[0-9a-f]{40} # v2/);
+});
+
 test('Linux desktop checks refresh both stable Chromium channels before testing', () => {
   const workflow = readFileSync('.github/workflows/desktop.yml', 'utf8');
   assert.match(workflow, /if \[ "\$RUNNER_OS" != Linux \][\s\S]*else\n\s+# Runner-bundled Chromium channels[\s\S]*npx playwright install --force chrome msedge/);

@@ -33,6 +33,7 @@
     "firefox:sign": "node scripts/release/sign-firefox.mjs",
     "test:firefox": "node --test tests/firefox/extension.test.mjs",
     "test:desktop": "node scripts/browsers/test-desktop.mjs",
+    "test:android": "node --test tests/android/firefox.test.mjs",
     "test:release": "node --test tests/release/*.test.mjs",
     "release": "gh workflow run release.yml"
   },
