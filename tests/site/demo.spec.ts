@@ -16,7 +16,11 @@ test('the demo shows the three comment actions and no journey launch without the
 test('the demo compiles the shared panel without shipping the journey UI it cannot reach', async ({ page }) => {
   const scripts = new Map<string, Promise<string>>();
   page.on('response', response => {
-    if (response.request().resourceType() === 'script') scripts.set(new URL(response.url()).pathname, response.text());
+    // The body is read now but awaited later, so a body that can no longer be
+    // read (a redirect, or one the page dropped) must not reject unobserved.
+    if (response.request().resourceType() === 'script') {
+      scripts.set(new URL(response.url()).pathname, response.text().catch(() => ''));
+    }
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Try the Demo' }).click();
