@@ -41,8 +41,10 @@ export type DraftFieldValue =
   | { kind: 'checked'; checked: boolean; edited?: true };
 
 export type JourneyUrlRedactions = {
-  steps: Record<string, { sourceUrl?: true; captureUrl?: true }>;
+  steps: Record<string, { sourceUrl?: true; captureUrl?: true; toUrl?: true }>;
 };
+
+export type JourneyUrlRedactionTarget = 'source' | 'capture' | 'destination';
 
 export const JOURNEY_REDACTED_URL = '[redacted]';
 
@@ -254,6 +256,7 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const MAX_DATE_MS = 8_640_000_000_000_000;
+const REDACTION_FLAGS: readonly string[] = ['sourceUrl', 'captureUrl', 'toUrl'];
 
 function isObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -529,7 +532,9 @@ function validateStep(value: unknown, path: string, errors: string[], reviewed: 
     else {
       exactKeys(value.navigation, ['toUrl'], ['causedByStepId'], `${path}.navigation`, errors);
       if (reviewed) validateReviewedText(value.navigation.toUrl, `${path}.navigation.toUrl`, errors, true);
-      else {
+      else if (value.navigation.toUrl === JOURNEY_REDACTED_URL) {
+        // Redacted during review; the redactions map records the marker.
+      } else {
         const sanitized = validateUrl(value.navigation.toUrl, `${path}.navigation.toUrl`, errors);
         if (sanitized !== undefined) value.navigation.toUrl = sanitized;
       }
@@ -618,14 +623,17 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
       for (const [stepId, flags] of Object.entries(copy.redactions.steps)) {
         const step = stepsById.get(stepId);
         if (!validId(stepId) || !step) errors.push(`journey.redactions references unknown step ${stepId}`);
-        else if (!isObject(flags) || Object.keys(flags).some(key => key !== 'sourceUrl' && key !== 'captureUrl')
-          || (flags.sourceUrl !== undefined && flags.sourceUrl !== true)
-          || (flags.captureUrl !== undefined && flags.captureUrl !== true)
-          || (flags.sourceUrl === undefined && flags.captureUrl === undefined)) {
+        else if (!isObject(flags) || Object.keys(flags).some(key => !REDACTION_FLAGS.includes(key))
+          || REDACTION_FLAGS.some(key => flags[key] !== undefined && flags[key] !== true)
+          || REDACTION_FLAGS.every(key => flags[key] === undefined)) {
           errors.push(`journey.redactions for step ${stepId} is invalid`);
         } else {
           if (flags.sourceUrl === true && step.sourceUrl !== JOURNEY_REDACTED_URL) {
             errors.push(`journey.redactions for step ${stepId} marks a visible source URL`);
+          }
+          if (flags.toUrl === true && (step.kind !== 'navigation' || !isObject(step.navigation)
+            || step.navigation.toUrl !== JOURNEY_REDACTED_URL)) {
+            errors.push(`journey.redactions for step ${stepId} marks a visible destination URL`);
           }
           if (flags.captureUrl === true) {
             const image = step.image;
@@ -1068,39 +1076,43 @@ export function editJourneyValue(state: JourneySession, input: JourneyEditValueI
 
 export interface JourneyRedactUrlInput extends JourneyReviewEdit {
   stepId: string;
-  url: 'source' | 'capture';
+  url: JourneyUrlRedactionTarget;
 }
 
 export function redactJourneyUrl(state: JourneySession, input: JourneyRedactUrlInput): JourneySession {
   const reviewing = reviewEditGuard(state, input);
-  if (!reviewing || !validId(input.stepId) || (input.url !== 'source' && input.url !== 'capture')) return state;
+  if (!reviewing || !validId(input.stepId)
+    || (input.url !== 'source' && input.url !== 'capture' && input.url !== 'destination')) return state;
   const step = reviewing.draft.steps.find(candidate => candidate.id === input.stepId);
   if (!step) return state;
-  const redactions = reviewing.draft.redactions ?? { steps: {} };
-  const stepFlags = redactions.steps[input.stepId] ?? {};
+  let redacted: Pick<JourneyDraftV1, 'steps' | 'images'>;
+  let flag: keyof JourneyUrlRedactions['steps'][string];
+  const replaceStep = (next: JourneyDraftStep) => reviewing.draft.steps.map(candidate => candidate.id === input.stepId ? next : candidate);
   if (input.url === 'source') {
     if (step.sourceUrl === JOURNEY_REDACTED_URL) return state;
-    const steps = reviewing.draft.steps.map(candidate => candidate.id === input.stepId
-      ? { ...candidate, sourceUrl: JOURNEY_REDACTED_URL }
-      : candidate) as JourneyDraftStep[];
-    const draft = {
-      ...reviewing.draft, steps,
-      redactions: { steps: { ...redactions.steps, [input.stepId]: { ...stepFlags, sourceUrl: true as const } } },
-      revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
+    redacted = { steps: replaceStep({ ...step, sourceUrl: JOURNEY_REDACTED_URL }), images: reviewing.draft.images };
+    flag = 'sourceUrl';
+  } else if (input.url === 'destination') {
+    if (step.kind !== 'navigation' || step.navigation.toUrl === JOURNEY_REDACTED_URL) return state;
+    redacted = {
+      steps: replaceStep({ ...step, navigation: { ...step.navigation, toUrl: JOURNEY_REDACTED_URL } }),
+      images: reviewing.draft.images,
     };
-    if (validateJourneyDraft(draft).ok === false) return state;
-    return { ...reviewing, draft };
+    flag = 'toUrl';
+  } else {
+    if (step.image.status !== 'retained') return state;
+    const record = reviewing.draft.images[step.image.imageId];
+    if (!record || record.captureUrl === JOURNEY_REDACTED_URL) return state;
+    redacted = {
+      steps: reviewing.draft.steps,
+      images: { ...reviewing.draft.images, [step.image.imageId]: { ...record, captureUrl: JOURNEY_REDACTED_URL } },
+    };
+    flag = 'captureUrl';
   }
-  if (step.image.status !== 'retained') return state;
-  const record = reviewing.draft.images[step.image.imageId];
-  if (!record || record.captureUrl === JOURNEY_REDACTED_URL) return state;
-  const images = {
-    ...reviewing.draft.images,
-    [step.image.imageId]: { ...record, captureUrl: JOURNEY_REDACTED_URL },
-  };
+  const redactions = reviewing.draft.redactions ?? { steps: {} };
   const draft = {
-    ...reviewing.draft, images,
-    redactions: { steps: { ...redactions.steps, [input.stepId]: { ...stepFlags, captureUrl: true as const } } },
+    ...reviewing.draft, ...redacted,
+    redactions: { steps: { ...redactions.steps, [input.stepId]: { ...redactions.steps[input.stepId], [flag]: true as const } } },
     revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
   };
   if (validateJourneyDraft(draft).ok === false) return state;

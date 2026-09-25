@@ -60,6 +60,9 @@ const bundle = () => buildSync({ stdin: { contents: `
       if (kind === 'source') {
         const redactions = draft.redactions ?? { steps: {} };
         state = { ...state, draft: { ...draft, steps: draft.steps.map(step => step.id === stepId ? { ...step, sourceUrl: '[redacted]' } : step), redactions: { steps: { ...redactions.steps, [stepId]: { ...redactions.steps[stepId], sourceUrl: true } } }, revision: draft.revision + 1 } };
+      } else if (kind === 'destination') {
+        const redactions = draft.redactions ?? { steps: {} };
+        state = { ...state, draft: { ...draft, steps: draft.steps.map(step => step.id === stepId ? { ...step, navigation: { ...step.navigation, toUrl: '[redacted]' } } : step), redactions: { steps: { ...redactions.steps, [stepId]: { ...redactions.steps[stepId], toUrl: true } } }, revision: draft.revision + 1 } };
       } else {
         const step = draft.steps.find(s => s.id === stepId);
         const imageId = step?.image?.imageId;
@@ -470,6 +473,22 @@ test('URL redact buttons call with step id and kind and show redacted marker', a
   await page.getByRole('button', { name: 'Redact image URL for step 1', exact: true }).click();
   await expect.poll(async () => page.evaluate('journeyReviewHarness.redactCalls()'), { timeout: 10_000 })
     .toEqual([[ 'S1', 'source' ], [ 'S1', 'capture' ]]);
+});
+
+test('destination redact button appears only for navigation steps and redacts only the destination', async ({ page }) => {
+  await openReview(page);
+  const navigation = page.getByRole('listitem').filter({ hasText: 'Step 3 · Navigation' });
+  await expect(navigation.getByText('https://example.test/checkout', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Redact destination URL/ })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Redact destination URL for step 3', exact: true }).click();
+  await expect.poll(async () => page.evaluate('journeyReviewHarness.redactCalls()'), { timeout: 10_000 })
+    .toEqual([['S3', 'destination']]);
+  await expect(navigation.getByText('[redacted]', { exact: true })).toBeVisible();
+  await expect(navigation.getByText('https://example.test/checkout', { exact: true })).toHaveCount(0);
+  await expect(navigation.getByText('Redacted during review.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Redact destination URL/ })).toHaveCount(0);
+  await expect(navigation.getByText('https://example.test/start', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Redact source URL for step 3', exact: true })).toBeEnabled();
 });
 
 test('save enables when ready, saves with acknowledgement, and shows confirmation', async ({ page }) => {

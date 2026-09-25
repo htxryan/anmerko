@@ -16,6 +16,7 @@ import {
   updateJourneySummary,
   validateJourneyDraft,
   validateJourneyManifest,
+  type JourneyDraftStep,
   type JourneyDraftV1,
   type JourneyManifestV1,
   type JourneySession,
@@ -685,6 +686,100 @@ test('review URL redaction keeps step and image association', () => {
   })).toBe(reviewing);
 });
 
+test('review destination redaction removes only the navigation destination', () => {
+  const reviewing = reviewingWithNavigation();
+  const stepId = 'step-navigation';
+  const redacted = redactJourneyUrl(reviewing, { ...reviewGuards(reviewing), stepId, url: 'destination' });
+  expect(redacted).not.toBe(reviewing);
+  if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const step = redacted.draft.steps[1];
+  if (step.kind !== 'navigation') throw new Error('expected navigation step');
+  expect(step.navigation).toEqual({ toUrl: '[redacted]' });
+  expect(step.sourceUrl).toBe('https://example.com/start');
+  expect(redacted.draft.redactions).toEqual({ steps: { [stepId]: { toUrl: true } } });
+  expect(redacted.draft.revision).toBe(reviewing.draft.revision + 1);
+  expect(JSON.stringify(redacted)).not.toContain('private-token-9q');
+  expect(validateJourneyDraft(redacted.draft).ok).toBe(true);
+
+  expect(redactJourneyUrl(redacted, { ...reviewGuards(redacted), stepId, url: 'destination' })).toBe(redacted);
+  expect(redactJourneyUrl(reviewing, {
+    ...reviewGuards(reviewing), stepId: 'step-initial', url: 'destination',
+  })).toBe(reviewing);
+  expect(redactJourneyUrl(reviewing, {
+    ...reviewGuards(reviewing), stepId, url: 'location' as unknown as 'destination',
+  })).toBe(reviewing);
+
+  const both = redactJourneyUrl(redacted, { ...reviewGuards(redacted), stepId, url: 'source' });
+  if (both.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(both.draft.redactions).toEqual({ steps: { [stepId]: { toUrl: true, sourceUrl: true } } });
+});
+
+test('persisted drafts accept destination markers only with consistent redaction flags', () => {
+  const reviewing = reviewingWithNavigation();
+  const redacted = redactJourneyUrl(reviewing, {
+    ...reviewGuards(reviewing), stepId: 'step-navigation', url: 'destination',
+  });
+  if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const draft = { ...redacted.draft, expected: 'Reset link opens.', actual: 'Reset link fails.' };
+  const navigationOf = (value: JourneyDraftV1) => value.steps[1] as Extract<JourneyDraftStep, { kind: 'navigation' }>;
+
+  const visible = structuredClone(draft);
+  navigationOf(visible).navigation.toUrl = 'https://example.com/reset?token=other';
+  expect(validateJourneyDraft(visible)).toEqual({
+    ok: false, errors: ['journey.redactions for step step-navigation marks a visible destination URL'],
+  });
+  const misplaced = { ...structuredClone(draft), redactions: { steps: { 'step-initial': { toUrl: true as const } } } };
+  expect(validateJourneyDraft(misplaced)).toEqual({
+    ok: false, errors: ['journey.redactions for step step-initial marks a visible destination URL'],
+  });
+  const malformed = { ...structuredClone(draft), redactions: { steps: { 'step-navigation': { toUrl: 'yes' } } } };
+  expect(validateJourneyDraft(malformed)).toEqual({
+    ok: false, errors: ['journey.redactions for step step-navigation is invalid'],
+  });
+
+  const idle = { phase: 'idle', epoch: 0 } as const;
+  const reopenInput = (value: JourneyDraftV1) => ({
+    sessionId: 'session-9', ownerTabId: 7, ownerWindowId: 8, nowMs: Date.parse('2026-09-20T12:02:00.000Z'),
+    draft: value, images: structuredClone(value.images),
+  });
+  const reopened = reopenJourneySnapshot(idle, reopenInput(draft));
+  if (!reopened || reopened.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(navigationOf(reopened.draft).navigation.toUrl).toBe('[redacted]');
+  expect(reopened.draft.redactions).toEqual({ steps: { 'step-navigation': { toUrl: true } } });
+
+  // Snapshots saved before destination redaction carry only source and capture flags.
+  const legacySource = redactJourneyUrl(reviewing, {
+    ...reviewGuards(reviewing), stepId: 'step-initial', url: 'source',
+  });
+  if (legacySource.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const legacy = redactJourneyUrl(legacySource, {
+    ...reviewGuards(legacySource), stepId: 'step-initial', url: 'capture',
+  });
+  if (legacy.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const legacyDraft = { ...legacy.draft, expected: 'Kept.', actual: 'Gone.' };
+  expect(legacyDraft.redactions).toEqual({ steps: { 'step-initial': { sourceUrl: true, captureUrl: true } } });
+  expect(navigationOf(legacyDraft).navigation.toUrl).toBe('https://example.com/reset?token=private-token-9q');
+  expect(reopenJourneySnapshot(idle, reopenInput(legacyDraft))?.phase).toBe('reviewing');
+});
+
+test('reviewed destination URLs follow the redacted-implies-edited rule', () => {
+  const manifest = validManifest();
+  const navigation = manifest.steps[2];
+  if (navigation.kind !== 'navigation') throw new Error('expected navigation step');
+  navigation.navigation.toUrl = { text: '[redacted]', edited: true, redacted: true };
+  expect(validateJourneyManifest(manifest).ok).toBe(true);
+
+  navigation.navigation.toUrl = { text: '[redacted]', edited: false, redacted: true };
+  const unmarked = validateJourneyManifest(manifest);
+  expect(unmarked.ok).toBe(false);
+  if (!unmarked.ok) expect(unmarked.errors).toContain('journey.steps[2].navigation.toUrl.redacted text must be marked edited');
+
+  navigation.navigation.toUrl = { text: '[redacted]', edited: false, redacted: false };
+  const unedited = validateJourneyManifest(manifest);
+  expect(unedited.ok).toBe(false);
+  if (!unedited.ok) expect(unedited.errors).toContain('journey.steps[2].navigation.toUrl.text must be a complete HTTP(S) URL');
+});
+
 test('batches cannot reuse pending capture IDs or cross the aggregate field-text budget', () => {
   const recording = recordingSession();
   const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
@@ -759,6 +854,21 @@ function reviewingSession() {
   const stopped = stopJourney(recording, {
     epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user',
   });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing fixture');
+  return stopped;
+}
+
+function reviewingWithNavigation() {
+  const recording = recordingSession();
+  if (recording.phase !== 'recording') throw new Error('expected recording fixture');
+  const navigated = commitJourneyNavigation(recording, {
+    epoch: 1, id: 'step-navigation', observedAt: '2026-09-20T12:00:02.000Z', elapsedMs: 2_000,
+    sourceUrl: 'https://example.com/start', toUrl: 'https://example.com/reset?token=private-token-9q',
+    previousDocumentToken: 'document-1', documentToken: 'document-2',
+    image: { status: 'unavailable', reason: 'superseded' },
+  });
+  if (navigated.phase !== 'recording' || navigated.draft.steps.length !== 2) throw new Error('expected navigation step');
+  const stopped = stopJourney(navigated, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
   if (stopped.phase !== 'reviewing') throw new Error('expected reviewing fixture');
   return stopped;
 }

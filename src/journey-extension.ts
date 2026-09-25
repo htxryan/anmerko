@@ -1034,7 +1034,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (typeof message.epoch !== 'number' || typeof message.journeyId !== 'string'
         || typeof message.revision !== 'number' || typeof message.updatedAt !== 'string'
         || typeof message.stepId !== 'string'
-        || (message.url !== 'source' && message.url !== 'capture')) {
+        || (message.url !== 'source' && message.url !== 'capture' && message.url !== 'destination')) {
         throw new Error(GENERIC_ERROR);
       }
       await withPersistedState(controller.redactUrl({

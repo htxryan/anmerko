@@ -173,7 +173,7 @@ export function journeyDraftToManifest(draft: JourneyDraftV1): JourneyManifestV1
       return {
         ...base, kind: 'navigation' as const,
         navigation: {
-          toUrl: reviewedText(step.navigation.toUrl, false, false),
+          toUrl: redactedUrl(step.navigation.toUrl),
           ...(step.navigation.causedByStepId ? { causedByStepId: step.navigation.causedByStepId } : {}),
         },
       };
@@ -211,12 +211,17 @@ export function journeyPromptSection(manifests: JourneyManifestV1[]): string {
   }
   const lines = ['## Recorded journeys', ''];
   manifests.forEach((manifest, index) => {
-    const sources = new Set(manifest.steps.map(step => step.sourceUrl.text));
+    // Every redacted URL counts as the same opaque page, so the scope never
+    // depends on a hidden value.
+    const page = (url: ReviewedText) => url.redacted ? JOURNEY_REDACTED_URL : url.text;
+    const pages = new Set(manifest.steps.flatMap(step => step.kind === 'navigation'
+      ? [page(step.sourceUrl), page(step.navigation.toUrl)]
+      : [page(step.sourceUrl)]));
     lines.push(
       `### Journey ${index + 1} · ${inlineCode(manifest.id)}`, '',
       `- **Revision:** ${manifest.revision}`,
       `- **Steps:** ${manifest.steps.length}`,
-      `- **Scope:** ${sources.size > 1 ? 'Spans pages (full sequence in journeys.md)' : 'Single page'}`,
+      `- **Scope:** ${pages.size > 1 ? 'Spans pages (full sequence in journeys.md)' : 'Single page'}`,
       `- **Full sequence and screenshots:** journeys.md, Journey ${index + 1}`, '',
       'Expected:', literalBlock(manifest.expected), '',
       'Actual:', literalBlock(manifest.actual), '',
