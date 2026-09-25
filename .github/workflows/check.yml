@@ -302,9 +302,7 @@ jobs:
 
   release-proof:
     name: Release proof
-    # Hosted macOS Chrome misses component-context deadlines when this proof's
-    # desktop job overlaps the PR's own macOS desktop job, so run it afterwards.
-    needs: [changes, desktop]
+    needs: changes
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.releasegate == 'true' }}
     permissions:
       contents: read
