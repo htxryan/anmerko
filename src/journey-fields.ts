@@ -1,6 +1,7 @@
 import { JOURNEY_LIMITS } from './journey-limits';
 import { stripUrlCredentials, type JourneyFieldChangeEvent } from './journey-events';
 import type { DraftFieldValue } from './journey-core';
+import { journeySelectorPath, parentAcrossShadow } from './journey-selector';
 import { createUuid } from './uuid';
 
 export interface JourneyFieldsOptions {
@@ -63,12 +64,6 @@ function fieldKind(element: FieldElement): FieldKind | null {
   if (TEXT_INPUT_TYPES.has(type)) return 'text';
   if (type === 'checkbox' || type === 'radio') return 'check';
   return null;
-}
-
-function parentAcrossShadow(element: Element): Element | null {
-  if (element.parentElement) return element.parentElement;
-  const root = element.getRootNode();
-  return root instanceof ShadowRoot ? root.host : null;
 }
 
 function insideExtensionUi(element: Element): boolean {
@@ -174,24 +169,6 @@ function roleFor(element: FieldElement): string {
   return 'textbox';
 }
 
-function selectorSegment(element: Element): string {
-  const tag = element.localName;
-  const parent = element.parentElement ?? (element.getRootNode() instanceof ShadowRoot ? element.getRootNode() as ShadowRoot : null);
-  if (!parent) return tag;
-  const siblings = Array.from(parent.children).filter(candidate => candidate.localName === tag);
-  return siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(element) + 1})` : tag;
-}
-
-function structuralSelector(element: Element): string[] {
-  const segments: string[] = [];
-  let current: Element | null = element;
-  while (current && segments.length < 12) {
-    segments.push(selectorSegment(current));
-    current = parentAcrossShadow(current);
-  }
-  return segments.reverse();
-}
-
 function visibleViewport(): { width: number; height: number } {
   const visual = window.visualViewport;
   return { width: Math.round(visual?.width ?? window.innerWidth), height: Math.round(visual?.height ?? window.innerHeight) };
@@ -239,7 +216,7 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
       target: {
         tag: element.localName,
         role: roleFor(element),
-        selectorPath: structuralSelector(element),
+        selectorPath: journeySelectorPath(element),
         label: genericLabel(element),
         editable: true,
         viewport: visibleViewport(),

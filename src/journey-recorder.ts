@@ -1,5 +1,6 @@
 import { createUuid } from './uuid';
 import { stripUrlCredentials, type JourneyClickEvent, type JourneyEventBatchV1, type JourneyFieldChangeEvent } from './journey-events';
+import { journeySelectorPath, parentAcrossShadow } from './journey-selector';
 
 export type JourneyRecorderOptions = {
   sessionId: string;
@@ -27,12 +28,6 @@ const SEMANTIC_ROLES = new Set([
 const ROLE_BY_TAG: Record<string, string> = {
   a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
 };
-
-function parentAcrossShadow(element: Element): Element | null {
-  if (element.parentElement) return element.parentElement;
-  const root = element.getRootNode();
-  return root instanceof ShadowRoot ? root.host : null;
-}
 
 function isEditableElement(element: Element): boolean {
   return EDITABLE_TAGS.has(element.localName)
@@ -106,24 +101,6 @@ function safeText(element: Element): string {
   };
   visit(element);
   return characters.join('') || genericLabel(element);
-}
-
-function selectorSegment(element: Element): string {
-  const tag = element.localName;
-  const parent = element.parentElement ?? (element.getRootNode() instanceof ShadowRoot ? element.getRootNode() as ShadowRoot : null);
-  if (!parent) return tag;
-  const siblings = Array.from(parent.children).filter(candidate => candidate.localName === tag);
-  return siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(element) + 1})` : tag;
-}
-
-function structuralSelector(element: Element): string[] {
-  const segments: string[] = [];
-  let current: Element | null = element;
-  while (current && segments.length < 12) {
-    segments.push(selectorSegment(current));
-    current = parentAcrossShadow(current);
-  }
-  return segments.reverse();
 }
 
 function eventTarget(event: MouseEvent): Element | null {
@@ -221,7 +198,7 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
       target: {
         tag: target.localName,
         ...(role ? { role } : {}),
-        selectorPath: structuralSelector(target),
+        selectorPath: journeySelectorPath(target),
         label: safeText(target),
         editable: !!editableAncestor(target),
         viewport,

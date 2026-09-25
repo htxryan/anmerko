@@ -1,5 +1,6 @@
 import type { DraftFieldValue, DraftSafeTarget, ValidationResult } from './journey-core';
 import { CAPTURE_FAILURES, JOURNEY_LIMITS } from './journey-limits';
+import { validJourneySelectorPath } from './journey-selector';
 
 interface JourneyInputEventBase {
   id: string;
@@ -91,9 +92,7 @@ function validateTarget(value: unknown, path: string, errors: string[]): void {
   exactKeys(value, ['tag', 'selectorPath', 'label', 'viewport', 'scroll', 'editable'], ['role', 'point'], path, errors);
   if (typeof value.tag !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(value.tag)) errors.push(`${path}.tag is invalid`);
   if (value.role !== undefined && (typeof value.role !== 'string' || !value.role.trim() || characters(value.role) > 64)) errors.push(`${path}.role is invalid`);
-  if (!Array.isArray(value.selectorPath) || value.selectorPath.length < 1 || value.selectorPath.length > JOURNEY_LIMITS.maxTargetSegments
-    || value.selectorPath.some(segment => typeof segment !== 'string' || characters(segment) > JOURNEY_LIMITS.maxSelectorSegmentCharacters
-      || !/^[a-z][a-z0-9-]*(?::nth-of-type\([1-9]\d*\))?$/.test(segment))) errors.push(`${path}.selectorPath is invalid`);
+  if (!validJourneySelectorPath(value.selectorPath)) errors.push(`${path}.selectorPath is invalid`);
   if (typeof value.label !== 'string' || !value.label.trim() || characters(value.label) > JOURNEY_LIMITS.maxTargetTextCharacters) errors.push(`${path}.label is invalid`);
   if (typeof value.editable !== 'boolean') errors.push(`${path}.editable must be a boolean`);
   validateViewport(value.viewport, `${path}.viewport`, errors);

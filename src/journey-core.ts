@@ -5,6 +5,7 @@ import {
   type JourneyEventBatchV1,
   type JourneyInputEvent,
 } from './journey-events';
+import { validJourneySelectorPath } from './journey-selector';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -385,11 +386,7 @@ function validateTarget(value: unknown, path: string, errors: string[], reviewed
   exactKeys(value, ['tag', 'selectorPath', 'label', 'editable', 'viewport', 'scroll'], ['role', 'point'], path, errors);
   if (typeof value.tag !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(value.tag)) errors.push(`${path}.tag is invalid`);
   if (value.role !== undefined && (typeof value.role !== 'string' || !value.role.trim() || characters(value.role) > 64)) errors.push(`${path}.role is invalid`);
-  if (!Array.isArray(value.selectorPath) || value.selectorPath.length < 1 || value.selectorPath.length > JOURNEY_LIMITS.maxTargetSegments
-    || value.selectorPath.some(segment => typeof segment !== 'string' || characters(segment) > JOURNEY_LIMITS.maxSelectorSegmentCharacters
-      || !/^[a-z][a-z0-9-]*(?::nth-of-type\([1-9]\d*\))?$/.test(segment))) {
-    errors.push(`${path}.selectorPath is invalid`);
-  }
+  if (!validJourneySelectorPath(value.selectorPath)) errors.push(`${path}.selectorPath is invalid`);
   if (reviewed) validateReviewedText(value.label, `${path}.label`, errors);
   else if (typeof value.label !== 'string' || !value.label.trim() || characters(value.label) > JOURNEY_LIMITS.maxTargetTextCharacters) errors.push(`${path}.label is invalid`);
   if (reviewed && isObject(value.label) && typeof value.label.text === 'string' && characters(value.label.text) > JOURNEY_LIMITS.maxTargetTextCharacters) errors.push(`${path}.label.text is too long`);

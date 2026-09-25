@@ -319,8 +319,9 @@ test('uses bounded visible text and structural selectors without reading editabl
   expect(button.label).toHaveLength(120);
   expect(button.label.startsWith('Visible label')).toBe(true);
   expect(button.selectorPath).toHaveLength(12);
+  expect(button.selectorPath[0]).toBe('…');
   expect(button.selectorPath.at(-1)).toBe('button');
-  expect(button.selectorPath.every((segment: string) => /^[a-z][a-z0-9-]*(?::nth-of-type\([1-9][0-9]*\))?$/.test(segment))).toBe(true);
+  expect(button.selectorPath.slice(1).every((segment: string) => /^[a-z][a-z0-9-]*(?::nth-of-type\([1-9][0-9]*\))?$/.test(segment))).toBe(true);
   expect(JSON.stringify(button)).not.toMatch(/secret-id|secret-name|attribute-secret|aria-secret/);
   expect(recorded[1].events[0].target).toMatchObject({ tag: 'input', role: 'textbox', label: 'text field' });
   expect(recorded[1].events[0].target.editable).toBe(true);
