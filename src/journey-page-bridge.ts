@@ -218,8 +218,9 @@ function mountJourneyStrip(
   const listeners = new AbortController();
   // An on-screen keyboard shrinks only the visual viewport, and the browser
   // scrolls the field being typed into toward its bottom edge. The strip
-  // follows the visible bottom edge, and moves to the visible top while
-  // typing or while a keyboard is open, unless the field is up there.
+  // follows the visible bottom edge, and moves to the visible top while a
+  // keyboard is open or the field being typed into reaches the bottom edge,
+  // unless the field is up there.
   const place = () => {
     const visual = window.visualViewport;
     const top = visual?.offsetTop ?? 0;
@@ -227,11 +228,13 @@ function mountJourneyStrip(
     const covered = Math.max(0, Math.round(innerHeight - (top + height)));
     const size = host.getBoundingClientRect().height || STRIP_HEIGHT;
     const field = focusedEditable();
-    let atTop = !!field || innerHeight - height * (visual?.scale ?? 1) > KEYBOARD_SHRINK;
+    let atTop = innerHeight - height * (visual?.scale ?? 1) > KEYBOARD_SHRINK;
     if (field) {
       const rect = field.getBoundingClientRect();
       const covers = (from: number) => rect.bottom > from && rect.top < from + size;
-      if (covers(top + STRIP_GAP) && !covers(top + height - STRIP_GAP - size)) atTop = false;
+      const bottom = covers(top + height - STRIP_GAP - size);
+      if (bottom) atTop = true;
+      if (covers(top + STRIP_GAP) && !bottom) atTop = false;
     }
     host.style.setProperty('top', atTop ? `calc(${Math.round(top) + STRIP_GAP}px + env(safe-area-inset-top, 0px))` : 'auto', 'important');
     host.style.setProperty('bottom', atTop ? 'auto' : `calc(${STRIP_GAP + covered}px + env(safe-area-inset-bottom, 0px))`, 'important');

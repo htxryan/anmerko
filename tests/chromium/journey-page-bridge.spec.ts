@@ -470,6 +470,7 @@ test('the strip keeps clear of the field being typed into while the keyboard is 
     document.body.innerHTML = `
       <input id="low" aria-label="Low field" style="position:fixed;left:20px;top:493px;height:37px;width:260px;margin:0;box-sizing:border-box">
       <textarea id="high" aria-label="High field" style="position:fixed;left:20px;top:14px;height:40px;width:260px;margin:0;box-sizing:border-box"></textarea>
+      <input id="bottom" aria-label="Bottom field" style="position:fixed;left:20px;top:790px;height:37px;width:260px;margin:0;box-sizing:border-box">
       <button id="plain" style="position:fixed;left:20px;top:300px">Plain</button>`;
     viewing.disposeJourneyPage = viewing.anmerkoJourneyPageBridge.bindJourneyPage();
   });
@@ -494,12 +495,16 @@ test('the strip keeps clear of the field being typed into while the keyboard is 
   await page.locator('#low').focus();
   await keyboard(526);
   expect((await clear('#low', 526)).y).toBe(12);
-  // Focus alone moves it too, before the keyboard resizes anything.
+  // Without a keyboard, a field clear of the bottom edge leaves the strip
+  // there; one that reaches it, such as a field the browser scrolled into
+  // view above a keyboard that resized the page, sends it to the top.
   await keyboard(844);
   await page.locator('#plain').focus();
   await expect.poll(async () => (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.hostRect.y).toBeGreaterThan(700);
   await page.locator('#low').focus();
-  expect((await clear('#low', 844)).y).toBe(12);
+  expect((await clear('#low', 844)).y).toBeGreaterThan(700);
+  await page.locator('#bottom').focus();
+  expect((await clear('#bottom', 844)).y).toBe(12);
 
   // A field at the top keeps the strip on the bottom edge, above the keyboard.
   await page.locator('#high').focus();
