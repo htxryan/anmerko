@@ -10,17 +10,25 @@ import { execFileSync } from 'node:child_process';
 import { buildSync } from 'esbuild';
 
 const ORIGIN = 'http://127.0.0.1:4173';
-type Fixtures = { context: BrowserContext; worker: Worker; page: Page; activate: (page: Page) => Promise<void>; touch: boolean; nativeWindow: boolean; capturePermission: boolean; scrollbars: boolean; edgeAndroid: boolean };
+type Fixtures = { context: BrowserContext; worker: Worker; page: Page; activate: (page: Page) => Promise<void>; touch: boolean; nativeWindow: boolean; capturePermission: boolean; scrollbars: boolean; edgeAndroid: boolean; journeys: boolean | undefined };
 const test = base.extend<Fixtures>({
   touch: [false, { option: true }],
   edgeAndroid: [false, { option: true }],
   scrollbars: [false, { option: true }],
   capturePermission: [false, { option: true }],
   nativeWindow: [false, { option: true }],
-  context: async ({ touch, nativeWindow, capturePermission, scrollbars, edgeAndroid }, use, testInfo) => {
+  // Undefined tests the current dist; a boolean builds that journey flag state.
+  journeys: [undefined, { option: true }],
+  context: async ({ touch, nativeWindow, capturePermission, scrollbars, edgeAndroid, journeys }, use, testInfo) => {
     const temp = await mkdtemp(path.join(tmpdir(), 'anmerko-test-'));
     const extension = path.join(temp, 'extension');
-    await cp('dist', extension, { recursive: true });
+    if (journeys === undefined) await cp('dist', extension, { recursive: true });
+    else {
+      const root = path.join(temp, 'build');
+      for (const file of ['src', 'public', 'package.json']) await cp(file, path.join(root, file), { recursive: true });
+      execFileSync(process.execPath, [path.resolve('scripts/extension/build.mjs')], { cwd: root, env: { ...process.env, ANMERKO_JOURNEYS: journeys ? '1' : '0' } });
+      await cp(path.join(root, 'dist'), extension, { recursive: true });
+    }
     const manifest = JSON.parse(await readFile(path.join(extension, 'manifest.json'), 'utf8'));
     // Automation cannot click Chrome's toolbar to grant activeTab. Only the test
     // copy gets localhost access; all injection/storage code remains production code.
@@ -154,6 +162,51 @@ test('comment button bar focuses actions in order, page scope and mixed prompt e
   await expect(notes(other)).toHaveCount(2);
 });
 
+test.describe('release builds', () => {
+  test.use({ journeys: false });
+  test('request the shipped permissions and keep the three comment actions', async ({ page, worker, activate }) => {
+    expect(await worker.evaluate(() => chrome.runtime.getManifest().permissions)).toEqual(['activeTab', 'scripting', 'storage', 'clipboardWrite', 'sidePanel']);
+    await activate(page);
+    const actions = panel(page).getByRole('group', { name: 'Comment Actions' });
+    await expect(actions.getByRole('button')).toHaveCount(3);
+    await expect(panel(page).getByRole('button', { name: 'More Comment Options' })).toHaveCount(0);
+    await expect(panel(page).locator('#comment-menu')).toHaveCount(0);
+  });
+});
+
+test.describe('journey builds', () => {
+  test.use({ journeys: true });
+  test('comment menu supports keyboard navigation and dismissal and disables during a draft', async ({ page, worker, activate }) => {
+    expect(await worker.evaluate(() => chrome.runtime.getManifest().permissions))
+      .toEqual(['activeTab', 'scripting', 'storage', 'clipboardWrite', 'sidePanel', 'alarms', 'webNavigation']);
+    await activate(page);
+    const toggle = panel(page).getByRole('button', { name: 'More Comment Options' });
+    const journey = panel(page).getByRole('menuitem', { name: 'Record journey', exact: true });
+    await toggle.press('ArrowDown');
+    await expect(journey).toBeFocused();
+    for (const key of ['ArrowDown', 'ArrowUp', 'End', 'Home']) {
+      await journey.press(key);
+      await expect(journey).toBeFocused();
+    }
+    await journey.press('Escape');
+    await expect(toggle).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.press('ArrowUp');
+    await expect(journey).toBeFocused();
+    await journey.press('Tab');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(journey).toBeVisible();
+    await page.locator('#hero-title').click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(journey).toBeHidden();
+    await panel(page).getByRole('button', { name: 'New Global Comment', exact: true }).click();
+    await expect(toggle).toBeDisabled();
+    await panel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(toggle).toBeEnabled();
+  });
+});
+
 for (const touch of [false, true]) test.describe(`minimized global comments (${touch ? 'touch' : 'desktop'})`, () => {
   test.use({ touch });
   test('quick action focuses a page comment, cancels or saves, and returns to the minimized controls', async ({ page, activate }) => {
@@ -185,6 +238,30 @@ for (const touch of [false, true]) test.describe(`minimized global comments (${t
     await expect(page.locator('.pin')).toHaveCount(0);
     await quick.getByRole('button', { name: 'Show anmerko comments' }).click();
     await expect(panel(page).getByLabel('Comment 1', { exact: true })).toHaveValue('Quick overall feedback.');
+  });
+});
+
+for (const touch of [false, true]) test.describe(`SPA route changes (${touch ? 'touch' : 'desktop'})`, () => {
+  test.use({ touch });
+  test('keep a minimized floating panel minimized and still cancel element selection', async ({ page, activate }) => {
+    await activate(page);
+    const quick = page.getByRole('group', { name: 'Quick Comment Actions' });
+    await panel(page).getByRole('button', { name: 'Minimize comments' }).click();
+    await expect(quick).toBeVisible();
+    await page.evaluate(() => history.pushState({}, '', '/minimized-route'));
+    // The hidden panel's status confirms the route poll handled the change.
+    await expect(page.locator('anmerko-overlay p.status')).toHaveText('Showing comments for this page.');
+    await expect(quick).toBeVisible();
+    await expect(panel(page)).toBeHidden();
+    await quick.getByRole('button', { name: 'Show anmerko comments' }).click();
+    await panel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
+    const picker = page.locator('anmerko-overlay .picker-bar');
+    await expect(picker).toBeVisible();
+    await page.evaluate(() => { location.hash = 'selecting'; });
+    await expect(picker).toBeHidden();
+    await expect(panel(page).getByRole('button', { name: 'Select Element', exact: true })).toBeVisible();
+    await page.locator('#hero-title').click();
+    await expect(panel(page).getByLabel('Comment', { exact: true })).toHaveCount(0);
   });
 });
 

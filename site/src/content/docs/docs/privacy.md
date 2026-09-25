@@ -26,7 +26,7 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 | Permission | Use |
 | --- | --- |
 | `activeTab` | Access the site after you activate anmerko |
-| `scripting` | Add annotation controls |
+| `scripting` | Add annotation controls and, when enabled, inspect bounded component-name metadata on the selected page |
 | `storage` | Save feedback and settings locally |
 | `alarms` | Time out a recording and expire stale reviews |
 | `clipboardWrite` | Copy the requested prompt |
