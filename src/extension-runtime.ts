@@ -50,6 +50,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let sidebarNeedsReconnect = false;
   let sidebarPort: chrome.runtime.Port | undefined;
   let sidebarHandedOff: ((version: number) => void) | undefined;
+  let resumeSidebarPort: (() => void) | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
     return api.tabs.sendMessage(targetTab, { type, ...extra });
@@ -71,6 +72,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     },
     async changeLayout(mode, state, mobile) {
       if (native && ['overlay', 'minimized', 'closed'].includes(mode)) {
+        if (!sidebarPort) resumeSidebarPort?.();
         if (sidebarClosing || !sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
         const version = sidebarRequestVersion;
         sidebarPort.postMessage({
@@ -177,6 +179,18 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
       }
+      // An idle background drops this port while the sidebar still shows its
+      // page. A layout reopens it for that tab within the same click, so the
+      // woken background receives the startup request before the layout and
+      // hands the page over exactly as for a sidebar that never idled.
+      resumeSidebarPort = () => {
+        if (signal.aborted || sidebarPort || sidebarClosing || targetTab === undefined || windowId === undefined) return;
+        const version = ++connectionVersion;
+        try { connectionPort().postMessage({ tabId: targetTab, windowId, version }); }
+        catch { return; }
+        sidebarRequestVersion = version;
+        sidebarReopenVersion = version;
+      };
       // Chrome can show a closed sidebar's document again. Once a closing layout
       // hands the page its view, that document keeps the connection prompt until
       // a fresh owner answers, so a stale panel never offers a refused Float.

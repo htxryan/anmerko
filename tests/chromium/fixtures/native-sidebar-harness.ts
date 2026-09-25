@@ -15,6 +15,7 @@ const ports: {
   onDisconnect: ReturnType<typeof event>;
   serverMessages?: ReturnType<typeof event>;
   serverDisconnect?: ReturnType<typeof event>;
+  posted: unknown[];
   closed: boolean;
 }[] = [];
 const requests: any[] = [];
@@ -37,12 +38,13 @@ Object.assign(globalThis, { chrome: {
     onMessage: runtimeMessages,
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
-      const port: (typeof ports)[number] = { onMessage: event(), onDisconnect: event(), closed: false };
+      const port: (typeof ports)[number] = { onMessage: event(), onDisconnect: event(), posted: [], closed: false };
       ports.push(port);
       return { ...port, postMessage(request: any) {
         if (port.closed) throw new Error('Disconnected port');
         if (request.type === 'ANMERKO_SIDEBAR_LAYOUT') layoutSequence.push('port-post');
         requests.push(request);
+        port.posted.push(request);
         port.serverMessages?.emit(request);
       }, disconnect() { port.closed = true; } };
     },
@@ -104,7 +106,8 @@ Object.assign(globalThis, { nativeHarness: {
       closed: async () => { backgroundModes.push('minimized'); },
       layout: async (_tabId, _windowId, mode) => { backgroundModes.push(mode); },
     }, backgroundOwners);
-    for (const request of requests) serverMessages.emit(request);
+    // A background serves only what its own port carried.
+    for (const request of port.posted) serverMessages.emit(request);
   },
   resetLayoutSequence() { layoutSequence.length = 0; },
   failLayout() {

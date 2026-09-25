@@ -96,6 +96,8 @@ The demo imports the same controller and `src/panel.css` as the extension. Keep 
 
 Guard pending saves and drafts before closing. Disposal removes listeners, subscriptions, and timers. Chrome can reuse a sidebar after `pagehide`; keep its controller until explicit disposal or context destruction.
 
+The native sidebar's `anmerko-sidebar` port carries page ownership and layout handoff. An idle background drops it (Chrome stops the worker after about 30 seconds; Firefox unloads its event page). The sidebar does not reconnect in a keepalive loop; Float, Minimize, or Close reopens the port in the same click and posts the startup request ahead of the layout.
+
 Chromium tests use disposable profiles and test-only activation/capture permissions; release packages exclude those permissions. Branded Chrome checks use the unchanged production manifest.
 
 Component-context fixtures use port 4177 and strict CSP, with no CDN requests. The shared fixture package pins React/React DOM 18.3.1, 19.2.7 and 19.3.0 plus Vue/compiler-sfc 3.5.43; Angular 22.1.7 has an isolated AOT compiler package. The root setup command installs their committed lockfiles with lifecycle scripts disabled, explicitly rebuilds the reviewed Angular esbuild binary, and builds all modes. React aliases use explicit matching bundler resolution; `--legacy-peer-deps` applies only to that intentional multi-version test package. Neither framework runtimes nor their compilers ship with the extension or demo.

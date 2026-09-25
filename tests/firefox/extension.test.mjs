@@ -561,6 +561,26 @@ test('Firefox reconnects its sidebar after idle background shutdown and a protec
   assert.equal(await (await ui('.panel')).isDisplayed(), false);
 }));
 
+test('Firefox floats and minimizes a docked sidebar on the first click after idle background shutdown', { timeout: 90000 }, async t => session(t, async ({ driver, ui, activateDock, docked, dockClick }) => {
+  const width = await driver.executeScript(() => innerWidth);
+  const dockedAndIdle = async () => {
+    await activateDock();
+    await driver.wait(async () => await driver.executeScript(() => innerWidth) < width - 150, 5000, 'docking reduces width');
+    await driver.wait(() => docked("return root?.querySelector('.connection-prompt')?.hidden === true && !!root.querySelector('.minimize')"), 5000);
+    // The unloaded event page closes the sidebar's port; the sidebar still shows its page.
+    await suspendBackground(driver);
+  };
+  await dockedAndIdle();
+  await dockClick('.dock');
+  await driver.wait(async () => await driver.executeScript(() => innerWidth) === width, 5000, 'floating after idle shutdown closes the sidebar');
+  await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'floating after idle shutdown shows the page panel');
+  await dockedAndIdle();
+  await dockClick('.minimize');
+  await driver.wait(async () => await driver.executeScript(() => innerWidth) === width, 5000, 'minimizing after idle shutdown closes the sidebar');
+  await driver.wait(async () => (await ui('.resume'))?.isDisplayed(), 5000, 'minimizing after idle shutdown shows the resume button');
+  assert.equal(await (await ui('.panel')).isDisplayed(), false);
+}));
+
 test('Firefox default process isolation reconnects after a protected tab and fresh toolbar activation', { timeout: 90000 }, async t => session(t, async ({ driver, ui, activateDock }) => {
   await activateDock();
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'initial remote sidebar handoff completes');

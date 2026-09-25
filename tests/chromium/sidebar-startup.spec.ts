@@ -207,6 +207,36 @@ test('native Float posts a one-way port command before close and reports a live-
   expect(await run(page, `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`)).toBe(2);
 });
 
+test('native Float after idle shutdown reopens the port with its startup request before the layout, in the click', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply()');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await expect(panel.locator('.connection-prompt')).toBeHidden();
+  // The idle background drops the port; the sidebar still shows its page.
+  await run(page, 'nativeHarness.disconnect()');
+  expect(await run(page, 'nativeHarness.connections')).toBe(1);
+
+  await run(page, 'nativeHarness.resetLayoutSequence()');
+  await panel.getByRole('button', { name: 'Float panel', exact: true }).click();
+  // Firefox still closes the sidebar within the click, after both port posts.
+  expect(await run(page, 'nativeHarness.layoutSequence')).toEqual(['port-post', 'close']);
+  expect(await run(page, 'nativeHarness.connections')).toBe(2);
+  const [startup, layout] = await run(page, 'nativeHarness.requests.slice(-2)') as any[];
+  expect(startup).toEqual({ tabId: 1, windowId: 1, version: expect.any(Number) });
+  expect(layout).toEqual({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: startup.version, mode: 'overlay',
+    state: expect.objectContaining({ url: 'http://127.0.0.1:4173/page' }),
+  });
+  expect(await run(page, 'nativeHarness.layoutMessages')).toEqual([]);
+  await expect(panel.locator('.status')).not.toContainText('Could not change layout');
+  // The woken background activates the page for the new request, then applies the layout.
+  await run(page, 'nativeHarness.bindBackground()');
+  await expect.poll(() => run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'overlay']);
+});
+
 test('page lifecycle fallback reconnects a reused sidebar document', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');

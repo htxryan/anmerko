@@ -1431,6 +1431,39 @@ test.describe('native desktop docking', () => {
   });
 });
 
+test.describe('idle background sidebar layouts', () => {
+  test.use({ nativeWindow: true });
+  for (const [control, restored] of [['.dock', 'floating'], ['.minimize', 'minimized']] as const) {
+    test(`a docked sidebar applies ${restored} on the first click after the idle worker stops`, async ({ page, context, worker }) => {
+      await worker.evaluate(async url => {
+        const tab = (await chrome.tabs.query({})).find(t => t.url === url)!;
+        await chrome.scripting.executeScript({ target: { tabId: tab.id! }, files: ['content.js'] });
+        await chrome.tabs.sendMessage(tab.id!, { type: 'ANMERKO_PRESENT', mode: 'overlay', canDock: true });
+      }, page.url());
+      await page.getByRole('button', { name: 'Dock sidebar', exact: true }).click();
+      const dock = await sidebar(context, page);
+      await expect(panel(page)).toBeHidden();
+      // Chrome stops an idle worker after 30 seconds, which closes the sidebar's
+      // port while the sidebar still shows its connected editor.
+      const cdp = await context.newCDPSession(page);
+      const workerRunning = async () => (await cdp.send('Target.getTargets')).targetInfos
+        .some(target => target.type === 'service_worker' && target.url === worker.url());
+      expect(await workerRunning()).toBe(true);
+      await dock.command('ServiceWorker.enable');
+      await dock.command('ServiceWorker.stopAllWorkers');
+      await expect.poll(workerRunning).toBe(false);
+      // Let the sidebar observe its closed port before the click.
+      await page.waitForTimeout(500);
+      await dock.click(control);
+      if (restored === 'floating') await expect(panel(page)).toBeVisible();
+      else await expect(page.getByRole('button', { name: 'Show anmerko comments' })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(1300);
+      // The layout's port woke the worker again.
+      await expect.poll(workerRunning).toBe(true);
+    });
+  }
+});
+
 test.describe('mobile docking exclusion', () => {
   test.use({ touch: true });
   test('does not offer docking even in landscape or when the browser advertises a sidebar API', async ({ page, worker }) => {
