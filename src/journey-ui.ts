@@ -103,6 +103,11 @@ const stopNotices: Record<StopReason, string> = {
 
 const PAGE_LOAD_NOTICE = 'In Firefox, reloading the page or opening another page ends the journey there. Navigation inside the page, such as a single-page app route change, keeps recording.';
 const START_ELSEWHERE = 'To record a new journey, go to the website tab, click anmerko in the browser toolbar or Extensions menu, and choose Record journey from More Comment Options.';
+// An unsaved review lives in session storage until it goes this long without
+// a change, so the browser also drops it on restart.
+const REVIEW_IDLE = `${JOURNEY_LIMITS.maxReviewIdleMs / 60_000} minutes`;
+// Rows lay their buttons out side by side; an error shows below the row.
+const ACTION_ROWS = '.journey-actions, .journey-step-actions, .journey-saved-actions, .journey-export-actions, .journey-url-actions, .journey-image-controls';
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
@@ -144,6 +149,17 @@ export function savedJourneyTime(updatedAt: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(time);
 }
 
+// Captures a second apart stay distinguishable, in the same local style as saved times.
+function capturedTime(capturedAt: string): string {
+  const time = Date.parse(capturedAt);
+  if (!Number.isFinite(time)) return 'at an unknown time';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(time);
+}
+
+function clockTime(ms: number): string {
+  return new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(ms);
+}
+
 // Accessible names repeat the title and time; identical ones gain an ordinal.
 function savedJourneyNames(items: JourneySavedSummary[]): Map<string, string> {
   const names = items.map(item => `${savedJourneyTitle(item)}, saved ${savedJourneyTime(item.updatedAt)}`);
@@ -171,11 +187,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   politeLive.setAttribute('aria-live', 'polite');
   const urgentLive = node('p');
   urgentLive.setAttribute('aria-live', 'assertive');
-  live.append(politeLive, urgentLive);
-  // A failed start is announced by inserting this alert once, not by the
-  // error text that each launch re-render rebuilds beside Start.
-  const startAlert = node('p');
-  startAlert.setAttribute('role', 'alert');
+  // Errors are announced here once each, not by the copy that every re-render
+  // rebuilds beside the control that failed.
+  const alertLive = node('p');
+  alertLive.setAttribute('role', 'alert');
+  live.append(politeLive, urgentLive, alertLive);
+  // Which error the alert region holds, so clearing one never withdraws another.
+  let alerting: 'start' | 'action' | null = null;
   // The mask and full-size dialogs live beside the view so review re-renders never remove them.
   const imageDialog = node('div', undefined, 'journey-image-dialog');
   const viewerDialog = node('div', undefined, 'journey-image-dialog');
@@ -187,6 +205,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let actionVersion = 0;
   let includeEnteredValues = false;
   let error = '';
+  // The controls, by focus ID, whose action set the error: it shows below the
+  // first one still rendered, or below the heading when none is.
+  let errorAt: string[] = [];
   let startError = '';
   // Seen: shown while this surface was visible. A start error that arrives
   // while the reader is on the website tab waits for them, focus included.
@@ -222,6 +243,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let rendering = false;
   let renderedPhase: JourneySession['phase'] | undefined;
   let announcedNotice = '';
+  let announcedDeadline = '';
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  // Set when an unsaved review this surface showed reaches its deadline, so
+  // the launch view says it was deleted instead of silently replacing it.
+  let expiredNotice = '';
+  let expiredAnnounced = false;
   let savedJourneys: JourneySavedSummary[] | null = null;
   let editingStepId: string | null = null;
   let editingText = '';
@@ -289,6 +316,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (!alive || current !== version) return;
       if ((next.phase === 'idle' || next.phase === 'saved')
         && state.phase !== 'idle' && state.phase !== 'saved') includeEnteredValues = false;
+      if (next.phase !== 'idle') expiredNotice = '';
+      else if (state.phase === 'reviewing' && Date.now() >= Date.parse(state.expiresAt)) {
+        expiredNotice = expiryNotice(state.draft, Date.parse(state.expiresAt));
+        expiredAnnounced = false;
+      }
       state = next;
       // A start error belongs to the launch view it failed in. Any other view
       // makes it stale, except the brief "starting" of the start it reports.
@@ -312,7 +344,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         }
       } else if (!heldBySaving) {
         if (next.phase === 'saved' && next.journeyId === acknowledgedFor
-          && (summaryPending !== null || heldImageChange !== null || imageEditor !== null)) error = LOST_EDITS;
+          && (summaryPending !== null || heldImageChange !== null || imageEditor !== null)) fail(LOST_EDITS);
         acknowledged = false;
         acknowledgedFor = '';
         summaryPending = null;
@@ -375,9 +407,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } catch (caught) {
       if (alive && current === version) {
         loadFailed = true;
-        error = caught instanceof Error && caught.message === JOURNEY_STORAGE_ERROR
+        fail(caught instanceof Error && caught.message === JOURNEY_STORAGE_ERROR
           ? JOURNEY_STORAGE_ERROR
-          : 'Could not load the journey. Reopen anmerko and try again.';
+          : 'Could not load the journey. Reopen anmerko and try again.');
         update();
       }
     }
@@ -409,12 +441,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const current = ++actionVersion;
       error = '';
       let request: Promise<void>;
+      const at = focusId ? [focusId] : [];
       try { request = operation(); }
-      catch (caught) { error = message(caught, 'Could not complete this action.'); render(); return; }
+      catch (caught) { fail(message(caught, 'Could not complete this action.'), ...at); render(); return; }
       busy = true;
       render();
       void request.catch(caught => {
-        if (current === actionVersion) error = message(caught, 'Could not complete this action. Try again.');
+        if (current === actionVersion) fail(message(caught, 'Could not complete this action. Try again.'), ...at);
       }).finally(() => {
         if (current !== actionVersion) return;
         busy = false;
@@ -433,6 +466,25 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
 
   function isStaleReview(caught: unknown): boolean {
     return caught instanceof Error && (caught as { code?: unknown }).code === 'stale-review';
+  }
+
+  function fail(text: string, ...at: string[]): void {
+    error = text;
+    errorAt = at;
+  }
+
+  // A mask, redaction, removal or value edit on its way to the draft. Save and
+  // export wait for it, so neither acts on the review it is about to replace.
+  function reviewMutating(): boolean {
+    return removing || valueBusy !== null || redactBusy !== null || imageBusy !== null;
+  }
+
+  function expiryNotice(draft: JourneyDraftV1, expiresAt: number): string {
+    const saved = savedRevision(draft);
+    const when = `at ${clockTime(expiresAt)}, ${REVIEW_IDLE} after the last change`;
+    if (saved?.revision === draft.revision) return `The review closed ${when}. The saved copy is still in Saved journeys.`;
+    if (saved) return `Your unsaved changes were deleted ${when}. The last saved copy is still in Saved journeys.`;
+    return `Your unsaved journey review was deleted ${when}.`;
   }
 
   function settling(): boolean {
@@ -469,8 +521,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     startError = '';
     startErrorSeen = false;
     startErrorFocus = false;
-    startAlert.remove();
-    startAlert.textContent = '';
+    if (alerting === 'start') { alertLive.textContent = ''; alerting = null; }
   }
 
   // Focus follows a failed start back to Start once this surface has focus, so
@@ -531,7 +582,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         written = true;
       } catch (caught) {
         if (heldBySave(caught)) summaryHeld = true;
-        else error = message(caught, 'Could not update the journey. Try again.');
+        else fail(message(caught, 'Could not update the journey. Try again.'), 'journey-summaries');
       } finally {
         summarySaving = false;
         summaryFlight = undefined;
@@ -566,6 +617,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function renderSummaries(draft: JourneyDraftV1): HTMLElement {
     const section = node('section', undefined, 'journey-summary');
     section.setAttribute('aria-label', 'Expected and actual summaries');
+    section.setAttribute('data-error-slot', 'journey-summaries');
     const areas = {} as Record<'expected' | 'actual', HTMLTextAreaElement>;
     const fields: Array<{ key: 'expected' | 'actual'; id: string; label: string; value: string }> = [
       { key: 'expected', id: 'journey-expected', label: 'Expected result', value: summaryPending?.expected ?? draft.expected ?? '' },
@@ -627,6 +679,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function refreshSaveGating(): void {
     if (state.phase !== 'reviewing' || summariesEntered(state.draft) === renderedSummaryReady) return;
     view.querySelector('.journey-save')?.replaceWith(renderSave(state.draft));
+    placeError();
   }
 
   function renderRemove(step: { id: string; seq: number }, steps: JourneyDraftStep[]): HTMLElement {
@@ -657,7 +710,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         error = '';
         render();
         void client.removeStep(step.id).then(() => { error = ''; }).catch(caught => {
-          error = message(caught, 'Could not remove this step. Try again.');
+          fail(message(caught, 'Could not remove this step. Try again.'), `remove-${step.id}`, `step-${step.id}`);
         }).finally(() => {
           removing = false;
           if (alive) void refresh();
@@ -714,7 +767,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } catch (caught) {
       // A mask drawn while another surface saves is applied once the review is back.
       if (heldBySave(caught) && journeyId) heldImageChange = { journeyId, step, imageId, change, returnTo, subject };
-      else error = message(caught, 'Could not update the screenshot. Try again.');
+      else fail(message(caught, 'Could not update the screenshot. Try again.'), returnTo, `mask-image-${step.id}`, `step-${step.id}`);
     } finally {
       imageBusy = null;
       if (alive) void refresh();
@@ -995,7 +1048,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       render();
       const wanted = editedValueFor(step.enteredValue, editingText, editingChecked);
       void client.editValue(step.id, wanted).then(() => { error = ''; }).catch(caught => {
-        error = message(caught, 'Could not update the journey. Try again.');
+        fail(message(caught, 'Could not update the journey. Try again.'), `save-value-${step.id}`, `edit-value-${step.id}`, `step-${step.id}`);
       }).finally(() => {
         valueBusy = null;
         if (error === '') editingStepId = null;
@@ -1054,7 +1107,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         error = '';
         render();
         void client.editValue(step.id, emptyValueFor(entered as { kind: string; multiple?: boolean })).then(() => { error = ''; }).catch(caught => {
-          error = message(caught, 'Could not update the journey. Try again.');
+          fail(message(caught, 'Could not update the journey. Try again.'), `remove-value-${step.id}`, `step-${step.id}`);
         }).finally(() => {
           valueBusy = null;
           if (alive) void refresh();
@@ -1094,7 +1147,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         pendingFocus = [`redact-${target}-${step.id}`, `redacted-${target}-${step.id}`, `step-${step.id}`];
         render();
         void client.redactUrl(step.id, target).then(() => { error = ''; }).catch(caught => {
-          error = message(caught, 'Could not update the journey. Try again.');
+          fail(message(caught, 'Could not update the journey. Try again.'), `redact-${target}-${step.id}`, `step-${step.id}`);
         }).finally(() => {
           redactBusy = null;
           if (alive) void refresh();
@@ -1114,7 +1167,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function renderSave(draft: JourneyDraftV1): HTMLElement {
     const section = node('section', undefined, 'journey-save');
     section.setAttribute('aria-label', 'Save journey');
-    section.append(node('h2', 'Save journey'));
+    const title = node('h2', 'Save journey');
+    title.tabIndex = -1;
+    title.setAttribute('data-focus-id', 'journey-save-heading');
+    section.append(title);
     const ackLabel = node('label', undefined, 'journey-option');
     const ack = node('input');
     ack.type = 'checkbox';
@@ -1146,7 +1202,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     const save = node('button', 'Save journey', 'journey-primary');
     save.type = 'button';
-    save.disabled = reasons.length > 0 || busy || saveBusy || imageBusy !== null;
+    save.disabled = reasons.length > 0 || busy || saveBusy || reviewMutating();
     save.setAttribute('aria-describedby', describedBy);
     save.setAttribute('data-focus-id', 'journey-save');
     save.addEventListener('click', () => {
@@ -1157,7 +1213,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       void summaryWritten().then(() => client.save(acknowledged)).then(() => {
         error = '';
       }).catch(caught => {
-        error = message(caught, 'Could not save this journey. Try again.');
+        fail(message(caught, 'Could not save this journey. Try again.'), 'journey-save');
       }).finally(() => {
         saveBusy = false;
         if (alive) void refresh();
@@ -1218,7 +1274,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch {
-      error = 'Could not copy the journey prompt. Use Download Markdown + Images to export this journey.';
+      fail('Could not copy the journey prompt. Use Download Markdown + Images to export this journey.', 'journey-copy');
     } finally {
       copyBusy = false;
     }
@@ -1240,9 +1296,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch (caught) {
-      error = message(caught, '') === EXPORT_SIZE_ERROR
+      fail(message(caught, '') === EXPORT_SIZE_ERROR
         ? EXPORT_SIZE_ERROR
-        : 'Could not download the journey. Try again.';
+        : 'Could not download the journey. Try again.', 'journey-download');
     } finally {
       downloadBusy = false;
     }
@@ -1325,9 +1381,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         void client.deleteSnapshot(item.journeyId, item.revision).then(() => {
           error = '';
         }).catch(caught => {
-          error = isStaleReview(caught)
+          fail(isStaleReview(caught)
             ? 'A saved journey changed. The list was reloaded; try again.'
-            : 'Could not delete this journey. Try again.';
+            : 'Could not delete this journey. Try again.', `delete-${item.journeyId}`, 'journey-saved-heading');
         }).finally(() => {
           deletingJourney = null;
           if (alive) void refreshSavedList();
@@ -1401,7 +1457,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
             }
           }
           deleteStatus = `Deleted ${deleted} of ${count(snapshot.length, 'journey')}.`;
-          error = failed.map(title => `Could not delete “${title}”.`).join(' ');
+          fail(failed.map(title => `Could not delete “${title}”.`).join(' '), 'delete-all', 'journey-saved-heading');
         })().finally(() => {
           deletingAll = false;
           if (alive) void refreshSavedList();
@@ -1558,7 +1614,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const image = draft.images[step.image.imageId];
       if (image) {
         item.append(...renderUrl(step, 'Screenshot URL', image.captureUrl, 'capture'));
-        item.append(node('p', `Captured ${image.capturedAt}`, 'journey-time'));
+        const captured = node('time', capturedTime(image.capturedAt));
+        captured.dateTime = image.capturedAt;
+        const time = node('p', 'Captured ', 'journey-time');
+        time.append(captured);
+        item.append(time);
         if (image.dataUrl) item.append(...renderPreview(step, step.image.imageId, image as JourneyDraftImage & { dataUrl: string }));
         item.append(renderImageReview(step, step.image.imageId, image, sharedSteps.get(step.image.imageId) ?? []));
       }
@@ -1595,6 +1655,79 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return node('p', text, `journey-notice journey-stop-reason${storage ? ' journey-notice-error' : ''}`);
   }
 
+  // Every review says up front how long unsaved work lasts. Once its deadline
+  // nears, a warning stays in view and is announced once per deadline; a
+  // change here moves the deadline and withdraws it.
+  function renderDeadline(draft: JourneyDraftV1, warningAt: number, expiresAt: number): HTMLElement[] {
+    const saved = savedRevision(draft);
+    const unchanged = draftIsSaved(draft);
+    const standing = node('p', unchanged
+      ? `This review closes after ${REVIEW_IDLE} without changes, and when the browser restarts. The saved copy stays in Saved journeys.`
+      : `Unsaved ${saved ? 'changes are' : 'reviews are'} deleted after ${REVIEW_IDLE} without changes, and when the browser restarts.`,
+    'journey-help journey-deadline-note');
+    const now = Date.now();
+    if (unchanged || !Number.isFinite(warningAt) || !Number.isFinite(expiresAt) || now < warningAt) return [standing];
+    const warning = node('div', undefined, 'journey-notice journey-notice-error journey-deadline');
+    const subject = saved ? 'Your unsaved changes' : 'This unsaved review';
+    const text = now >= expiresAt
+      ? `${subject} went ${REVIEW_IDLE} without changes and ${saved ? 'are' : 'is'} being deleted.`
+      : `${subject} will be deleted at ${clockTime(expiresAt)}. Save now, or make any change to keep reviewing.`;
+    warning.append(node('p', text));
+    if (now < expiresAt) {
+      const go = node('button', 'Go to Save', 'journey-secondary');
+      go.type = 'button';
+      go.setAttribute('data-focus-id', 'journey-go-to-save');
+      go.addEventListener('click', () => {
+        const save = view.querySelector<HTMLButtonElement>('[data-focus-id="journey-save"]');
+        const target = save && !save.disabled ? save : view.querySelector<HTMLElement>('[data-focus-id="journey-save-heading"]');
+        target?.focus({ preventScroll: true });
+        target?.scrollIntoView({ block: 'center' });
+      });
+      warning.append(go);
+    }
+    const key = `${draft.id}@${expiresAt}:${now >= expiresAt}`;
+    if (announcedDeadline !== key) {
+      announcedDeadline = key;
+      urgentLive.textContent = text;
+    }
+    return [standing, warning];
+  }
+
+  // Wakes the review when its warning is due, and re-reads it at its deadline
+  // in case the background's notice is late.
+  function scheduleDeadline(): void {
+    if (deadlineTimer !== undefined) { clearTimeout(deadlineTimer); deadlineTimer = undefined; }
+    if (state.phase !== 'reviewing' || !alive) return;
+    const now = Date.now();
+    const expiresAt = Date.parse(state.expiresAt);
+    const next = [Date.parse(state.warningAt), expiresAt].filter(at => Number.isFinite(at) && at > now);
+    if (next.length === 0) return;
+    const at = Math.min(...next);
+    deadlineTimer = setTimeout(() => {
+      deadlineTimer = undefined;
+      if (at === expiresAt) void refresh();
+      else update();
+    }, Math.min(at - now + 50, 2 ** 31 - 1));
+  }
+
+  // The error shows below the first rendered control it names, below that
+  // control's row of buttons, or below the heading.
+  function placeError(): void {
+    view.querySelector('#journey-error')?.remove();
+    if (!error) return;
+    const shown = node('p', error, 'journey-error');
+    shown.id = 'journey-error';
+    let anchor: Element | null = null;
+    for (const at of errorAt) {
+      const escaped = CSS.escape(at);
+      anchor = view.querySelector(`[data-focus-id="${escaped}"], [data-error-slot="${escaped}"]`);
+      if (anchor) break;
+    }
+    anchor = anchor ? anchor.closest(ACTION_ROWS) ?? anchor : view.querySelector('[data-focus-id="journey-heading"]');
+    if (anchor) anchor.after(shown);
+    else view.append(shown);
+  }
+
   function render() {
     if (!alive) return;
     const activeElement = scopeActiveElement();
@@ -1608,8 +1741,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const oldFocus = inView ? activeElement.textContent : null;
     const phaseChanged = renderedPhase !== undefined && renderedPhase !== state.phase;
     renderedPhase = state.phase;
-    if (state.phase !== 'reviewing' && announcedNotice) {
+    if (state.phase !== 'reviewing' && (announcedNotice || announcedDeadline)) {
       announcedNotice = '';
+      announcedDeadline = '';
       politeLive.textContent = '';
       urgentLive.textContent = '';
     }
@@ -1619,6 +1753,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     view.append(node('p', 'anmerko', 'journey-brand'));
     if (state.phase === 'idle') {
       view.append(heading('Record a journey'));
+      if (expiredNotice) {
+        const expired = node('p', expiredNotice, 'journey-notice journey-notice-error');
+        expired.tabIndex = -1;
+        expired.setAttribute('data-focus-id', 'journey-expired');
+        view.append(expired);
+      }
       view.append(node('p', 'Record clicks and screenshots on the website you start from. Stop whenever you are ready to review.', 'journey-help'));
       view.append(node('p', 'Screenshots and full URLs can contain personal information, even when entered values are off. Review and remove sensitive details before sharing.', 'journey-notice'));
       if (client.pageLoadsEndJourney) view.append(node('p', PAGE_LOAD_NOTICE, 'journey-notice'));
@@ -1662,7 +1802,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const draft = state.draft;
       view.append(heading('Review journey'));
       view.append(node('p', `${count(draft.steps.length, 'retained step')} · Entered values: ${draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
+      // The stop notice announces first, so a due deadline warning is not cleared by it.
       const notice = announceStop(draft);
+      view.append(...renderDeadline(draft, Date.parse(state.warningAt), Date.parse(state.expiresAt)));
       if (notice) view.append(notice);
       view.append(renderSummaries(draft));
       const sharedSteps = new Map<string, number[]>();
@@ -1673,7 +1815,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       for (const step of draft.steps) list.append(renderStep(step, draft, sharedSteps));
       view.append(list, renderSave(draft));
       renderedSaved = draftIsSaved(draft);
-      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, renderedSaved);
+      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, renderedSaved && !reviewMutating());
       if (sharing) view.append(sharing);
       view.append(renderDiscard(draft));
     } else {
@@ -1682,14 +1824,23 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       saving.setAttribute('role', 'status');
       view.append(saving);
     }
-    if (loadFailed) view.append(action('Reset journey storage', () => client.discard()));
+    // The storage reset follows the load error that explains it.
+    if (loadFailed) view.querySelector('[data-focus-id="journey-heading"]')
+      ?.after(action('Reset journey storage', () => client.discard(), 'secondary', false, 'journey-reset-storage'));
+    placeError();
     if (error) {
-      const alert = node('p', error, 'journey-error'); alert.setAttribute('role', 'alert'); view.append(alert);
+      if (alerting !== 'action' || alertLive.textContent !== error) {
+        alerting = 'action';
+        alertLive.textContent = error;
+      }
+    } else if (alerting === 'action') {
+      alerting = null;
+      alertLive.textContent = '';
     }
     if (startError && !startErrorSeen && state.phase === 'idle' && document.visibilityState === 'visible') {
       startErrorSeen = true;
-      startAlert.textContent = startError;
-      live.append(startAlert);
+      alerting = 'start';
+      alertLive.textContent = startError;
     }
     let restored = false;
     if (focusId) {
@@ -1712,12 +1863,18 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       // A new view announces itself through its heading unless focus survived.
       // Focus waits for recording to begin so it cannot disturb the first screenshot.
       pendingFocus = null;
-      if (!restored && state.phase !== 'starting' && (inView || focusLost())) focusControl('journey-heading');
+      if (!restored && state.phase !== 'starting' && (inView || focusLost())) focusControl('journey-expired', 'journey-heading');
     } else if (pendingFocus !== null && !settling()) {
       // Reclaim only focus the change dropped; a reader who moved on keeps their place.
       if (!restored && focusLost()) focusControl(...pendingFocus);
       pendingFocus = null;
     }
+    // A reader whose focus did not land on the expiry notice hears it instead.
+    if (expiredNotice && !expiredAnnounced) {
+      expiredAnnounced = true;
+      if (scopeActiveElement()?.getAttribute('data-focus-id') !== 'journey-expired') politeLive.textContent = expiredNotice;
+    }
+    scheduleDeadline();
   }
 
   // Returning to this surface clears a start error the reader already saw here.
@@ -1744,6 +1901,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     alive = false; ++version;
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     if (pressTimer !== undefined) clearTimeout(pressTimer);
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     imageEditor?.abort.abort();
     imageViewer?.abort.abort();
     document.removeEventListener('visibilitychange', reactivated);

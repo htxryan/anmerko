@@ -134,7 +134,7 @@ test('a journey tab keeps Start and Cancel start while its one start is in fligh
   const shown = page.locator('.journey-view').getByText(message, { exact: true });
   await expect(shown).toBeAttached();
   await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeAttached();
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toBeEmpty();
   // Returning to the tab shows and announces why the start failed.
   await page.evaluate(() => (window as any).setVisible(true));
   await expect(page.getByRole('alert')).toHaveText(message);
