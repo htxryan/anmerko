@@ -1,30 +1,23 @@
 import { buildPrompt, screenshotFilename, type Note } from './core';
-import { JOURNEY_LIMITS } from './journey-limits';
-import { journeyArchiveFiles, journeyDraftToManifest, journeyExportByteLength, journeyPromptSection } from './journey-export';
-import type { JourneyDraftV1 } from './journey-core';
 
-// Store-only ZIP: PNG is already compressed. Keeps the export entirely local
-// and interoperable without a runtime dependency or a background upload.
-export function feedbackArchive(
-  notes: Note[],
-  preamble: string,
-  journeys: JourneyDraftV1[] = [],
-): Uint8Array<ArrayBuffer> {
+export interface ArchiveFile {
+  name: string;
+  data: Uint8Array;
+}
+
+export function feedbackArchive(notes: Note[], preamble: string): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
-  const prompt = journeys.length > 0
-    ? `${buildPrompt(notes, preamble)}\n${journeyPromptSection(journeys.map(draft => journeyDraftToManifest(draft)))}`
-    : buildPrompt(notes, preamble);
-  const files: Array<{ name: string; data: Uint8Array }> = [{ name: 'comments.md', data: encoder.encode(prompt) },
+  return storedZip([{ name: 'comments.md', data: encoder.encode(buildPrompt(notes, preamble)) },
     ...notes.filter(note => note.screenshot).map(note => ({
       name: screenshotFilename(note),
       data: Uint8Array.from(atob(note.screenshot!.dataUrl.split(',')[1]), char => char.charCodeAt(0)),
-    }))];
-  if (journeys.length > 0) {
-    if (journeyExportByteLength(journeys, encoder.encode(prompt).length) > JOURNEY_LIMITS.maxExportBytes) {
-      throw new Error('Journey export exceeds the export size limit.');
-    }
-    files.push(...journeyArchiveFiles(journeys));
-  }
+    }))]);
+}
+
+// Store-only ZIP: PNG is already compressed. Keeps the export entirely local
+// and interoperable without a runtime dependency or a background upload.
+export function storedZip(files: ArchiveFile[]): Uint8Array<ArrayBuffer> {
+  const encoder = new TextEncoder();
   const parts: Uint8Array[] = [];
   const directory: Uint8Array[] = [];
   let offset = 0;

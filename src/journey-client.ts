@@ -104,6 +104,11 @@ export function createJourneyClient(
         updatedAt: new Date().toISOString(), stepId, url,
       });
     },
+    redactLabel: async (stepId: string): Promise<void> => {
+      await reviewEdit(await reviewing(), 'ANMERKO_JOURNEY_REDACT_LABEL', {
+        updatedAt: new Date().toISOString(), stepId,
+      });
+    },
     reviewImage: async (imageId: string, change: JourneyImageChange): Promise<void> => {
       const current = await reviewing();
       // A mask drawn on older pixels must not overwrite a change another review tab made since.

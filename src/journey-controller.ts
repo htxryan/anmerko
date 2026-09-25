@@ -7,6 +7,7 @@ import {
   createJourneySession,
   editJourneyValue,
   failInitialImage,
+  redactJourneyLabel,
   redactJourneyUrl,
   removeJourneyStep,
   reopenJourneySnapshot,
@@ -19,6 +20,7 @@ import {
   type JourneyDraftImage,
   type JourneyDraftV1,
   type JourneyEditValueInput,
+  type JourneyRedactLabelInput,
   type JourneyRedactUrlInput,
   type JourneyRemoveStepInput,
   type JourneySession,
@@ -84,6 +86,7 @@ export interface JourneyController {
   removeStep(input: JourneyRemoveStepInput): Promise<void>;
   editValue(input: JourneyEditValueInput): Promise<void>;
   redactUrl(input: JourneyRedactUrlInput): Promise<void>;
+  redactLabel(input: JourneyRedactLabelInput): Promise<void>;
   reviewImage(input: JourneyImageReviewRequest): Promise<void>;
   reopen(input: {
     ownerTabId: number; ownerWindowId: number;
@@ -667,6 +670,12 @@ export function createJourneyController(
     if (next !== previous) publish(next);
   }
 
+  async function redactLabel(input: JourneyRedactLabelInput): Promise<void> {
+    const previous = currentReview(state, input);
+    const next = redactJourneyLabel(previous, input);
+    if (next !== previous) publish(next);
+  }
+
   async function reviewImage(input: JourneyImageReviewRequest): Promise<void> {
     const previous = currentReview(state, input);
     const updatedAt = new Date(Math.max(now(), Date.parse(previous.draft.updatedAt))).toISOString();
@@ -773,7 +782,7 @@ export function createJourneyController(
     await safeEnd(tabId, sessionId, epoch, documentToken);
   }
 
-  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, reviewImage, save, reopen };
+  return { getState: () => state, start, observeNavigation, acceptBatch, stop, discard, updateSummary, removeStep, editValue, redactUrl, redactLabel, reviewImage, save, reopen };
 }
 
 function newId(prefix: string): string {

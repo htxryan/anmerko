@@ -5,14 +5,20 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { assertJourneyArchive } from '../shared/expected-feedback.ts';
+import { assertFeedbackArchive, assertJourneyArchive } from '../shared/expected-feedback.ts';
 
 const bundlePath = join(tmpdir(), `anmerko-journey-export-${process.pid}.cjs`);
-writeFileSync(
-  bundlePath,
-  buildSync({ entryPoints: ['src/export.ts'], bundle: true, write: false, format: 'cjs', platform: 'node' }).outputFiles[0].text,
-);
-const { feedbackArchive } = createRequire(import.meta.url)(bundlePath);
+writeFileSync(bundlePath, buildSync({
+  stdin: {
+    contents: `export { buildPrompt } from './src/core';
+      export { feedbackArchive } from './src/export';
+      export { journeyArchive, journeyArchiveName, journeyDraftToManifest, journeyPrompt } from './src/journey-export';`,
+    resolveDir: process.cwd(),
+  },
+  bundle: true, write: false, format: 'cjs', platform: 'node',
+}).outputFiles[0].text);
+const { buildPrompt, feedbackArchive, journeyArchive, journeyArchiveName, journeyDraftToManifest, journeyPrompt } =
+  createRequire(import.meta.url)(bundlePath);
 
 const MINIMAL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC';
 const MINIMAL_PNG_DATA_URL = `data:image/png;base64,${MINIMAL_PNG_BASE64}`;
@@ -114,25 +120,34 @@ function readTexts(zip) {
   return texts;
 }
 
-test('static-only archives are byte-identical with or without the journeys argument', () => {
-  const without = Buffer.from(feedbackArchive([note], 'preamble'));
-  const empty = Buffer.from(feedbackArchive([note], 'preamble', []));
-  assert.deepEqual(without, empty);
+test('comment archives hold only comments.md and their screenshots', () => {
+  assert.equal(feedbackArchive.length, 2);
+  const zip = Buffer.from(feedbackArchive([note], 'preamble'));
+  const prompt = buildPrompt([note], 'preamble');
+  assert.ok(prompt.includes('1 comment across 1 page.'));
+  assert.ok(!prompt.includes('journey'));
+  assertFeedbackArchive(zip, prompt, MINIMAL_PNG_BYTES);
 });
 
-test('mixed archives validate prompt, journeys document, and PNG bytes', () => {
-  const first = Buffer.from(feedbackArchive([note], 'preamble', [draft()]));
-  const second = Buffer.from(feedbackArchive([note], 'preamble', [draft()]));
+test('journey archives hold the copied prompt, journeys document, and PNG bytes, and nothing comment-related', () => {
+  const first = Buffer.from(journeyArchive(draft()));
+  const second = Buffer.from(journeyArchive(draft()));
   assert.deepEqual(first, second);
+  assert.equal(journeyArchiveName(draft().id), 'anmerko-journey-9f8a.zip');
 
   const texts = readTexts(first);
-  const commentsMd = texts.get('comments.md');
+  assert.deepEqual([...texts.keys()], ['prompt.md', 'journeys.md', 'journey-9f8a-step-01.png']);
+  const promptMd = texts.get('prompt.md');
   const journeysMd = texts.get('journeys.md');
-  assert.ok(commentsMd.includes('Make this headline clearer.'));
-  assert.ok(commentsMd.includes('## Recorded journeys'));
-  assert.ok(commentsMd.includes('### Journey 1'));
-  assert.ok(commentsMd.includes('The cart keeps its item.'));
-  assert.ok(!commentsMd.includes('data:image/png'));
+  assert.equal(promptMd, journeyPrompt(journeyDraftToManifest(draft())));
+  assert.ok(promptMd.startsWith('# Recorded journey\n'));
+  assert.ok(promptMd.includes('The cart keeps its item.'));
+  assert.ok(promptMd.includes('- **Step 2 · Navigation** from `https://shop.example/items?q=green` to `https://shop.example/pay?q=green`, caused by step 1 · screenshot `journey-9f8a-step-01.png`'));
+  assert.ok(promptMd.includes('- **Step 4 · Click** `Pay` (`button`) on `https://shop.example/pay?q=green` · no screenshot (removed during review)'));
+  for (const text of [promptMd, journeysMd]) {
+    assert.ok(!/comment/i.test(text));
+    assert.ok(!text.includes('data:image/png'));
+  }
   assert.ok(journeysMd.includes('## Journey 1'));
   assert.ok(journeysMd.includes('### Step 1'));
   assert.ok(journeysMd.includes('### Step 2'));
@@ -140,13 +155,9 @@ test('mixed archives validate prompt, journeys document, and PNG bytes', () => {
   assert.ok(journeysMd.includes('Screenshot: removed during review'));
   assert.ok(journeysMd.includes('https://shop.example/pay?q=green'));
 
-  const imageName = 'journey-12-journey-9f8a-image-7-image-1.png';
   assertJourneyArchive(first, {
-    commentsMd,
+    promptMd,
     journeysMd,
-    pngs: new Map([
-      ['screenshot-note-1.png', MINIMAL_PNG_BYTES],
-      [imageName, MINIMAL_PNG_BYTES],
-    ]),
+    pngs: new Map([['journey-9f8a-step-01.png', MINIMAL_PNG_BYTES]]),
   });
 });

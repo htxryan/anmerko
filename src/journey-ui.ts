@@ -1,8 +1,8 @@
 import type { JourneyDraftImage, JourneyDraftStep, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import type { NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
-import { downloadFile, feedbackArchive } from './export';
-import { journeyDraftToManifest, journeyPromptSection } from './journey-export';
+import { downloadFile } from './export';
+import { journeyArchive, journeyArchiveName, journeyDraftToManifest, journeyPrompt } from './journey-export';
 import { reviewJourneyImage, viewJourneyImage } from './journey-image-review';
 import { privateImage } from './screenshot';
 
@@ -36,6 +36,7 @@ export interface JourneyClient {
   removeStep(stepId: string): Promise<void>;
   editValue(stepId: string, value: unknown): Promise<void>;
   redactUrl(stepId: string, url: JourneyUrlRedactionTarget): Promise<void>;
+  redactLabel(stepId: string): Promise<void>;
   reviewImage(imageId: string, change: JourneyImageChange): Promise<void>;
   save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
   openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
@@ -66,10 +67,6 @@ const REDACTED = '[redacted]';
 // Previews fit this height so a tall phone capture is shown whole, never cropped.
 const IMAGE_FIT_HEIGHT = 440;
 const TITLE_CHARACTERS = 60;
-
-// Preamble for journey-only archives. Static notes keep their own product
-// preamble in core.ts; journeys export without static notes here.
-export const JOURNEY_EXPORT_PREAMBLE = 'Recorded journey brief.';
 
 const failures: Record<CaptureFailure, string> = {
   superseded: 'superseded by a later action',
@@ -109,6 +106,11 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   if (text !== undefined) element.textContent = text;
   if (className) element.className = className;
   return element;
+}
+
+// The redaction flag, not the label text, marks a redacted click label.
+function labelRedacted(step: JourneyDraftStep, draft: JourneyDraftV1): boolean {
+  return step.kind === 'click' && draft.redactions?.steps[step.id]?.label === true;
 }
 
 function count(value: number, singular: string, plural = `${singular}s`): string {
@@ -1079,11 +1081,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return parts;
   }
 
+  // A click label can echo what the user typed, so it is redacted like a URL.
   function renderUrlRedact(step: JourneyDraftStep, draft: JourneyDraftV1): HTMLElement | null {
     const wrap = node('div', undefined, 'journey-url-actions');
-    const redactControl = (url: string, target: JourneyUrlRedactionTarget, label: string) => {
-      if (url === REDACTED) return;
-      const redact = node('button', `Redact ${label} URL for step ${step.seq}`, 'journey-secondary');
+    const redactControl = (target: JourneyUrlRedactionTarget | 'label', text: string, redactIt: () => Promise<void>) => {
+      const redact = node('button', text, 'journey-secondary');
       redact.type = 'button';
       redact.disabled = busy || redactBusy !== null;
       redact.setAttribute('data-focus-id', `redact-${target}-${step.id}`);
@@ -1093,7 +1095,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         error = '';
         pendingFocus = [`redact-${target}-${step.id}`, `redacted-${target}-${step.id}`, `step-${step.id}`];
         render();
-        void client.redactUrl(step.id, target).then(() => { error = ''; }).catch(caught => {
+        void redactIt().then(() => { error = ''; }).catch(caught => {
           error = message(caught, 'Could not update the journey. Try again.');
         }).finally(() => {
           redactBusy = null;
@@ -1102,11 +1104,17 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       });
       wrap.append(redact);
     };
-    redactControl(step.sourceUrl, 'source', 'source');
-    if (step.kind === 'navigation') redactControl(step.navigation.toUrl, 'destination', 'destination');
+    const urlControl = (url: string, target: JourneyUrlRedactionTarget, label: string) => {
+      if (url !== REDACTED) redactControl(target, `Redact ${label} URL for step ${step.seq}`, () => client.redactUrl(step.id, target));
+    };
+    urlControl(step.sourceUrl, 'source', 'source');
+    if (step.kind === 'navigation') urlControl(step.navigation.toUrl, 'destination', 'destination');
     if (step.image.status === 'retained') {
       const image = draft.images[step.image.imageId];
-      if (image) redactControl(image.captureUrl, 'capture', 'screenshot');
+      if (image) urlControl(image.captureUrl, 'capture', 'screenshot');
+    }
+    if (step.kind === 'click' && !labelRedacted(step, draft)) {
+      redactControl('label', `Redact click label for step ${step.seq}`, () => client.redactLabel(step.id));
     }
     return wrap.childElementCount > 0 ? wrap : null;
   }
@@ -1212,9 +1220,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     render();
     try {
       const snapshot = await client.openSnapshot(target.journeyId);
-      const text = journeyPromptSection([journeyDraftToManifest(snapshot.draft)]);
+      const text = journeyPrompt(journeyDraftToManifest(snapshot.draft));
       await navigator.clipboard.writeText(text);
-      exportStatus = 'Journey prompt copied. Download the images to attach them with the prompt.';
+      exportStatus = 'Journey prompt copied. Paste it into your agent chat and attach the screenshots from Download Markdown + Images, whose journeys.md has full step detail.';
       exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch {
@@ -1234,9 +1242,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     render();
     try {
       const snapshot = await client.openSnapshot(target.journeyId);
-      const archive = feedbackArchive([], JOURNEY_EXPORT_PREAMBLE, [snapshot.draft]);
-      downloadFile(new Blob([archive], { type: 'application/zip' }), `journey-${snapshot.draft.id}.zip`);
-      exportStatus = 'Journey download started. Extract the ZIP and attach its images with the prompt.';
+      const archive = journeyArchive(snapshot.draft);
+      downloadFile(new Blob([archive], { type: 'application/zip' }), journeyArchiveName(snapshot.draft.id));
+      exportStatus = 'Journey download started. Extract the ZIP and give your agent prompt.md with the screenshots it names; add journeys.md for full step detail.';
       exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch (caught) {
@@ -1552,6 +1560,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     title.tabIndex = -1;
     title.setAttribute('data-focus-id', `step-${step.id}`);
     item.append(title, node('p', elapsed(step.elapsedMs), 'journey-time'));
+    if (labelRedacted(step, draft)) {
+      const marker = node('p', 'Click label redacted during review.', 'journey-edited');
+      marker.tabIndex = -1;
+      marker.setAttribute('data-focus-id', `redacted-label-${step.id}`);
+      item.append(marker);
+    }
     item.append(...renderUrl(step, 'Source URL', step.sourceUrl, 'source'));
     if (step.kind === 'navigation') item.append(...renderUrl(step, 'Destination URL', step.navigation.toUrl, 'destination'));
     if (step.image.status === 'retained') {

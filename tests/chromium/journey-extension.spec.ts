@@ -86,11 +86,11 @@ async function dispatch(page: Page, message: unknown, sender: Sender = sidebar) 
 
 type MaskRect = { x: number; y: number; width: number; height: number };
 type ArchiveWindow = typeof globalThis & {
-  journeyArchive: { feedbackArchive(notes: unknown[], preamble: string, journeys: unknown[]): Uint8Array<ArrayBuffer> };
+  journeyArchive: { journeyArchive(draft: unknown): Uint8Array<ArrayBuffer> };
 };
 
 const archiveBundle = buildSync({
-  stdin: { contents: "export { feedbackArchive } from './src/export';", resolveDir: process.cwd() },
+  stdin: { contents: "export { journeyArchive } from './src/journey-export';", resolveDir: process.cwd() },
   bundle: true,
   write: false,
   format: 'iife',
@@ -951,7 +951,7 @@ test('masked and removed screenshots persist through save, reopen, and export', 
 
   await page.addScriptTag({ content: archiveBundle });
   const archive = await page.evaluate(async draft => {
-    const bytes = (globalThis as ArchiveWindow).journeyArchive.feedbackArchive([], 'Recorded journey brief.', [draft]);
+    const bytes = (globalThis as ArchiveWindow).journeyArchive.journeyArchive(draft);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const files: Record<string, Uint8Array<ArrayBuffer>> = {};
     for (let offset = 0; view.getUint32(offset, true) === 0x04034b50;) {
@@ -971,8 +971,8 @@ test('masked and removed screenshots persist through save, reopen, and export', 
     for (let index = 0; index < data.length; index += 4) pixels.push(Array.from(data.slice(index, index + 4)));
     return { pngs, markdown: new TextDecoder().decode(files['journeys.md']), pixels };
   }, snapshot.draft);
-  expect(archive.pngs).toEqual([expect.stringContaining(initialId)]);
-  expect(archive.pngs.join()).not.toContain(clickId);
+  // Screenshots are named for their step: only the initial capture remains.
+  expect(archive.pngs).toEqual([expect.stringMatching(/^journey-[0-9a-f]{8}-step-01\.png$/)]);
   expect(archive.markdown).toContain('Screenshot: removed during review');
   expect(archive.markdown).toContain('Image redacted: Yes');
   expect(archive.pixels).toEqual(patternedPixels([first, second]));
@@ -1252,6 +1252,37 @@ test('removing a screenshot or step whose URLs were redacted succeeds through th
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards(state), stepId: state.draft.steps[0].id }))
     .toEqual(unavailable);
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.revision).toBe(state.draft.revision);
+});
+
+test('a click label redacted through the command channel stays redacted in the saved journey', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date().toISOString(),
+  });
+  const [initial, click] = state.draft.steps;
+  expect(click.target.label).toBe('Pay');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REDACT_LABEL', ...guards(state), stepId: click.id }))
+    .toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.steps[1].target.label).toBe('[redacted]');
+  expect(state.draft.redactions).toEqual({ steps: { [click.id]: { label: true } } });
+  // Repeating it, or naming a step without a click label, changes nothing.
+  for (const stepId of [click.id, initial.id]) {
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REDACT_LABEL', ...guards(state), stepId })).toEqual({ ok: true });
+    expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.revision).toBe(state.draft.revision);
+  }
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REDACT_LABEL', ...guards(state) })).toEqual(unavailable);
+
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state), expected: 'Paying opens checkout.', actual: 'Nothing happens.',
+  })).toEqual({ ok: true });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  expect(saved.ok).toBe(true);
+  const snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
+  expect(snapshot.draft.steps[1].target.label).toBe('[redacted]');
+  expect(snapshot.draft.redactions).toEqual({ steps: { [click.id]: { label: true } } });
+  expect(JSON.stringify(snapshot.draft)).not.toContain('"Pay"');
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {

@@ -55,7 +55,7 @@ Enter an **Expected result** and an **Actual result**, up to 4,000 characters ea
 
 - **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step.
 - **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider.
-- **Redact** replaces a source, destination, or screenshot URL with `[redacted]`, and a note names what was redacted.
+- **Redact** replaces a source, destination, or screenshot URL, or a click's label, with `[redacted]`, and a note names what was redacted. A click label can repeat text you typed, such as a search suggestion, even with entered values off.
 - **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
 
 To save, enter both results, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.

@@ -1218,6 +1218,19 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }));
       return;
     }
+    if (message.type === 'ANMERKO_JOURNEY_REDACT_LABEL') {
+      if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      if (typeof message.epoch !== 'number' || typeof message.journeyId !== 'string'
+        || typeof message.revision !== 'number' || typeof message.updatedAt !== 'string'
+        || typeof message.stepId !== 'string') {
+        throw new Error(GENERIC_ERROR);
+      }
+      await withPersistedState(controller.redactLabel({
+        epoch: message.epoch, journeyId: message.journeyId, revision: message.revision,
+        updatedAt: message.updatedAt, stepId: message.stepId,
+      }));
+      return;
+    }
     if (message.type === 'ANMERKO_JOURNEY_REVIEW_IMAGE') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       if (typeof message.epoch !== 'number' || typeof message.journeyId !== 'string'
@@ -1391,7 +1404,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_REVIEW_IMAGE', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_REDACT_LABEL', 'ANMERKO_JOURNEY_REVIEW_IMAGE', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
       return reply((async () => {
         await ready;
         if (initializationError) {

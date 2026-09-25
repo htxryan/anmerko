@@ -5,6 +5,7 @@ import {
   commitJourneyNavigation,
   createJourneySession,
   editJourneyValue,
+  redactJourneyLabel,
   redactJourneyUrl,
   reopenJourneySnapshot,
   resolveJourneyCapture,
@@ -377,7 +378,7 @@ test('navigation and event batches stop before publishing a draft over the sessi
   expect(navigated.phase).toBe('reviewing');
   if (navigated.phase === 'reviewing') {
     expect(navigated.draft.stopReason).toBe('session-storage-limit');
-    expect(navigated.draft.steps).toEqual(previous.draft.steps);
+    expect(withoutPages(navigated.draft.steps)).toEqual(previous.draft.steps);
     expect(navigated.draft.images).toEqual(previous.draft.images);
     expect(Buffer.byteLength(JSON.stringify(navigated))).toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes);
   }
@@ -404,7 +405,7 @@ test('navigation and event batches stop before publishing a draft over the sessi
   expect(batched.phase).toBe('reviewing');
   if (batched.phase === 'reviewing') {
     expect(batched.draft.stopReason).toBe('session-storage-limit');
-    expect(batched.draft.steps).toEqual(previous.draft.steps);
+    expect(withoutPages(batched.draft.steps)).toEqual(previous.draft.steps);
     expect(batched.draft.images).toEqual(previous.draft.images);
     expect(Buffer.byteLength(JSON.stringify(batched))).toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes);
   }
@@ -777,7 +778,8 @@ test('review destination redaction removes only the navigation destination', () 
   if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
   const step = redacted.draft.steps[1];
   if (step.kind !== 'navigation') throw new Error('expected navigation step');
-  expect(step.navigation).toEqual({ toUrl: '[redacted]' });
+  // The destination keeps its page number, so the journey still spans pages.
+  expect(step.navigation).toEqual({ toUrl: '[redacted]', toPage: 2 });
   expect(step.sourceUrl).toBe('https://example.com/start');
   expect(redacted.draft.redactions).toEqual({ steps: { [stepId]: { toUrl: true } } });
   expect(redacted.draft.revision).toBe(reviewing.draft.revision + 1);
@@ -843,6 +845,85 @@ test('persisted drafts accept destination markers only with consistent redaction
   expect(legacyDraft.redactions).toEqual({ steps: { 'step-initial': { sourceUrl: true, captureUrl: true } } });
   expect(navigationOf(legacyDraft).navigation.toUrl).toBe('https://example.com/reset?token=private-token-9q');
   expect(reopenJourneySnapshot(idle, reopenInput(legacyDraft))?.phase).toBe('reviewing');
+});
+
+test('stop numbers pages in the order the journey first reached them', () => {
+  const recording = recordingSession();
+  const reset = 'https://example.com/reset?token=private-token-9q';
+  let session: JourneySession = recording;
+  for (const [index, [sourceUrl, toUrl]] of [['https://example.com/start', reset], [reset, 'https://example.com/start']].entries()) {
+    if (session.phase !== 'recording') throw new Error('expected recording state');
+    session = commitJourneyNavigation(session, {
+      epoch: 1, id: `step-navigation-${index + 1}`, observedAt: `2026-09-20T12:00:0${index + 2}.000Z`, elapsedMs: (index + 2) * 1_000,
+      sourceUrl, toUrl, previousDocumentToken: session.documentToken, documentToken: `document-${index + 2}`,
+      image: { status: 'unavailable', reason: 'superseded' },
+    });
+  }
+  if (session.phase !== 'recording') throw new Error('expected recording state');
+  // Recording leaves pages unnumbered; stopping numbers every URL once.
+  expect(session.draft.steps.some(step => step.sourcePage !== undefined)).toBe(false);
+  const stopped = stopJourney(session, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(stopped.draft.steps.map(step => [step.sourcePage, step.kind === 'navigation' ? step.navigation.toPage : null]))
+    .toEqual([[1, null], [1, 2], [2, 1]]);
+  expect(validateJourneyDraft(stopped.draft).ok).toBe(true);
+
+  // Numbers are bounded positive integers that agree with every visible URL.
+  const draft = { ...stopped.draft, expected: 'Kept.', actual: 'Gone.' };
+  const errors = (change: (value: JourneyDraftV1) => void) => {
+    const value = structuredClone(draft);
+    change(value);
+    const result = validateJourneyDraft(value);
+    return result.ok ? [] : result.errors;
+  };
+  const navigationAt = (value: JourneyDraftV1, index: number) => value.steps[index] as Extract<JourneyDraftStep, { kind: 'navigation' }>;
+  expect(errors(value => { value.steps[0].sourcePage = 0; })).toEqual(['journey.steps[0].sourcePage is invalid']);
+  expect(errors(value => { value.steps[0].sourcePage = 1.5; })).toEqual(['journey.steps[0].sourcePage is invalid']);
+  expect(errors(value => { navigationAt(value, 1).navigation.toPage = JOURNEY_LIMITS.maxSteps * 2 + 1; }))
+    .toEqual(['journey.steps[1].navigation.toPage is invalid']);
+  expect(errors(value => { navigationAt(value, 2).navigation.toPage = 2; }))
+    .toEqual(['journey.steps[2].navigation.toPage disagrees with its URL']);
+  expect(errors(value => { value.steps[2].sourcePage = 3; }))
+    .toEqual(['journey.steps[2].sourcePage disagrees with its URL']);
+  // A redacted URL keeps its number without showing anything to compare.
+  const redacted = redactJourneyUrl(stopped, { ...reviewGuards(stopped), stepId: 'step-navigation-2', url: 'source' });
+  if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(redacted.draft.steps[2]).toMatchObject({ sourceUrl: '[redacted]', sourcePage: 2 });
+  expect(validateJourneyDraft(redacted.draft).ok).toBe(true);
+});
+
+test('click label redaction keeps only the marker and its flag, which travel with the click', () => {
+  const recording = recordingSession();
+  const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
+  if (withClick.phase !== 'recording') throw new Error('expected recording state');
+  const reviewing = stopJourney(withClick, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const redacted = redactJourneyLabel(reviewing, { ...reviewGuards(reviewing), stepId: 'step-click-1' });
+  if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const click = redacted.draft.steps[1];
+  if (click.kind !== 'click') throw new Error('expected click step');
+  expect(click.target.label).toBe('[redacted]');
+  expect(redacted.draft.redactions).toEqual({ steps: { 'step-click-1': { label: true } } });
+  expect(JSON.stringify(redacted.draft)).not.toContain('"Go"');
+  // Guards apply as for every review edit.
+  expect(redactJourneyLabel(reviewing, { ...reviewGuards(reviewing), revision: 99, stepId: 'step-click-1' })).toBe(reviewing);
+  expect(redactJourneyLabel(reviewing, { ...reviewGuards(reviewing), stepId: 'step-initial' })).toBe(reviewing);
+
+  // The flag needs a click whose label is the marker.
+  const draft = { ...redacted.draft, expected: 'Kept.', actual: 'Gone.' };
+  const visible = structuredClone(draft);
+  (visible.steps[1] as Extract<JourneyDraftStep, { kind: 'click' }>).target.label = 'Go';
+  expect(validateJourneyDraft(visible)).toEqual({
+    ok: false, errors: ['journey.redactions for step step-click-1 marks a visible click label'],
+  });
+  const misplaced = { ...structuredClone(draft), redactions: { steps: { 'step-initial': { label: true as const } } } };
+  expect(validateJourneyDraft(misplaced)).toEqual({
+    ok: false, errors: ['journey.redactions for step step-initial marks a visible click label'],
+  });
+  const removed = removeJourneyStep(redacted, { ...reviewGuards(redacted), stepId: 'step-click-1' });
+  if (removed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(removed.draft).not.toHaveProperty('redactions');
+  expect(validateJourneyDraft(removed.draft).ok).toBe(true);
 });
 
 test('reviewed destination URLs follow the redacted-implies-edited rule', () => {
@@ -913,6 +994,16 @@ test('Stop bounds review deadlines at the maximum representable date', () => {
     expect(stopped.expiresAt).toBe('+275760-09-13T00:00:00.000Z');
   }
 });
+
+// Stop numbers each step's pages; the rest of a stopped step is as recorded.
+function withoutPages(steps: JourneyDraftStep[]): JourneyDraftStep[] {
+  return steps.map(step => {
+    const { sourcePage: _sourcePage, ...rest } = step;
+    if (rest.kind !== 'navigation') return rest;
+    const { toPage: _toPage, ...navigation } = rest.navigation;
+    return { ...rest, navigation };
+  }) as JourneyDraftStep[];
+}
 
 function recordingSession() {
   const starting = createJourneySession({
