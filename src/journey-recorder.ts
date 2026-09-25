@@ -13,7 +13,9 @@ export type JourneyRecorderOptions = {
 };
 
 const EDITABLE_TAGS = new Set(['input', 'select', 'textarea']);
-const EDITABLE_SELECTOR = 'input, select, textarea, [contenteditable]:not([contenteditable="false"])';
+// Text boxes a page renders itself hold typed text just like native fields.
+const TEXT_BOX_ROLES = new Set(['textbox', 'searchbox']);
+const EDITABLE_SELECTOR = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), [role~="textbox" i], [role~="searchbox" i]';
 const PRIVATE_TEXT_TAGS = new Set(['script', 'style', 'noscript']);
 const UI_HOSTS = new Set(['anmerko-overlay', 'anmerko-journey-strip']);
 const SEMANTIC_ROLES = new Set([
@@ -29,9 +31,13 @@ const ROLE_BY_TAG: Record<string, string> = {
   a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
 };
 
+// `isContentEditable` also covers design-mode documents, where every element
+// shows what the user typed.
 function isEditableElement(element: Element): boolean {
   return EDITABLE_TAGS.has(element.localName)
-    || (element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false');
+    || (element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false')
+    || (element instanceof HTMLElement && element.isContentEditable)
+    || (element.getAttribute('role') ?? '').toLowerCase().split(/\s+/).some(role => TEXT_BOX_ROLES.has(role));
 }
 
 function editableAncestor(element: Element): Element | null {
@@ -69,7 +75,7 @@ function genericLabel(element: Element): string {
     return 'text field';
   }
   if (element.localName === 'select') return 'select field';
-  if (element.localName === 'textarea' || element.hasAttribute('contenteditable')) return 'text field';
+  if (isEditableElement(element)) return 'text field';
   return element.localName.replace(/-/g, ' ');
 }
 
