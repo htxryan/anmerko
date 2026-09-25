@@ -31,12 +31,13 @@ export function iPhoneOrIPad(platform: JourneyPlatform): boolean {
   const agent = platform.userAgent ?? '';
   if (platform.os === 'ios' || platform.userAgentPlatform === 'iOS'
     || /\b(?:iPhone|iPad|iPod)\b|\b(?:EdgiOS|CriOS|FxiOS)\//.test(agent)) return true;
-  // Desktop-class iPadOS browsing reports a Mac. A page sees the touch screen;
-  // a worker cannot, but a Mac user agent without a Chromium or Gecko token is
-  // WebKit: an iPad browser such as Edge, or a Mac browser this package does
-  // not support.
-  return /\bMacintosh\b/.test(agent)
-    && ((platform.maxTouchPoints ?? 0) > 1 || !/(?:Chrome|Chromium|Firefox)\//.test(agent));
+  // Desktop-class iPadOS browsing reports a Mac. Gecko never runs there, so a
+  // Firefox token is a Mac or Firefox for Android asking for a desktop site.
+  if (!/\bMacintosh\b/.test(agent) || /\bFirefox\//.test(agent)) return false;
+  // A page sees the touch screen; a worker cannot, but a Mac user agent without
+  // a Chromium token is WebKit: an iPad browser such as Edge, or a Mac browser
+  // this package does not support.
+  return (platform.maxTouchPoints ?? 0) > 1 || !/(?:Chrome|Chromium)\//.test(agent);
 }
 
 type Listenable = { addListener?: unknown } | undefined;
@@ -67,10 +68,13 @@ export function journeyApisPresent(api: unknown): boolean {
 export const JOURNEYS_DECLINED_GLOBAL = '__anmerkoJourneysDeclined';
 
 // The one journey capability check. The background and extension pages pass
-// their extension API. Content scripts cannot see those APIs, so they omit it
-// and rely on the background's verdict instead.
-export function journeysAvailable(surface: { platform: JourneyPlatform; api?: unknown }): boolean {
-  if (!targetJourneys || iPhoneOrIPad(surface.platform)) return false;
-  if (surface.api === undefined) return (globalThis as Record<string, unknown>)[JOURNEYS_DECLINED_GLOBAL] !== true;
-  return journeyApisPresent(surface.api);
+// their own platform and extension API. Page content scripts pass nothing:
+// they cannot see those APIs, and DevTools device mode or a desktop-site
+// request rewrites a page's user agent without changing the browser. They
+// trust the background, which marks a page it declined before the overlay
+// mounts and injects the journey observer only after its own check passed.
+export function journeysAvailable(browser?: { platform: JourneyPlatform; api: unknown }): boolean {
+  if (!targetJourneys) return false;
+  if (!browser) return (globalThis as Record<string, unknown>)[JOURNEYS_DECLINED_GLOBAL] !== true;
+  return !iPhoneOrIPad(browser.platform) && journeyApisPresent(browser.api);
 }

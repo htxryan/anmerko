@@ -1,5 +1,8 @@
-import { expect, test, type Page } from '@playwright/test';
+import { chromium, expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { iPhoneOrIPad, journeyApisPresent } from '../../src/journey-feature';
 import { addJourneyApis } from './fixtures/journey-apis';
 
@@ -13,6 +16,7 @@ const build = (contents: string, globalName?: string) => buildSync({
 }).outputFiles[0].text;
 const backgroundBundle = build(`export * from './src/background';`, 'backgroundModule');
 const overlayBundle = build(`import './src/extension-content';`);
+const observerBundle = build(`import './src/journey-observer';`);
 const sidebarBundle = build(`
   import { mount } from './src/content';
   import { extensionRuntime } from './src/extension-runtime';
@@ -68,6 +72,8 @@ test('platform signals exclude iPhone and iPad in every browser, including deskt
   // Touch emulation on a Mac reports one touch point; iPadOS reports five.
   expect(iPhoneOrIPad({ userAgent: agents.headlessMac, maxTouchPoints: 1 })).toBe(false);
   expect(iPhoneOrIPad({ userAgent: agents.edgeWindows, maxTouchPoints: 10 })).toBe(false);
+  // Gecko never runs on iPadOS: Firefox for Android can ask for a desktop site.
+  expect(iPhoneOrIPad({ userAgent: agents.firefoxMac, maxTouchPoints: 5 })).toBe(false);
   expect(iPhoneOrIPad({ userAgent: agents.chromeMac, os: 'ios' })).toBe(true);
   expect(iPhoneOrIPad({ userAgent: agents.chromeMac, userAgentPlatform: 'iOS' })).toBe(true);
   expect(iPhoneOrIPad({ userAgent: agents.chromeMac, os: 'mac', userAgentPlatform: 'macOS' })).toBe(false);
@@ -209,7 +215,7 @@ test('getPlatformInfo reporting iOS keeps pages from offering journeys', async (
   expect(errors).toEqual([]);
 });
 
-async function loadOverlay(page: Page, options: { agent: Agent; maxTouchPoints?: number; declined?: boolean }) {
+async function loadOverlay(page: Page, options: { agent: Agent; maxTouchPoints?: number; declined?: boolean; bundle?: string }) {
   await page.goto(ORIGIN);
   await emulate(page, options.agent, options.maxTouchPoints);
   await page.evaluate(declined => {
@@ -224,39 +230,100 @@ async function loadOverlay(page: Page, options: { agent: Agent; maxTouchPoints?:
     };
     if (declined) (globalThis as any).__anmerkoJourneysDeclined = true;
   }, !!options.declined);
-  await page.addScriptTag({ content: overlayBundle });
+  await page.addScriptTag({ content: options.bundle ?? overlayBundle });
 }
 
 const commentActions = (page: Page) => page.getByRole('complementary', { name: 'anmerko feedback panel' })
   .getByRole('group', { name: 'Comment Actions' }).getByRole('button');
 const threeActions = ['Select Element', 'Take Screenshot', 'New Global Comment'];
+const journeyBridge = (page: Page) => page.evaluate(() => typeof (globalThis as any).__anmerkoJourneyPage);
 
-test('a page overlay in a supported browser offers Record journey and binds its page bridge', async ({ page }) => {
-  await loadOverlay(page, { agent: 'chromeMac', maxTouchPoints: 0 });
-  await expect(commentActions(page).first()).toBeVisible();
-  expect(await commentActions(page).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))))
-    .toEqual([...threeActions, 'More Comment Options']);
-  expect(await page.evaluate(() => typeof (globalThis as any).__anmerkoJourneyPage)).toBe('function');
-});
+// A page's user agent is not the browser's: DevTools device mode and desktop-site
+// requests rewrite it for one tab. Page scripts trust the background's verdict.
+const offeredCases: Array<{ name: string; agent: Agent; maxTouchPoints?: number }> = [
+  { name: 'in a supported browser', agent: 'chromeMac', maxTouchPoints: 0 },
+  { name: 'emulating an iPhone in a supported browser', agent: 'iPhone', maxTouchPoints: 5 },
+  { name: 'emulating an iPad in a supported browser', agent: 'iPadDesktop', maxTouchPoints: 5 },
+  { name: 'asking for a desktop site on a touch screen', agent: 'chromeMac', maxTouchPoints: 5 },
+];
+for (const { name, ...options } of offeredCases) {
+  test(`a page overlay ${name} offers Record journey and binds its page bridge`, async ({ page }) => {
+    await loadOverlay(page, options);
+    await expect(commentActions(page).first()).toBeVisible();
+    expect(await commentActions(page).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))))
+      .toEqual([...threeActions, 'More Comment Options']);
+    expect(await journeyBridge(page)).toBe('function');
+  });
+}
 
-const overlayCases: Array<{ name: string; agent: Agent; maxTouchPoints?: number; declined?: boolean }> = [
+const declinedCases: Array<{ name: string; agent: Agent; maxTouchPoints?: number }> = [
   { name: 'on iPhone', agent: 'iPhone', maxTouchPoints: 5 },
   { name: 'in Edge on iPhone', agent: 'edgeIPhone', maxTouchPoints: 5 },
-  { name: 'on iPad', agent: 'iPad', maxTouchPoints: 5 },
   { name: 'in desktop-class iPad browsing', agent: 'iPadDesktop', maxTouchPoints: 5 },
-  { name: 'in desktop-class iPad browsing with a Chromium user agent', agent: 'chromeMac', maxTouchPoints: 5 },
-  { name: 'after the background declined journeys', agent: 'chromeMac', maxTouchPoints: 0, declined: true },
+  { name: 'with a desktop user agent', agent: 'chromeMac', maxTouchPoints: 0 },
 ];
-for (const { name, ...options } of overlayCases) {
-  test(`a page overlay ${name} keeps the original three-button comment bar`, async ({ page }) => {
-    await loadOverlay(page, options);
+for (const { name, ...options } of declinedCases) {
+  test(`a page overlay ${name} keeps the original three-button comment bar once the background declined journeys`, async ({ page }) => {
+    await loadOverlay(page, { ...options, declined: true });
     await expect(commentActions(page).first()).toBeAttached();
     expect(await commentActions(page).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))))
       .toEqual(threeActions);
     await expect(page.locator('anmerko-overlay').locator('#comment-menu')).toHaveCount(0);
-    expect(await page.evaluate(() => typeof (globalThis as any).__anmerkoJourneyPage)).toBe('undefined');
+    expect(await journeyBridge(page)).toBe('undefined');
   });
 }
+
+test('the injected journey observer binds on an emulated iPhone page unless the background declined journeys', async ({ page }) => {
+  await loadOverlay(page, { agent: 'iPhone', maxTouchPoints: 5, bundle: observerBundle });
+  expect(await journeyBridge(page)).toBe('function');
+  await loadOverlay(page, { agent: 'chromeMac', maxTouchPoints: 0, declined: true, bundle: observerBundle });
+  expect(await journeyBridge(page)).toBe('undefined');
+});
+
+// DevTools device mode emulates a phone in one tab of a desktop browser. The
+// background still records there, so that tab must offer journeys and answer
+// the handshake a recording starts with.
+test('a desktop browser emulating an iPhone in one tab still offers journeys and connects the recording', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'anmerko-emulation-'));
+  const extension = path.join(temp, 'extension');
+  await cp('dist', extension, { recursive: true });
+  const manifest = JSON.parse(await readFile(path.join(extension, 'manifest.json'), 'utf8'));
+  // Automation cannot click the toolbar to grant activeTab.
+  manifest.host_permissions = [`${ORIGIN}/*`];
+  manifest.background.service_worker = 'test-bootstrap.js';
+  await writeFile(path.join(extension, 'test-bootstrap.js'),
+    "import { activateTab } from './background.js'; globalThis.__testActivateTab = activateTab;");
+  await writeFile(path.join(extension, 'manifest.json'), JSON.stringify(manifest));
+  const context = await chromium.launchPersistentContext(path.join(temp, 'profile'), {
+    channel: 'chromium', headless: !process.env.HEADED, viewport: { width: 390, height: 844 },
+    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
+  });
+  try {
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setUserAgentOverride', { userAgent: agents.iPhone });
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await page.goto(ORIGIN);
+    expect(await page.evaluate(() => [navigator.userAgent, navigator.maxTouchPoints])).toEqual([agents.iPhone, 5]);
+    const identified = await worker.evaluate(async url => {
+      const tab = (await chrome.tabs.query({})).find(tab => tab.url === url);
+      if (!tab?.id) throw new Error('Test tab not found');
+      await (globalThis as typeof globalThis & { __testActivateTab: (id: number) => Promise<void> }).__testActivateTab(tab.id);
+      // What connect() in journey-extension.ts does when a recording starts.
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [0] }, files: ['journey-observer.js'], injectImmediately: true });
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' }, { frameId: 0 });
+      return (response as { ok?: boolean } | undefined)?.ok;
+    }, page.url());
+    await expect(commentActions(page).first()).toBeVisible();
+    expect(await commentActions(page).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))))
+      .toEqual([...threeActions, 'More Comment Options']);
+    expect(identified).toBe(true);
+  } finally {
+    await context.close();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 async function loadSidebar(page: Page, options: { agent: Agent; omit?: string[] }) {
   await page.goto(`${ORIGIN}/sidebar.html`);
@@ -319,10 +386,16 @@ async function loadJourneyPage(page: Page, options: { agent: Agent; maxTouchPoin
   await page.addScriptTag({ content: journeyPageBundle });
 }
 
-test('the journey tab offers recording in a supported browser', async ({ page }) => {
-  await loadJourneyPage(page, { agent: 'chromeMac' });
-  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
-});
+const journeyPageOffered: Array<{ name: string; agent: Agent; maxTouchPoints?: number }> = [
+  { name: 'in a supported browser', agent: 'chromeMac' },
+  { name: 'in Firefox for Android asking for a desktop site', agent: 'firefoxMac', maxTouchPoints: 5 },
+];
+for (const { name, ...options } of journeyPageOffered) {
+  test(`the journey tab offers recording ${name}`, async ({ page }) => {
+    await loadJourneyPage(page, options);
+    await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  });
+}
 
 const journeyPageCases: Array<{ name: string; agent: Agent; maxTouchPoints?: number; omit?: string[] }> = [
   { name: 'on iPhone', agent: 'iPhone', maxTouchPoints: 5 },

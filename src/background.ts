@@ -55,10 +55,10 @@ async function platformInfoReportsIPhoneOrIPad() {
   try { return iPhoneOrIPad({ os: (await api.runtime.getPlatformInfo()).os }); }
   catch { return false; }
 }
-// Page overlays cannot see the APIs checked above, so a page learns before its
-// overlay mounts that this background declined journeys. getPlatformInfo()
-// answers too late for the listeners but still keeps iPhone and iPad pages
-// from offering journeys.
+// Page scripts cannot see the APIs checked above, and a page's user agent may
+// be emulated, so a page learns before its overlay mounts that this background
+// declined journeys. getPlatformInfo() answers too late for the listeners but
+// still keeps iPhone and iPad pages from offering journeys.
 const journeysDeclined = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__
   ? journeys ? platformInfoReportsIPhoneOrIPad() : Promise.resolve(true) : Promise.resolve(false);
 

@@ -40,9 +40,10 @@ export function extensionStore(): Store {
 export function extensionRuntime(onDispose: () => void): Runtime {
   const api = extensionApi();
   const native = location.href === api.runtime.getURL('sidebar.html');
-  // The sidebar sees the extension APIs the background needs; a page overlay
-  // cannot, so it relies on the background's verdict.
-  const journeys = journeysAvailable({ platform: currentPlatform(), api: native ? api : undefined });
+  // The sidebar checks this browser itself. A page overlay trusts the
+  // background's verdict: it cannot see the journey APIs, and its page may be
+  // emulating another device.
+  const journeys = journeysAvailable(native ? { platform: currentPlatform(), api } : undefined);
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;
