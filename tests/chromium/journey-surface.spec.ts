@@ -205,17 +205,21 @@ test('trusted page strictly parses launch intent and shares the journey UI only 
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log
     .filter(entry => entry.kind === 'permission'))).toEqual([]);
   await expect(page.getByRole('alert')).toHaveCount(0);
+  // The link is spent after one Start, so the tab explains how to record again.
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
+  await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeVisible();
 });
 
 for (const hash of ['', 'launch=short', 'launch=valid_nonce-1234567890&extra=1', 'launch=valid%5Fnonce-1234567890', 'launch=invalid/value_1234567890']) {
-  test(`does not start for invalid intent hash ${hash || '(empty)'}`, async ({ page }) => {
+  test(`offers guidance instead of Start for invalid intent hash ${hash || '(empty)'}`, async ({ page }) => {
     await page.setContent('<!doctype html><html><head></head><body><main id="journey"></main></body></html>');
     await page.evaluate(value => { location.hash = value; }, hash);
     await page.addScriptTag({ content: pageBundle(true) });
-    await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Start journey', exact: true }).click();
-    await expect(page.getByRole('alert')).toHaveText('Open anmerko from a website before starting a journey.');
-    expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log.some(entry => entry.kind === 'permission'))).toBe(false);
+    await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+    await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
+    expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log
+      .some(entry => entry.message?.type === 'ANMERKO_JOURNEY_START' || entry.kind === 'permission'))).toBe(false);
   });
 }
 
@@ -229,7 +233,7 @@ test('every review surface styles the screenshot mask dialog', async ({ page }) 
   };
   await page.setContent('<!doctype html><html><head></head><body><main id="journey"></main></body></html>');
   await page.addScriptTag({ content: pageBundle(true) });
-  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
   expect(await page.evaluate(maskDialogRadius)).toBe('12px');
 
   const sidebarBundle = buildSync({
@@ -254,6 +258,29 @@ test('every review surface styles the screenshot mask dialog', async ({ page }) 
     dialog.append(danger, error);
     return [getComputedStyle(dialog).backgroundColor, getComputedStyle(danger).color, getComputedStyle(error).color];
   })).toEqual(['rgb(28, 37, 53)', 'rgb(255, 170, 165)', 'rgb(255, 170, 165)']);
+});
+
+test('the journey tab drops the body margin and leaves room to scroll its last control above a dynamic toolbar', async ({ page }) => {
+  const html = await readFile('public/journey.html', 'utf8');
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.setContent(html.replace('<script src="journey.js"></script>', ''));
+  await page.evaluate(() => { location.hash = 'launch=valid_nonce-1234567890'; });
+  await page.addScriptTag({ content: pageBundle(true) });
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  const layout = await page.evaluate(() => {
+    const view = document.querySelector('.journey-view')!;
+    const buttons = [...view.querySelectorAll('button')];
+    const last = buttons.at(-1)!.getBoundingClientRect();
+    return {
+      bodyMargin: getComputedStyle(document.body).margin,
+      paddingBottom: parseFloat(getComputedStyle(view).paddingBottom),
+      room: document.documentElement.scrollHeight - (last.bottom + scrollY),
+    };
+  });
+  expect(layout.bodyMargin).toBe('0px');
+  // Firefox for Android lays the page out about 65px taller than it shows.
+  expect(layout.paddingBottom).toBeGreaterThanOrEqual(96);
+  expect(layout.room).toBeGreaterThanOrEqual(96);
 });
 
 test('feature-off page renders an unavailable message without contacting the background', async ({ page }) => {

@@ -5,3 +5,9 @@ export function extensionApi(): typeof chrome {
   if (!api) throw new Error('anmerko must run inside a browser extension.');
   return api;
 }
+
+// Firefox manifests declare sidebar_action; Chromium manifests use side_panel.
+export function firefoxExtension(): boolean {
+  try { return 'sidebar_action' in extensionApi().runtime.getManifest(); }
+  catch { return false; }
+}

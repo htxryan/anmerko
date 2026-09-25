@@ -1,7 +1,7 @@
-import { extensionApi } from './platform';
+import { extensionApi, firefoxExtension } from './platform';
 import type { JourneyDraftImage, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import { isJourneyBackgroundSender } from './journey-messaging';
-import type { JourneyClient, JourneyImageChange } from './journey-ui';
+import type { JourneyClient, JourneyImageChange, JourneySavedSummary } from './journey-ui';
 
 type JourneyOwner = { ownerTabId?: number; ownerWindowId?: number };
 type JourneyResponse = { ok: true; value?: unknown } | { ok: false; code?: unknown; error?: unknown };
@@ -11,9 +11,9 @@ const LAUNCH_ERROR = 'Open anmerko from a website before starting a journey.';
 const INTENT_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const BACKEND_GUIDANCE: Record<string, string> = {
   busy: 'Finish or discard the existing journey before starting another.',
-  'owner-unavailable': 'Reopen anmerko from the original website and try again.',
+  'owner-unavailable': 'anmerko could not reach the website tab. On that tab, click anmerko in the browser toolbar or Extensions menu, then try again.',
   'initial-capture-failed': 'The initial journey screenshot failed. Try again.',
-  'launch-expired': 'This launch expired. Reopen anmerko from the original website.',
+  'launch-expired': 'This journey link expired. On the website tab, choose Record journey again.',
   'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
   'stale-review': 'Another review tab changed this journey. Reload the review and try again.',
 };
@@ -52,6 +52,7 @@ export function createJourneyClient(
 
   return {
     supportsEnteredValues: true,
+    pageLoadsEndJourney: firefoxExtension(),
     read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
     updateSummary: async (expected: string, actual: string): Promise<void> => {
       const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
@@ -119,10 +120,10 @@ export function createJourneyClient(
     deleteSnapshot: async (journeyId: string, revision?: number): Promise<void> => {
       await command('ANMERKO_JOURNEY_DELETE_SNAPSHOT', revision === undefined ? { journeyId } : { journeyId, revision });
     },
-    list: async (): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>> => {
+    list: async (): Promise<JourneySavedSummary[]> => {
       const result = await command('ANMERKO_JOURNEY_LIST') as unknown;
       if (!Array.isArray(result)) throw new Error(CLIENT_ERROR);
-      return result as Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>;
+      return result as JourneySavedSummary[];
     },
     start(includeEnteredValues: boolean): Promise<void> {
       let currentOwner: JourneyOwner | undefined;

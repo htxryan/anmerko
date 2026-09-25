@@ -39,10 +39,16 @@ const bundle = () => buildSync({ stdin: { contents: `
   let staleDeleteIds = [];
   let staleListResult = [];
   let failingDeleteIds = [];
+  let startError = null;
+  let firefox = false;
+  let startable = true;
+  let reopenInto = null;
   const client = {
     supportsEnteredValues: true,
+    get pageLoadsEndJourney() { return firefox; },
+    canStart: () => startable,
     read: async () => state,
-    start: async includeEnteredValues => { startCalls.push(includeEnteredValues); },
+    start: async includeEnteredValues => { startCalls.push(includeEnteredValues); if (startError) throw new Error(startError); },
     stop: async () => {},
     discard: async () => { state = { phase: 'idle', epoch: 9 }; changed(); },
     updateSummary: async (expected, actual) => {
@@ -111,6 +117,11 @@ const bundle = () => buildSync({ stdin: { contents: `
       if (!stayInReview) {
         state = { phase: 'saved', epoch: state.epoch + 1, journeyId: draft.id, revision: draft.revision + 1 };
       }
+      // Like the real store, a save lists the journey at its saved revision.
+      listResult = [
+        { journeyId: draft.id, revision: result.revision, updatedAt: draft.updatedAt, stepCount: draft.steps.length, spansPages: false, expected: draft.expected },
+        ...listResult.filter(item => item.journeyId !== draft.id),
+      ];
       changed();
       return result;
     },
@@ -125,6 +136,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     reopen: async journeyId => {
       reopenCalls.push(journeyId);
       if (reopenError) throw reopenError;
+      if (reopenInto) { state = reopenInto(); changed(); }
     },
     deleteSnapshot: async (journeyId, revision) => {
       deleteCalls.push([journeyId, revision]);
@@ -264,6 +276,49 @@ const bundle = () => buildSync({ stdin: { contents: `
     openSnapshotCalls: () => openSnapshotCalls,
     reopenCalls: () => reopenCalls,
     deleteCalls: () => deleteCalls,
+    failStart: message => { startError = message; },
+    setFirefox: value => { firefox = value; changed(); },
+    setStartable: value => { startable = value; changed(); },
+    // Reopening a saved journey lands in review at its saved revision.
+    reopenIntoReview: () => {
+      reopenInto = () => ({ phase: 'reviewing', epoch: 1, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+        draft: { ...reviewingDraft(reviewingSteps()), revision: 2, expected: 'Checkout keeps the item', actual: 'It is empty' } });
+    },
+    setRecording: count => {
+      const draft = reviewingDraft(reviewingSteps().slice(0, count));
+      state = { phase: 'recording', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        documentToken: 'D', deadlineAt: '2026-09-21T00:05:00.000Z', documentCounters: {}, draft };
+      changed();
+    },
+    setReviewingSteps: count => {
+      state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(reviewingSteps().slice(0, count)) };
+      changed();
+    },
+    // One portrait phone capture and one landscape desktop capture.
+    setReviewingWithSizedImages: () => {
+      const draft = reviewingDraft([
+        step('S1', 1, 'initial', { status: 'retained', imageId: 'I1' }),
+        step('S2', 2, 'click', { status: 'retained', imageId: 'I2' }, { target: { label: 'Checkout' } }),
+      ]);
+      const sized = (width, height) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const context = canvas.getContext('2d');
+        context.fillStyle = 'rgb(40, 120, 200)';
+        context.fillRect(0, 0, width, height);
+        context.fillStyle = 'rgb(200, 30, 30)';
+        context.fillRect(0, height - 40, width, 40);
+        const dataUrl = canvas.toDataURL('image/png');
+        return { dataUrl, width, height, byteLength: atob(dataUrl.split(',')[1]).length };
+      };
+      draft.images.I1 = { ...draft.images.I1, ...sized(390, 844) };
+      draft.images.I2 = { ...draft.images.I2, ...sized(1280, 720) };
+      state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft };
+      changed();
+    },
     setIdle: () => {
       summaryError = null; removeError = null; saveError = null;
       openSnapshotError = null; reopenError = null; stayInReview = false;
@@ -566,35 +621,61 @@ test('review explains a stop that left the starting origin and how to record els
   await openReview(page);
   await page.evaluate('journeyReviewHarness.setStopReason("left-site")');
   // The toolbar reopens this review while it is pending, so it must be resolved first.
-  await expect(page.getByRole('status').filter({ hasText: 'left the website' })).toHaveText(
-    'Recording ended because the page left the website you started on. A different domain, subdomain, or port, or a switch between http and https, counts as leaving. Steps recorded before then are kept. To record the other website, save or discard this review first, then open anmerko from the toolbar there.',
-  );
+  const text = 'Recording ended because the page left the website you started on. A different domain, subdomain, or port, or a switch between http and https, counts as leaving. Steps recorded before then are kept. To record the other website, save or discard this review first, then open anmerko from the toolbar there.';
+  await expect(page.locator('.journey-stop-reason')).toHaveText(text);
+  await expect(page.locator('.journey-live [aria-live="polite"]')).toHaveText(text);
 });
 
 test('review explains withdrawn page access after a page load', async ({ page }) => {
   await openReview(page);
   await page.evaluate('journeyReviewHarness.setStopReason("page-access-lost")');
-  await expect(page.getByRole('status').filter({ hasText: 'withdrew' })).toHaveText(
-    "Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. Steps recorded before then are kept. The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.",
-  );
+  const text = "Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. Steps recorded before then are kept. The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.";
+  await expect(page.locator('.journey-stop-reason')).toHaveText(text);
+  await expect(page.locator('.journey-live [aria-live="polite"]')).toHaveText(text);
 });
 
-test('review explains every stop reason, announcing storage failure as an alert', async ({ page }) => {
+test('review explains every stop reason in a notice, announcing storage failure assertively', async ({ page }) => {
   await openReview(page);
   const notices = new Set<string>();
   let previous = '';
+  const polite = page.locator('.journey-live [aria-live="polite"]');
+  const urgent = page.locator('.journey-live [aria-live="assertive"]');
   for (const reason of STOP_REASONS) {
     await page.evaluate(`journeyReviewHarness.setStopReason(${JSON.stringify(reason)})`);
     const notice = page.locator('.journey-stop-reason');
     await expect(notice).toHaveCount(1);
     // Each reason has its own explanation, rendered in place of the last one.
     await expect(notice).not.toHaveText(previous);
-    await expect(notice).toHaveAttribute('role', reason === 'session-storage-limit' ? 'alert' : 'status');
+    // The notice is styled as one, not muted help, and the persistent live
+    // region announces it instead of a status node rebuilt on every render.
+    await expect(notice).toHaveClass(/journey-notice/);
+    await expect(notice).not.toHaveAttribute('role', /.+/);
     previous = (await notice.textContent()) ?? '';
+    const storage = reason === 'session-storage-limit';
+    await expect(storage ? urgent : polite).toHaveText(previous);
+    await expect(storage ? polite : urgent).toHaveText('');
     expect(previous, reason).toMatch(/^(Recording|Journey storage|You stopped)/);
     notices.add(previous);
   }
   expect(notices.size).toBe(STOP_REASONS.length);
+});
+
+test('a stop notice is announced once and survives re-renders without being re-announced', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setStopReason("focus-lost")');
+  const polite = page.locator('.journey-live [aria-live="polite"]');
+  await expect(polite).toHaveText(/^Recording ended because the recorded tab lost focus/);
+  // Clearing the region proves later renders leave it alone.
+  await polite.evaluate(element => { element.textContent = ''; });
+  await page.getByLabel('Expected result').fill('Typing re-renders the review');
+  await expect
+    .poll(async () => Number(await page.evaluate('journeyReviewHarness.summaryCalls().length')), { timeout: 10_000 })
+    .toBe(1);
+  await expect(page.locator('.journey-stop-reason')).toHaveText(/^Recording ended because the recorded tab lost focus/);
+  await expect(polite).toHaveText('');
+  await page.evaluate('journeyReviewHarness.setIdle()');
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await expect(page.locator('.journey-live')).toHaveText('');
 });
 
 test('review shows a navigation destination alongside its source URL', async ({ page }) => {
@@ -748,11 +829,19 @@ test('URL redact buttons call with step id and kind and show redacted marker', a
   await page.getByRole('button', { name: 'Redact source URL for step 1', exact: true }).click();
   await expect.poll(async () => page.evaluate('journeyReviewHarness.redactCalls()'), { timeout: 10_000 })
     .toEqual([[ 'S1', 'source' ]]);
-  await expect(page.getByText('[redacted]', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('Redacted during review.', { exact: true }).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Redact image URL for step 1', exact: true }).click();
+  const step1 = page.locator('li', { has: page.getByRole('heading', { name: /^Step 1 / }) });
+  await expect(step1.getByText('[redacted]', { exact: true })).toBeVisible();
+  // The marker names the field it replaced and takes focus from the Redact button.
+  const sourceMarker = step1.getByText('Source URL redacted during review.', { exact: true });
+  await expect(sourceMarker).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Redact source URL for step 1', exact: true })).toHaveCount(0);
+  // It sits directly after the redacted source URL, before the screenshot URL.
+  expect(await sourceMarker.evaluate(element => element.previousElementSibling?.textContent)).toBe('[redacted]');
+  await page.getByRole('button', { name: 'Redact screenshot URL for step 1', exact: true }).click();
   await expect.poll(async () => page.evaluate('journeyReviewHarness.redactCalls()'), { timeout: 10_000 })
     .toEqual([[ 'S1', 'source' ], [ 'S1', 'capture' ]]);
+  await expect(step1.getByText('Screenshot URL redacted during review.', { exact: true })).toBeFocused();
+  await expect(step1.getByText('Redacted during review.', { exact: true })).toHaveCount(0);
 });
 
 test('destination redact button appears only for navigation steps and redacts only the destination', async ({ page }) => {
@@ -765,7 +854,8 @@ test('destination redact button appears only for navigation steps and redacts on
     .toEqual([['S3', 'destination']]);
   await expect(navigation.getByText('[redacted]', { exact: true })).toBeVisible();
   await expect(navigation.getByText('https://example.test/checkout', { exact: true })).toHaveCount(0);
-  await expect(navigation.getByText('Redacted during review.', { exact: true })).toBeVisible();
+  await expect(navigation.getByText('Destination URL redacted during review.', { exact: true })).toBeFocused();
+  await expect(navigation.getByText('Source URL redacted during review.', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^Redact destination URL/ })).toHaveCount(0);
   await expect(navigation.getByText('https://example.test/start', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Redact source URL for step 3', exact: true })).toBeEnabled();
@@ -785,31 +875,97 @@ test('save enables when ready, saves with acknowledgement, and shows confirmatio
   await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
   await save.click();
   await expect.poll(async () => page.evaluate('journeyReviewHarness.saveCalls()'), { timeout: 10_000 }).toEqual([true]);
-  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
-  await expect(page.getByText(/Journey J1 saved \(revision \d+\)\./, { exact: false })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Back to comments', exact: true })).toBeVisible();
+  const heading = page.getByRole('heading', { name: 'Journey saved' });
+  await expect(heading).toBeFocused();
+  // A friendly confirmation names the journey by its summary, never its raw ID.
+  await expect(page.getByText('“Keeps the item in the cart.” is saved. Reopen, share, or delete it any time from Saved journeys.', { exact: true })).toBeVisible();
+  await expect(page.locator('.journey-view')).not.toContainText('J1');
+  await expect(page.locator('.journey-view')).not.toContainText('revision');
+  // The saved screen offers distinct actions: share this revision or record another.
+  await expect(page.getByRole('button', { name: 'Back to comments' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeEnabled();
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Record another journey', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeFocused();
 });
 
-test('saved journeys list once each with spans scope and a reopen action', async ({ page }) => {
-  await page.goto('http://127.0.0.1:4173');
-  await page.setContent('<!doctype html><html><body></body></html>');
-  await page.addScriptTag({ content: bundle() });
-  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
-  await page.evaluate(`journeyReviewHarness.setList([
-    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true },
-    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
-  ])`);
+test('the saved screen copies and downloads the saved revision', async ({ page, context }) => {
+  await openReview(page);
+  await page.getByLabel('Expected result').fill('Keeps the item in the cart.');
+  await page.getByLabel('Actual result').fill('Checkout is empty.');
+  await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
+  const save = page.getByRole('button', { name: 'Save journey', exact: true });
+  await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
+  await save.click();
+  await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:4173' });
+  await page.getByRole('button', { name: 'Copy Prompt', exact: true }).click();
+  await expect(page.getByText('Journey prompt copied. Download the images to attach them with the prompt.', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('## Recorded journeys');
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeFocused();
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
+  expect((await downloading).suggestedFilename()).toBe('journey-J1.zip');
+  expect(await page.evaluate('journeyReviewHarness.openSnapshotCalls()')).toEqual(['J1', 'J1']);
+});
+
+test('saved journeys list once each with a human label, local time, spans scope, and a reopen action', async ({ page }) => {
+  await openIdleWithSaved(page, savedItems());
   const saved = page.getByRole('region', { name: 'Saved journeys' });
-  await expect(saved).toBeVisible();
-  await expect(saved.getByText('Journey J1 · revision 2 · 3 steps · updated 2026-09-21T01:00:00.000Z', { exact: false })).toBeVisible();
-  await expect(saved.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: false })).toBeVisible();
+  const [first, second] = await page.evaluate(() => ['2026-09-21T01:00:00.000Z', '2026-09-21T02:00:00.000Z']
+    .map(iso => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(Date.parse(iso))));
+  await expect(saved.locator('.journey-saved-title')).toHaveText(['Checkout keeps the item', 'Journey on shop.example/cart']);
+  await expect(saved.locator('.journey-saved-meta')).toHaveText([`Saved ${first} · 3 steps · Spans pages`, `Saved ${second} · 1 step`]);
+  await expect(saved.locator('time').first()).toHaveAttribute('datetime', '2026-09-21T01:00:00.000Z');
+  // Raw IDs and ISO timestamps stay out of visible text.
+  await expect(saved).not.toContainText('J1');
+  await expect(saved).not.toContainText('2026-09-21T');
   await expect(saved.getByText('Spans pages', { exact: true })).toHaveCount(1);
   await expect(saved.locator('li')).toHaveCount(2);
-  await expect(page.getByText('Reopening a saved journey for editing arrives next.', { exact: true })).toHaveCount(0);
-  await saved.getByRole('button', { name: 'Reopen journey J1', exact: true }).click();
+  // Short visible labels keep descriptive, unique accessible names.
+  const reopen = saved.getByRole('button', { name: `Reopen journey: Checkout keeps the item, saved ${first}`, exact: true });
+  await expect(reopen).toHaveText('Reopen');
+  await expect(saved.getByRole('button', { name: `Delete journey: Journey on shop.example/cart, saved ${second}`, exact: true })).toHaveText('Delete');
+  await reopen.click();
   await expect
     .poll(async () => page.evaluate('journeyReviewHarness.reopenCalls()'), { timeout: 10_000 })
     .toEqual(['J1']);
+});
+
+test('saved journeys fall back to an untitled label and keep identical names distinct', async ({ page }) => {
+  await openIdleWithSaved(page, [
+    { journeyId: 'J1', revision: 0, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 2, spansPages: false },
+    { journeyId: 'J2', revision: 0, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 2, spansPages: false },
+  ]);
+  const saved = page.getByRole('region', { name: 'Saved journeys' });
+  await expect(saved.locator('.journey-saved-title')).toHaveText(['Untitled journey', 'Untitled journey']);
+  await expect(saved.getByRole('button', { name: /^Reopen journey: Untitled journey, saved .+ \(1 of 2\)$/ })).toHaveCount(1);
+  await expect(saved.getByRole('button', { name: /^Reopen journey: Untitled journey, saved .+ \(2 of 2\)$/ })).toHaveCount(1);
+});
+
+test('saved journeys lay out without overflow or tall buttons at narrow widths', async ({ page }) => {
+  for (const width of [200, 320, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    await openIdleWithSaved(page, savedItems());
+    const saved = page.getByRole('region', { name: 'Saved journeys' });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), `${width}px`).toBeLessThanOrEqual(0);
+    for (const button of await saved.getByRole('button').all()) {
+      // A single line of text stays under two lines tall.
+      expect((await button.boundingBox())!.height, `${width}px ${await button.textContent()}`).toBeLessThanOrEqual(48);
+    }
+    // Rows and Delete all share one left edge.
+    const lefts = await saved.evaluate(section => [
+      ...Array.from(section.querySelectorAll('.journey-saved-title'), element => element.getBoundingClientRect().left),
+      section.querySelector('.journey-saved-delete-all button')!.getBoundingClientRect().left,
+    ]);
+    expect(new Set(lefts).size, `${width}px`).toBe(1);
+    const meta = saved.locator('.journey-saved-meta').first();
+    // Separators never form their own flex items.
+    expect(await meta.evaluate(element => getComputedStyle(element).display)).toBe('block');
+    const colors = await saved.getByRole('button', { name: /^Delete journey:/ }).first().evaluate(element => getComputedStyle(element).color);
+    expect(colors).toBe('rgb(177, 68, 63)');
+  }
 });
 
 test('reopen surfaces busy errors without leaving the saved list', async ({ page }) => {
@@ -818,12 +974,14 @@ test('reopen surfaces busy errors without leaving the saved list', async ({ page
   await page.addScriptTag({ content: bundle() });
   await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
   await page.evaluate(`journeyReviewHarness.setList([
-    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false },
+    { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' },
   ])`);
   await page.evaluate('journeyReviewHarness.failReopenBusy()');
-  await page.getByRole('button', { name: 'Reopen journey J1', exact: true }).click();
+  const reopen = page.getByRole('button', { name: /^Reopen journey: Checkout keeps the item/ });
+  await reopen.click();
   await expect(page.getByRole('alert')).toHaveText('Finish or discard the current journey before reopening a saved one.');
   await expect(page.getByRole('heading', { name: 'Saved journeys' })).toBeVisible();
+  await expect(reopen).toBeFocused();
 });
 
 test('saved list hides when loading fails without an error wall', async ({ page }) => {
@@ -966,9 +1124,10 @@ test('export controls stay usable at 320 CSS px width', async ({ page }) => {
 });
 
 const savedItems = () => ([
-  { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true },
-  { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+  { journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: true, expected: 'Checkout keeps the item' },
+  { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false, startPage: 'shop.example/cart' },
 ]);
+
 
 async function openIdleWithSaved(page: Page, items: unknown[]) {
   await page.goto('http://127.0.0.1:4173');
@@ -982,32 +1141,34 @@ async function openIdleWithSaved(page: Page, items: unknown[]) {
 test('saved journey delete confirms inline and removes the row with id and revision', async ({ page }) => {
   await openIdleWithSaved(page, savedItems());
   const saved = page.getByRole('region', { name: 'Saved journeys' });
-  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
-  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toBeVisible();
+  await saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item, saved / }).click();
+  await expect(saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / })).toBeVisible();
   expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
-  await saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true }).click();
+  await saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / }).click();
   await expect
     .poll(async () => page.evaluate('journeyReviewHarness.deleteCalls()'), { timeout: 10_000 })
     .toEqual([['J1', 2]]);
   await expect(saved.locator('li')).toHaveCount(1);
-  await expect(saved.getByText('Journey J1 ·', { exact: false })).toHaveCount(0);
-  await expect(saved.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: false })).toBeVisible();
+  await expect(saved.getByText('Checkout keeps the item', { exact: true })).toHaveCount(0);
+  await expect(saved.getByText('Journey on shop.example/cart', { exact: true })).toBeVisible();
+  // The removed row's controls are gone; focus lands on the next row.
+  await expect(saved.getByRole('button', { name: /^Reopen journey: Journey on shop\.example\/cart/ })).toBeFocused();
 });
 
 test('delete confirm disarms with keep or Escape without calling delete', async ({ page }) => {
   await openIdleWithSaved(page, savedItems());
   const saved = page.getByRole('region', { name: 'Saved journeys' });
-  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
-  await saved.getByRole('button', { name: 'Keep journey J1', exact: true }).click();
-  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toHaveCount(0);
+  await saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item, saved / }).click();
+  await saved.getByRole('button', { name: /^Keep journey: Checkout keeps the item, saved / }).click();
+  await expect(saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / })).toHaveCount(0);
   expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
-  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
-  const confirm = saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true });
+  await saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item, saved / }).click();
+  const confirm = saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / });
   await expect(confirm).toBeVisible();
   await confirm.focus();
   await page.keyboard.press('Escape');
-  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toHaveCount(0);
-  await expect(saved.getByRole('button', { name: 'Delete journey J1', exact: true })).toBeFocused();
+  await expect(saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / })).toHaveCount(0);
+  await expect(saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item, saved / })).toBeFocused();
   expect(await page.evaluate('journeyReviewHarness.deleteCalls()')).toEqual([]);
   await expect(saved.locator('li')).toHaveCount(2);
 });
@@ -1015,19 +1176,20 @@ test('delete confirm disarms with keep or Escape without calling delete', async 
 test('stale delete reloads the list and explains the change', async ({ page }) => {
   await openIdleWithSaved(page, savedItems());
   const refreshed = [
-    { journeyId: 'J1', revision: 3, updatedAt: '2026-09-21T03:00:00.000Z', stepCount: 4, spansPages: true },
-    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false },
+    { journeyId: 'J1', revision: 3, updatedAt: '2026-09-21T03:00:00.000Z', stepCount: 4, spansPages: true, expected: 'Checkout keeps the item' },
+    { journeyId: 'J2', revision: 1, updatedAt: '2026-09-21T02:00:00.000Z', stepCount: 1, spansPages: false, startPage: 'shop.example/cart' },
   ];
   await page.evaluate(`journeyReviewHarness.failDeleteStale('J1', ${JSON.stringify(refreshed)})`);
   const saved = page.getByRole('region', { name: 'Saved journeys' });
-  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
-  await saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true }).click();
+  await saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item, saved / }).click();
+  await saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / }).click();
   await expect
     .poll(async () => page.evaluate('journeyReviewHarness.deleteCalls()'), { timeout: 10_000 })
     .toEqual([['J1', 2]]);
   await expect(page.getByRole('alert')).toHaveText('A saved journey changed. The list was reloaded; try again.');
-  await expect(saved.getByText('revision 3', { exact: false })).toBeVisible();
+  await expect(saved.getByText(/4 steps/)).toBeVisible();
   await expect(saved.locator('li')).toHaveCount(2);
+  await expect(saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item/ })).toBeFocused();
 });
 
 test('delete all confirms scope and count, then deletes every journey', async ({ page }) => {
@@ -1042,9 +1204,10 @@ test('delete all confirms scope and count, then deletes every journey', async ({
     .toEqual([['J1', 2], ['J2', 1]]);
   await expect(saved.getByText('Deleted 2 of 2 journeys.', { exact: true })).toBeVisible();
   await expect(page.getByText('No saved journeys yet.', { exact: true })).toBeVisible();
+  await expect(saved.getByRole('heading', { name: 'Saved journeys' })).toBeFocused();
 });
 
-test('delete all reports partial failures by id without raw errors', async ({ page }) => {
+test('delete all reports partial failures by name without raw errors', async ({ page }) => {
   await openIdleWithSaved(page, savedItems());
   await page.evaluate(`journeyReviewHarness.failDeleteIds(['J2'])`);
   const saved = page.getByRole('region', { name: 'Saved journeys' });
@@ -1055,10 +1218,11 @@ test('delete all reports partial failures by id without raw errors', async ({ pa
     .toEqual([['J1', 2], ['J2', 1]]);
   await expect(saved.getByText('Deleted 1 of 2 journeys.', { exact: true })).toBeVisible();
   const alert = page.getByRole('alert');
-  await expect(alert).toHaveText('Could not delete journey J2.');
+  await expect(alert).toHaveText('Could not delete “Journey on shop.example/cart”.');
   await expect(alert).not.toContainText('boom');
   await expect(saved.locator('li')).toHaveCount(1);
-  await expect(saved.getByText('Journey J2 · revision 1 · 1 step · updated 2026-09-21T02:00:00.000Z', { exact: false })).toBeVisible();
+  await expect(saved.getByText('Journey on shop.example/cart', { exact: true })).toBeVisible();
+  await expect(saved.getByRole('button', { name: 'Delete all journeys', exact: true })).toBeFocused();
 });
 
 test('delete all cancel leaves every journey alone', async ({ page }) => {
@@ -1076,9 +1240,9 @@ test('delete controls stay usable at 320 CSS px width', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 700 });
   await openIdleWithSaved(page, savedItems());
   const saved = page.getByRole('region', { name: 'Saved journeys' });
-  await saved.getByRole('button', { name: 'Delete journey J1', exact: true }).click();
-  await expect(saved.getByRole('button', { name: 'Confirm delete journey J1', exact: true })).toBeVisible();
-  await saved.getByRole('button', { name: 'Keep journey J1', exact: true }).click();
+  await saved.getByRole('button', { name: /^Delete journey: Checkout keeps the item, saved / }).click();
+  await expect(saved.getByRole('button', { name: /^Confirm delete journey: Checkout keeps the item, saved / })).toBeVisible();
+  await saved.getByRole('button', { name: /^Keep journey: Checkout keeps the item, saved / }).click();
   await saved.getByRole('button', { name: 'Delete all journeys', exact: true }).click();
   await expect(saved.getByText('Delete 2 saved journeys? This cannot be undone.', { exact: true })).toBeVisible();
   await expect(saved.getByRole('button', { name: 'Confirm delete all journeys', exact: true })).toBeVisible();
@@ -1102,4 +1266,211 @@ test('expired review returns to launch with no stale actions', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Discard journey', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Remove step 1', exact: true })).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'Saved journeys' })).toBeVisible();
+});
+
+async function openIdle(page: Page) {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+}
+
+test('a failed start shows its error beside Start, announces it, keeps focus there, and clears on return', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate(`journeyReviewHarness.setList(${JSON.stringify(savedItems())})`);
+  await expect(page.getByRole('region', { name: 'Saved journeys' })).toBeVisible();
+  const message = 'anmerko could not reach the website tab. On that tab, click anmerko in the browser toolbar or Extensions menu, then try again.';
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify(message)})`);
+  const start = page.getByRole('button', { name: 'Start journey', exact: true });
+  await start.click();
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText(message);
+  await expect(start).toBeFocused();
+  await expect(start).toHaveAccessibleDescription(message);
+  // The error follows Start directly, above the saved list, so it is seen where the reader acted.
+  const [startBox, alertBox, savedBox] = await Promise.all([start.boundingBox(), alert.boundingBox(),
+    page.getByRole('region', { name: 'Saved journeys' }).boundingBox()]);
+  expect(alertBox!.y).toBeGreaterThan(startBox!.y);
+  expect(alertBox!.y + alertBox!.height).toBeLessThan(savedBox!.y);
+  expect(alertBox!.y - (startBox!.y + startBox!.height)).toBeLessThan(40);
+  // Coming back to the surface clears the stale error.
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(alert).toHaveCount(0);
+});
+
+test('Firefox launches say up front that page loads end the journey', async ({ page }) => {
+  await openIdle(page);
+  const notice = 'In Firefox, reloading the page or opening another page ends the journey there. Navigation inside the page, such as a single-page app route change, keeps recording.';
+  await expect(page.getByText(notice, { exact: true })).toHaveCount(0);
+  await page.evaluate('journeyReviewHarness.setFirefox(true)');
+  await expect(page.getByText(notice, { exact: true })).toBeVisible();
+  // It comes before Start, not after.
+  const [noticeBox, startBox] = await Promise.all([page.getByText(notice, { exact: true }).boundingBox(),
+    page.getByRole('button', { name: 'Start journey', exact: true }).boundingBox()]);
+  expect(noticeBox!.y).toBeLessThan(startBox!.y);
+});
+
+test('a surface that cannot start again explains how to record instead of offering a dead Start', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate('journeyReviewHarness.setStartable(false)');
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Include entered values')).toHaveCount(0);
+  await expect(page.getByText('To record a new journey, go to the website tab, click anmerko in the browser toolbar or Extensions menu, and choose Record journey from More Comment Options.', { exact: true })).toBeVisible();
+});
+
+test('recording and review counts use singular and plural forms', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate('journeyReviewHarness.setRecording(1)');
+  await expect(page.getByText('1 step recorded. Continue in the original tab.', { exact: true })).toBeVisible();
+  await page.evaluate('journeyReviewHarness.setRecording(2)');
+  await expect(page.getByText('2 steps recorded. Continue in the original tab.', { exact: true })).toBeVisible();
+  await page.evaluate('journeyReviewHarness.setReviewingSteps(1)');
+  await expect(page.getByText('1 retained step · Entered values: Off', { exact: true })).toBeVisible();
+  await page.evaluate('journeyReviewHarness.setReviewingSteps(3)');
+  await expect(page.getByText('3 retained steps · Entered values: Off', { exact: true })).toBeVisible();
+});
+
+test('each new view takes focus through its heading after Stop, Reopen, and Discard', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate('journeyReviewHarness.setRecording(1)');
+  const stop = page.getByRole('button', { name: 'Stop journey', exact: true });
+  await stop.focus();
+  await page.evaluate('journeyReviewHarness.setReviewing()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeFocused();
+
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm discard journey', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeFocused();
+
+  await page.evaluate(`journeyReviewHarness.setList(${JSON.stringify(savedItems())})`);
+  await page.evaluate('journeyReviewHarness.reopenIntoReview()');
+  await page.getByRole('button', { name: /^Reopen journey: Checkout keeps the item/ }).click();
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeFocused();
+});
+
+test('a new view never steals focus from a reader outside it', async ({ page }) => {
+  await openIdle(page);
+  await page.evaluate(() => {
+    const outside = document.createElement('button');
+    outside.textContent = 'Outside control';
+    document.body.prepend(outside);
+    outside.focus();
+  });
+  await page.evaluate('journeyReviewHarness.setReviewing()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Outside control' })).toBeFocused();
+});
+
+test('step removal lands on the neighbouring step and Keep returns to Remove', async ({ page }) => {
+  await openReview(page);
+  await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
+  await page.getByRole('button', { name: 'Keep step 2', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Remove step 2', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Remove step 2', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Confirm remove step 2', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Confirm remove step 2', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^Step 3 / })).toBeFocused();
+  // The last step falls back to the one before it.
+  await page.getByRole('button', { name: 'Remove step 3', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm remove step 3', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^Step 1 / })).toBeFocused();
+});
+
+test('value editing moves focus into the editor and back to Edit on save, cancel, or Escape', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyReviewHarness.setReviewingWithField()');
+  const edit = page.getByRole('button', { name: 'Edit value for step 4', exact: true });
+  const editor = page.getByLabel('Edit entered value for step 4');
+  await edit.click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(editor).toHaveCount(0);
+  await expect(edit).toBeFocused();
+  await edit.click();
+  await page.getByRole('button', { name: 'Cancel editing step 4', exact: true }).click();
+  await expect(edit).toBeFocused();
+  await edit.click();
+  await editor.fill('edited search');
+  await page.getByRole('button', { name: 'Save value for step 4', exact: true }).click();
+  await expect(page.getByText('edited search', { exact: true })).toBeVisible();
+  await expect(edit).toBeFocused();
+  await page.getByRole('button', { name: 'Remove value for step 4', exact: true }).click();
+  await expect(page.getByText('(empty value)', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove value for step 4', exact: true })).toBeFocused();
+});
+
+test('discarding an unsaved review asks for confirmation that Keep or Escape disarms', async ({ page }) => {
+  await openReview(page);
+  const discard = page.getByRole('button', { name: 'Discard journey', exact: true });
+  await discard.click();
+  const confirm = page.getByRole('button', { name: 'Confirm discard journey', exact: true });
+  await expect(confirm).toBeFocused();
+  await expect(confirm).toHaveAccessibleDescription('Discard this journey? Its steps and screenshots are deleted and cannot be recovered.');
+  await page.getByRole('button', { name: 'Keep reviewing', exact: true }).click();
+  await expect(discard).toBeFocused();
+  await discard.click();
+  await page.keyboard.press('Escape');
+  await expect(confirm).toHaveCount(0);
+  await expect(discard).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+});
+
+test('an unchanged reopened journey exports and discards in one step, keeping its saved copy', async ({ page }) => {
+  await openReview(page);
+  // Re-entering the view: the draft is exactly the stored revision.
+  await page.evaluate(`journeyReviewHarness.setList([
+    { journeyId: 'J1', revision: 0, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' },
+  ])`);
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download Markdown + Images', exact: true })).toBeEnabled();
+  await expect(page.getByText('Save first to copy or download this journey.', { exact: true })).toHaveCount(0);
+  const discard = page.getByRole('button', { name: 'Discard journey', exact: true });
+  await expect(discard).toHaveAccessibleDescription('Discarding closes this review. The saved copy stays in Saved journeys.');
+
+  // An edit makes the draft differ from its saved revision again.
+  await page.getByLabel('Expected result').fill('Edited after reopening');
+  await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeDisabled({ timeout: 10_000 });
+  await discard.click();
+  await expect(page.getByRole('button', { name: 'Confirm discard journey', exact: true }))
+    .toHaveAccessibleDescription('Discard your unsaved changes? The last saved copy stays in Saved journeys.');
+});
+
+test('screenshots show whole at every width and tall ones can be enlarged', async ({ page }) => {
+  for (const width of [320, 390, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto('http://127.0.0.1:4173');
+    await page.setContent('<!doctype html><html><body></body></html>');
+    await page.addScriptTag({ content: bundle() });
+    await page.evaluate('journeyReviewHarness.setReviewingWithSizedImages()');
+    const portrait = page.locator('.journey-image').first();
+    const landscape = page.locator('.journey-image').nth(1);
+    for (const [image, ratio] of [[portrait, 390 / 844], [landscape, 1280 / 720]] as const) {
+      // The preview box keeps the capture's aspect ratio (within its 1px border), so nothing is cropped.
+      const box = (await image.boundingBox())!;
+      expect(Math.abs((box.width - 2) / (box.height - 2) - ratio), `${width}px`).toBeLessThan(0.02);
+      expect(box.height, `${width}px`).toBeLessThanOrEqual(442);
+      expect(box.x + box.width, `${width}px`).toBeLessThanOrEqual(width);
+    }
+    // The bottom band of the portrait capture is on screen once scrolled to.
+    await portrait.scrollIntoViewIfNeeded();
+    const box = (await portrait.boundingBox())!;
+    const bottom = await page.evaluate(async ({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      return element?.localName;
+    }, { x: box.x + box.width / 2, y: box.y + box.height - 10 });
+    expect(bottom).toBe('anmerko-image');
+    const enlarge = page.getByRole('button', { name: 'Enlarge screenshot for step 1', exact: true });
+    await expect(page.getByRole('button', { name: 'Enlarge screenshot for step 2', exact: true })).toHaveCount(0);
+    await enlarge.click();
+    const fit = page.getByRole('button', { name: 'Fit screenshot for step 1', exact: true });
+    await expect(fit).toBeFocused();
+    const enlarged = (await portrait.boundingBox())!;
+    expect(enlarged.width).toBeGreaterThan(box.width);
+    expect(Math.abs((enlarged.width - 2) / (enlarged.height - 2) - 390 / 844)).toBeLessThan(0.02);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    await fit.click();
+    await expect(enlarge).toBeFocused();
+  }
 });

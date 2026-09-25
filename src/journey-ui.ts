@@ -12,6 +12,17 @@ export type JourneyImageChange =
   | { operation: 'replace'; image: NormalizedJourneyPng; maskedFrom: string }
   | { operation: 'remove' };
 
+// expected and startPage only label the list; stores that predate them omit them.
+export interface JourneySavedSummary {
+  journeyId: string;
+  revision: number;
+  updatedAt: string;
+  stepCount: number;
+  spansPages: boolean;
+  expected?: string;
+  startPage?: string;
+}
+
 export interface JourneyClient {
   read(): Promise<JourneySession>;
   // Called directly from the Start click, so the adapter can request optional
@@ -28,13 +39,22 @@ export interface JourneyClient {
   openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
   reopen(journeyId: string): Promise<void>;
   deleteSnapshot(journeyId: string, revision?: number): Promise<void>;
-  list(): Promise<Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }>>;
+  list(): Promise<JourneySavedSummary[]>;
   subscribe(changed: () => void): () => void;
   supportsEnteredValues?: boolean;
+  // Firefox withdraws page access on every document load, so a reload or a
+  // link to another page ends the journey there.
+  pageLoadsEndJourney?: boolean;
+  // A launch tab starts at most one journey. Without this, Start stays available.
+  canStart?(): boolean;
 }
 
 const JOURNEY_STORAGE_ERROR = 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.';
 const EXPORT_SIZE_ERROR = 'Journey export exceeds the export size limit.';
+const REDACTED = '[redacted]';
+// Previews fit this height so a tall phone capture is shown whole, never cropped.
+const IMAGE_FIT_HEIGHT = 440;
+const TITLE_CHARACTERS = 60;
 
 // Preamble for journey-only archives. Static notes keep their own product
 // preamble in core.ts; journeys export without static notes here.
@@ -70,6 +90,9 @@ const stopNotices: Record<StopReason, string> = {
   'page-access-lost': `Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. ${KEPT} The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.`,
 };
 
+const PAGE_LOAD_NOTICE = 'In Firefox, reloading the page or opening another page ends the journey there. Navigation inside the page, such as a single-page app route change, keeps recording.';
+const START_ELSEWHERE = 'To record a new journey, go to the website tab, click anmerko in the browser toolbar or Extensions menu, and choose Record journey from More Comment Options.';
+
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
   if (text !== undefined) element.textContent = text;
@@ -77,9 +100,49 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   return element;
 }
 
+function count(value: number, singular: string, plural = `${singular}s`): string {
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
 function elapsed(ms: number): string {
   const seconds = Math.floor(ms / 1_000);
   return `+${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}.${String(ms % 1_000).padStart(3, '0')}`;
+}
+
+function message(caught: unknown, fallback: string): string {
+  return caught instanceof Error && caught.message ? caught.message : fallback;
+}
+
+// A saved journey is named by what its reporter expected, then by the page it
+// started on. Visible text never shows raw journey IDs.
+export function savedJourneyTitle(item: Pick<JourneySavedSummary, 'expected' | 'startPage'>): string {
+  const expected = typeof item.expected === 'string' ? item.expected.replace(/\s+/g, ' ').trim() : '';
+  const startPage = typeof item.startPage === 'string' ? item.startPage.trim() : '';
+  const title = expected || (startPage ? `Journey on ${startPage}` : 'Untitled journey');
+  const characters = Array.from(title);
+  return characters.length > TITLE_CHARACTERS ? `${characters.slice(0, TITLE_CHARACTERS - 1).join('').trimEnd()}…` : title;
+}
+
+export function savedJourneyTime(updatedAt: string): string {
+  const time = Date.parse(updatedAt);
+  if (!Number.isFinite(time)) return 'at an unknown time';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(time);
+}
+
+// Accessible names repeat the title and time; identical ones gain an ordinal.
+function savedJourneyNames(items: JourneySavedSummary[]): Map<string, string> {
+  const names = items.map(item => `${savedJourneyTitle(item)}, saved ${savedJourneyTime(item.updatedAt)}`);
+  const totals = new Map<string, number>();
+  for (const name of names) totals.set(name, (totals.get(name) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return new Map(items.map((item, index) => {
+    const name = names[index];
+    const total = totals.get(name) ?? 1;
+    if (total === 1) return [item.journeyId, name];
+    const ordinal = (seen.get(name) ?? 0) + 1;
+    seen.set(name, ordinal);
+    return [item.journeyId, `${name} (${ordinal} of ${total})`];
+  }));
 }
 
 // Mount only in a trusted extension surface (or an isolated demo adapter).
@@ -87,9 +150,16 @@ function elapsed(ms: number): string {
 export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => void {
   const view = node('section', undefined, 'journey-view');
   view.setAttribute('aria-label', 'Journey recording and review');
+  // Live regions sit outside the re-rendered view, so each notice is read once.
+  const live = node('div', undefined, 'journey-live');
+  const politeLive = node('p');
+  politeLive.setAttribute('aria-live', 'polite');
+  const urgentLive = node('p');
+  urgentLive.setAttribute('aria-live', 'assertive');
+  live.append(politeLive, urgentLive);
   // The mask dialog lives beside the view so review re-renders never remove it.
   const imageDialog = node('div', undefined, 'journey-image-dialog');
-  root.append(view, imageDialog);
+  root.append(view, live, imageDialog);
   let state: JourneySession = { phase: 'idle', epoch: 0 };
   let busy = false;
   let alive = true;
@@ -97,12 +167,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let actionVersion = 0;
   let includeEnteredValues = false;
   let error = '';
+  let startError = '';
   let loadFailed = false;
   let summaryPending: { expected: string; actual: string } | null = null;
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
   let summarySaving = false;
   let confirmingRemove: string | null = null;
   let removing = false;
+  let confirmingDiscard: string | null = null;
   let confirmingDelete: string | null = null;
   let deletingJourney: string | null = null;
   let confirmingDeleteAll = false;
@@ -111,7 +183,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let acknowledged = false;
   let acknowledgedFor = '';
   let rendering = false;
-  let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }> | null = null;
+  let renderedPhase: JourneySession['phase'] | undefined;
+  let announcedNotice = '';
+  let savedJourneys: JourneySavedSummary[] | null = null;
   let editingStepId: string | null = null;
   let editingText = '';
   let editingChecked = false;
@@ -122,12 +196,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let downloadBusy = false;
   let exportStatus = '';
   let exportStatusFor: string | null = null;
-  let lastSaved: { journeyId: string; revision: number } | null = null;
   let imageEditor: { journeyId: string; imageId: string; abort: AbortController } | null = null;
   let imageBusy: string | null = null;
   let confirmingImageRemove: string | null = null;
+  // Focus targets, in order, for a change that removes or disables the
+  // focused control. Applied once the change settles, only if focus was lost.
   let pendingFocus: string[] | null = null;
   let imageStatus: { stepId: string; text: string } | null = null;
+  const enlargedImages = new Set<string>();
 
   async function refresh() {
     const current = ++version;
@@ -137,11 +213,13 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if ((next.phase === 'idle' || next.phase === 'saved')
         && state.phase !== 'idle' && state.phase !== 'saved') includeEnteredValues = false;
       state = next;
+      const exportKey = next.phase === 'reviewing' ? `${next.draft.id}@${next.draft.revision}`
+        : next.phase === 'saved' ? `${next.journeyId}@${next.revision}` : null;
+      if (exportStatusFor !== exportKey) { exportStatus = ''; exportStatusFor = null; }
       if (next.phase === 'reviewing') {
         if (acknowledgedFor !== '' && acknowledgedFor !== next.draft.id) acknowledged = false;
         acknowledgedFor = next.draft.id;
-        const draftKey = `${next.draft.id}@${next.draft.revision}`;
-        if (exportStatusFor !== draftKey) { exportStatus = ''; exportStatusFor = null; }
+        if (confirmingDiscard !== null && confirmingDiscard !== next.draft.id) confirmingDiscard = null;
         if (confirmingRemove !== null && !next.draft.steps.some(step => step.id === confirmingRemove)) confirmingRemove = null;
         if (confirmingImageRemove !== null && !next.draft.steps.some(step => step.id === confirmingImageRemove
           && step.image.status === 'retained')) confirmingImageRemove = null;
@@ -153,18 +231,19 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         acknowledgedFor = '';
         summaryPending = null;
         confirmingRemove = null;
+        confirmingDiscard = null;
         confirmingImageRemove = null;
         imageBusy = null;
         imageStatus = null;
-        pendingFocus = null;
         editingStepId = null;
         valueBusy = null;
         redactBusy = null;
         saveBusy = false;
-        copyBusy = false;
-        downloadBusy = false;
-        exportStatus = '';
-        exportStatusFor = null;
+        enlargedImages.clear();
+        if (next.phase !== 'saved') {
+          copyBusy = false;
+          downloadBusy = false;
+        }
       }
       const editor = imageEditor;
       if (editor && (next.phase !== 'reviewing' || next.draft.id !== editor.journeyId
@@ -180,7 +259,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       } else if (confirmingDelete !== null && savedJourneys?.some(item => item.journeyId === confirmingDelete) !== true) {
         confirmingDelete = null;
       }
-      if (next.phase === 'idle') {
+      // Review reads the list too: export and discard depend on whether this
+      // exact revision is already stored, which survives leaving the view.
+      if (next.phase === 'idle' || next.phase === 'reviewing' || next.phase === 'saved') {
         try {
           const list = typeof (client as Partial<JourneyClient>).list === 'function'
             ? await client.list()
@@ -205,21 +286,24 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
   }
 
-  function action(label: string, operation: () => Promise<void>, primary = false, canCancel = false) {
-    const button = node('button', label, primary ? 'journey-primary' : 'journey-secondary');
+  type Variant = 'primary' | 'secondary' | 'danger';
+
+  function action(label: string, operation: () => Promise<void>, variant: Variant = 'secondary', canCancel = false, focusId?: string) {
+    const button = node('button', label, `journey-${variant}`);
     button.type = 'button';
     button.disabled = busy && !canCancel;
+    if (focusId) button.setAttribute('data-focus-id', focusId);
     button.addEventListener('click', () => {
       if (busy && !canCancel) return;
       const current = ++actionVersion;
       error = '';
       let request: Promise<void>;
       try { request = operation(); }
-      catch (caught) { error = caught instanceof Error ? caught.message : 'Could not complete this action.'; render(); return; }
+      catch (caught) { error = message(caught, 'Could not complete this action.'); render(); return; }
       busy = true;
       render();
       void request.catch(caught => {
-        if (current === actionVersion) error = caught instanceof Error ? caught.message : 'Could not complete this action. Try again.';
+        if (current === actionVersion) error = message(caught, 'Could not complete this action. Try again.');
       }).finally(() => {
         if (current !== actionVersion) return;
         busy = false;
@@ -229,8 +313,40 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return button;
   }
 
+  function heading(text: string): HTMLHeadingElement {
+    const title = node('h1', text);
+    title.tabIndex = -1;
+    title.setAttribute('data-focus-id', 'journey-heading');
+    return title;
+  }
+
   function isStaleReview(caught: unknown): boolean {
     return caught instanceof Error && (caught as { code?: unknown }).code === 'stale-review';
+  }
+
+  function settling(): boolean {
+    return busy || removing || saveBusy || copyBusy || downloadBusy || deletingAll
+      || valueBusy !== null || redactBusy !== null || imageBusy !== null || deletingJourney !== null;
+  }
+
+  function scopeActiveElement(): Element | null {
+    const scope = view.getRootNode();
+    return scope instanceof ShadowRoot ? scope.activeElement : document.activeElement;
+  }
+
+  // Focus is lost when it fell back to the document, not when the reader moved on.
+  function focusLost(): boolean {
+    const scope = view.getRootNode();
+    const documentLost = document.activeElement === null || document.activeElement === document.body;
+    return scope instanceof ShadowRoot ? scope.activeElement === null && documentLost : documentLost;
+  }
+
+  function focusControl(...focusIds: string[]): boolean {
+    for (const focusId of focusIds) {
+      const target = view.querySelector(`[data-focus-id="${CSS.escape(focusId)}"]`);
+      if (target instanceof HTMLElement && !target.matches(':disabled')) { target.focus(); return true; }
+    }
+    return false;
   }
 
   async function refreshSavedList(): Promise<void> {
@@ -272,12 +388,21 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (summaryPending === wanted) summaryPending = null;
       error = '';
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+      error = message(caught, 'Could not update the journey. Try again.');
     } finally {
       summarySaving = false;
     }
     if (summaryPending && summaryPending !== wanted) scheduleSummarySave();
     else if (alive) void refresh();
+  }
+
+  function savedRevision(draft: JourneyDraftV1): JourneySavedSummary | undefined {
+    return savedJourneys?.find(item => item.journeyId === draft.id);
+  }
+
+  // Exporting needs the exact revision in storage; raw drafts never export.
+  function draftIsSaved(draft: JourneyDraftV1): boolean {
+    return savedRevision(draft)?.revision === draft.revision;
   }
 
   function renderSummaries(draft: JourneyDraftV1): HTMLElement {
@@ -301,10 +426,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       area.disabled = busy;
       area.setAttribute('aria-describedby', `${field.id}-count`);
       area.setAttribute('data-focus-id', field.id);
-      const count = node('p', `${codePoints(field.value)} / 4000 characters`, 'journey-count');
-      count.id = `${field.id}-count`;
+      const counter = node('p', `${codePoints(field.value)} / 4000 characters`, 'journey-count');
+      counter.id = `${field.id}-count`;
       area.addEventListener('input', () => {
-        count.textContent = `${codePoints(area.value)} / 4000 characters`;
+        counter.textContent = `${codePoints(area.value)} / 4000 characters`;
         summaryPending = { expected: areas.expected.value, actual: areas.actual.value };
         scheduleSummarySave();
       });
@@ -319,56 +444,63 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         }
       });
       areas[field.key] = area;
-      wrapper.append(label, area, count);
+      wrapper.append(label, area, counter);
       section.append(wrapper);
     }
     return section;
   }
 
-  function renderRemove(step: { id: string; seq: number }): HTMLElement {
+  function renderRemove(step: { id: string; seq: number }, steps: JourneyDraftStep[]): HTMLElement {
     const wrap = node('div', undefined, 'journey-step-actions');
     if (confirmingRemove === step.id) {
       const confirm = node('button', `Confirm remove step ${step.seq}`, 'journey-danger');
       confirm.type = 'button';
       confirm.disabled = busy || removing;
       confirm.setAttribute('data-focus-id', `remove-${step.id}`);
+      const disarm = () => {
+        confirmingRemove = null;
+        render();
+        focusControl(`remove-${step.id}`);
+      };
       confirm.addEventListener('click', () => {
         if (busy || removing) return;
+        // A removed step takes its controls with it; land on its neighbour.
+        const index = steps.findIndex(candidate => candidate.id === step.id);
+        const neighbour = steps[index + 1] ?? steps[index - 1];
+        pendingFocus = [`remove-${step.id}`, ...(neighbour ? [`step-${neighbour.id}`] : []), 'journey-heading'];
         confirmingRemove = null;
         removing = true;
         error = '';
         render();
         void client.removeStep(step.id).then(() => { error = ''; }).catch(caught => {
-          error = caught instanceof Error ? caught.message : 'Could not remove this step. Try again.';
+          error = message(caught, 'Could not remove this step. Try again.');
         }).finally(() => {
           removing = false;
           if (alive) void refresh();
         });
       });
       confirm.addEventListener('keydown', event => {
-        if (event.key === 'Escape') { event.preventDefault(); confirmingRemove = null; render(); }
+        if (event.key === 'Escape') { event.preventDefault(); disarm(); }
       });
       const keep = node('button', `Keep step ${step.seq}`, 'journey-secondary');
       keep.type = 'button';
       keep.disabled = busy || removing;
-      keep.addEventListener('click', () => { confirmingRemove = null; render(); });
+      keep.addEventListener('click', disarm);
       wrap.append(confirm, keep);
     } else {
       const remove = node('button', `Remove step ${step.seq}`, 'journey-secondary');
       remove.type = 'button';
       remove.disabled = busy || removing;
       remove.setAttribute('data-focus-id', `remove-${step.id}`);
-      remove.addEventListener('click', () => { confirmingRemove = step.id; confirmingImageRemove = null; render(); });
+      remove.addEventListener('click', () => {
+        confirmingRemove = step.id;
+        confirmingImageRemove = null;
+        render();
+        focusControl(`remove-${step.id}`);
+      });
       wrap.append(remove);
     }
     return wrap;
-  }
-
-  function focusControl(...focusIds: string[]): void {
-    for (const focusId of focusIds) {
-      const target = view.querySelector(`[data-focus-id="${CSS.escape(focusId)}"]`);
-      if (target instanceof HTMLElement) { target.focus(); return; }
-    }
   }
 
   function stepList(seqs: number[]): string {
@@ -394,7 +526,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       imageStatus = { stepId: step.id, text: `Screenshot for ${subject} ${change.operation === 'remove' ? 'removed' : 'masked'}.` };
       if (change.operation === 'remove') pendingFocus = [`step-${step.id}`];
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : 'Could not update the screenshot. Try again.';
+      error = message(caught, 'Could not update the screenshot. Try again.');
     } finally {
       imageBusy = null;
       if (alive) void refresh();
@@ -429,6 +561,31 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     await changeImage(step, imageId, result.kind === 'applied'
       ? { operation: 'replace', image: result.image, maskedFrom }
       : { operation: 'remove' }, returnTo, subject);
+  }
+
+  // The preview keeps the capture's aspect ratio and fits a bounded height, so
+  // reviewers always see the whole image they will share. Tall captures can
+  // switch to the full column width to read small text.
+  function renderPreview(step: { id: string; seq: number }, image: JourneyDraftImage & { dataUrl: string }): HTMLElement[] {
+    const preview = privateImage(image.dataUrl, `Screenshot for step ${step.seq}`);
+    preview.className = 'journey-image';
+    const width = image.width > 0 ? image.width : 16;
+    const height = image.height > 0 ? image.height : 9;
+    const enlarged = enlargedImages.has(step.id);
+    preview.style.aspectRatio = `${width} / ${height}`;
+    preview.style.width = enlarged
+      ? `min(100%, ${width}px)`
+      : `min(100%, ${Math.round(IMAGE_FIT_HEIGHT * width / height * 100) / 100}px)`;
+    if (height <= width) return [preview];
+    const size = node('button', `${enlarged ? 'Fit' : 'Enlarge'} screenshot for step ${step.seq}`, 'journey-secondary journey-image-size');
+    size.type = 'button';
+    size.setAttribute('data-focus-id', `size-image-${step.id}`);
+    size.addEventListener('click', () => {
+      if (enlargedImages.has(step.id)) enlargedImages.delete(step.id);
+      else enlargedImages.add(step.id);
+      render();
+    });
+    return [preview, size];
   }
 
   function renderImageReview(
@@ -549,7 +706,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function renderValueEditor(step: { id: string; seq: number; enteredValue: { kind: string; value?: string; values?: string[]; multiple?: boolean; checked?: boolean } }): HTMLElement {
     const wrap = node('div', undefined, 'journey-value-editor');
     const labelText = `Edit entered value for step ${step.seq}`;
-    const cancelEditing = () => { editingStepId = null; render(); };
+    const cancelEditing = () => {
+      editingStepId = null;
+      render();
+      focusControl(`edit-value-${step.id}`);
+    };
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); cancelEditing(); }
     };
@@ -618,10 +779,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (busy || valueBusy !== null) return;
       valueBusy = step.id;
       error = '';
+      pendingFocus = [`edit-value-${step.id}`, `save-value-${step.id}`];
       render();
       const wanted = editedValueFor(step.enteredValue, editingText, editingChecked);
       void client.editValue(step.id, wanted).then(() => { error = ''; }).catch(caught => {
-        error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+        error = message(caught, 'Could not update the journey. Try again.');
       }).finally(() => {
         valueBusy = null;
         if (error === '') editingStepId = null;
@@ -632,10 +794,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const cancel = node('button', `Cancel editing step ${step.seq}`, 'journey-secondary');
     cancel.type = 'button';
     cancel.disabled = busy || valueBusy !== null;
-    cancel.addEventListener('click', () => { editingStepId = null; render(); });
-    cancel.addEventListener('keydown', event => {
-      if (event.key === 'Escape') { event.preventDefault(); editingStepId = null; render(); }
-    });
+    cancel.addEventListener('click', cancelEditing);
+    cancel.addEventListener('keydown', onEscape);
     actions.append(save, cancel);
     wrap.append(actions);
     return wrap;
@@ -670,6 +830,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         } else editingChecked = current.checked === true;
         editingStepId = step.id;
         render();
+        focusControl(`value-${step.id}`);
       });
       const remove = node('button', `Remove value for step ${step.seq}`, 'journey-secondary');
       remove.type = 'button';
@@ -681,7 +842,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         error = '';
         render();
         void client.editValue(step.id, emptyValueFor(entered as { kind: string; multiple?: boolean })).then(() => { error = ''; }).catch(caught => {
-          error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+          error = message(caught, 'Could not update the journey. Try again.');
         }).finally(() => {
           valueBusy = null;
           if (alive) void refresh();
@@ -693,13 +854,23 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
-  function renderUrlRedact(step: JourneyDraftStep, draft: JourneyDraftV1): HTMLElement {
+  // A redacted URL names itself beside the field it replaced; the marker also
+  // takes focus from the Redact button it replaces.
+  function renderUrl(step: { id: string }, label: string, url: string, target: JourneyUrlRedactionTarget): HTMLElement[] {
+    const parts: HTMLElement[] = [node('p', label, 'journey-meta-label'), node('p', String(url), 'journey-url')];
+    if (url === REDACTED) {
+      const marker = node('p', `${label} redacted during review.`, 'journey-edited');
+      marker.tabIndex = -1;
+      marker.setAttribute('data-focus-id', `redacted-${target}-${step.id}`);
+      parts.push(marker);
+    }
+    return parts;
+  }
+
+  function renderUrlRedact(step: JourneyDraftStep, draft: JourneyDraftV1): HTMLElement | null {
     const wrap = node('div', undefined, 'journey-url-actions');
     const redactControl = (url: string, target: JourneyUrlRedactionTarget, label: string) => {
-      if (url === '[redacted]') {
-        wrap.append(node('p', 'Redacted during review.', 'journey-edited'));
-        return;
-      }
+      if (url === REDACTED) return;
       const redact = node('button', `Redact ${label} URL for step ${step.seq}`, 'journey-secondary');
       redact.type = 'button';
       redact.disabled = busy || redactBusy !== null;
@@ -708,9 +879,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         if (busy || redactBusy !== null) return;
         redactBusy = `${step.id}:${target}`;
         error = '';
+        pendingFocus = [`redact-${target}-${step.id}`, `redacted-${target}-${step.id}`, `step-${step.id}`];
         render();
         void client.redactUrl(step.id, target).then(() => { error = ''; }).catch(caught => {
-          error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
+          error = message(caught, 'Could not update the journey. Try again.');
         }).finally(() => {
           redactBusy = null;
           if (alive) void refresh();
@@ -722,9 +894,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (step.kind === 'navigation') redactControl(step.navigation.toUrl, 'destination', 'destination');
     if (step.image.status === 'retained') {
       const image = draft.images[step.image.imageId];
-      if (image) redactControl(image.captureUrl, 'capture', 'image');
+      if (image) redactControl(image.captureUrl, 'capture', 'screenshot');
     }
-    return wrap;
+    return wrap.childElementCount > 0 ? wrap : null;
   }
 
   function renderSave(draft: JourneyDraftV1): HTMLElement {
@@ -771,11 +943,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       saveBusy = true;
       error = '';
       render();
-      void client.save(acknowledged).then(result => {
-        lastSaved = { journeyId: result.journeyId, revision: result.revision };
+      void client.save(acknowledged).then(() => {
         error = '';
       }).catch(caught => {
-        error = caught instanceof Error ? caught.message : 'Could not save this journey. Try again.';
+        error = message(caught, 'Could not save this journey. Try again.');
       }).finally(() => {
         saveBusy = false;
         if (alive) void refresh();
@@ -788,32 +959,29 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
-  function renderExport(draft: JourneyDraftV1): HTMLElement | null {
+  function renderExport(target: { journeyId: string; revision: number }, exportable: boolean, primary = false): HTMLElement | null {
     if (typeof (client as Partial<JourneyClient>).openSnapshot !== 'function') return null;
     const section = node('section', undefined, 'journey-export');
     section.setAttribute('aria-label', 'Share journey');
     section.append(node('h2', 'Share journey'));
-    const saved = lastSaved !== null
-      && lastSaved.journeyId === draft.id
-      && lastSaved.revision === draft.revision;
-    if (!saved) {
+    if (!exportable) {
       const note = node('p', 'Save first to copy or download this journey.', 'journey-help');
       note.id = 'journey-export-note';
       section.append(note);
     }
     const actions = node('div', undefined, 'journey-export-actions');
-    const copy = node('button', 'Copy Prompt', 'journey-secondary');
+    const copy = node('button', 'Copy Prompt', primary ? 'journey-primary' : 'journey-secondary');
     copy.type = 'button';
-    copy.disabled = !saved || copyBusy || downloadBusy;
+    copy.disabled = !exportable || copyBusy || downloadBusy;
     copy.setAttribute('data-focus-id', 'journey-copy');
-    if (!saved) copy.setAttribute('aria-describedby', 'journey-export-note');
-    copy.addEventListener('click', () => { void copyJourney(draft); });
+    if (!exportable) copy.setAttribute('aria-describedby', 'journey-export-note');
+    copy.addEventListener('click', () => { void copyJourney(target); });
     const download = node('button', 'Download Markdown + Images', 'journey-secondary');
     download.type = 'button';
-    download.disabled = !saved || copyBusy || downloadBusy;
+    download.disabled = !exportable || copyBusy || downloadBusy;
     download.setAttribute('data-focus-id', 'journey-download');
-    if (!saved) download.setAttribute('aria-describedby', 'journey-export-note');
-    download.addEventListener('click', () => { void downloadJourney(draft); });
+    if (!exportable) download.setAttribute('aria-describedby', 'journey-export-note');
+    download.addEventListener('click', () => { void downloadJourney(target); });
     actions.append(copy, download);
     section.append(actions);
     if (exportStatus) {
@@ -824,7 +992,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
-  async function copyJourney(draft: JourneyDraftV1): Promise<void> {
+  async function copyJourney(target: { journeyId: string; revision: number }): Promise<void> {
     if (copyBusy || downloadBusy) return;
     copyBusy = true;
     exportStatus = '';
@@ -832,12 +1000,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     error = '';
     render();
     try {
-      const snapshot = await client.openSnapshot(draft.id);
-      lastSaved = { journeyId: snapshot.draft.id, revision: snapshot.draft.revision };
+      const snapshot = await client.openSnapshot(target.journeyId);
       const text = journeyPromptSection([journeyDraftToManifest(snapshot.draft)]);
       await navigator.clipboard.writeText(text);
       exportStatus = 'Journey prompt copied. Download the images to attach them with the prompt.';
-      exportStatusFor = `${draft.id}@${draft.revision}`;
+      exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch {
       error = 'Could not copy the journey prompt. Use Download Markdown + Images to export this journey.';
@@ -847,7 +1014,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (alive) render();
   }
 
-  async function downloadJourney(draft: JourneyDraftV1): Promise<void> {
+  async function downloadJourney(target: { journeyId: string; revision: number }): Promise<void> {
     if (copyBusy || downloadBusy) return;
     downloadBusy = true;
     exportStatus = '';
@@ -855,16 +1022,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     error = '';
     render();
     try {
-      const snapshot = await client.openSnapshot(draft.id);
-      lastSaved = { journeyId: snapshot.draft.id, revision: snapshot.draft.revision };
+      const snapshot = await client.openSnapshot(target.journeyId);
       const archive = feedbackArchive([], JOURNEY_EXPORT_PREAMBLE, [snapshot.draft]);
       downloadFile(new Blob([archive], { type: 'application/zip' }), `journey-${snapshot.draft.id}.zip`);
       exportStatus = 'Journey download started. Extract the ZIP and attach its images with the prompt.';
-      exportStatusFor = `${draft.id}@${draft.revision}`;
+      exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : '';
-      error = message === EXPORT_SIZE_ERROR
+      error = message(caught, '') === EXPORT_SIZE_ERROR
         ? EXPORT_SIZE_ERROR
         : 'Could not download the journey. Try again.';
     } finally {
@@ -873,23 +1038,69 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (alive) render();
   }
 
-  function renderDelete(
-    item: { journeyId: string; revision: number },
-  ): HTMLElement {
-    const wrap = node('div', undefined, 'journey-step-actions');
+  // An unchanged reopened journey stays saved, so closing it needs no
+  // confirmation. Anything unsaved is confirmed like Remove step.
+  function renderDiscard(draft: JourneyDraftV1): HTMLElement {
+    const section = node('div', undefined, 'journey-discard');
+    const saved = savedRevision(draft);
+    if (saved !== undefined && saved.revision === draft.revision) {
+      const note = node('p', 'Discarding closes this review. The saved copy stays in Saved journeys.', 'journey-help');
+      note.id = 'journey-discard-note';
+      const discard = action('Discard journey', () => client.discard(), 'secondary', false, 'journey-discard');
+      discard.setAttribute('aria-describedby', note.id);
+      section.append(note, discard);
+    } else if (confirmingDiscard === draft.id) {
+      const scope = node('p', saved
+        ? 'Discard your unsaved changes? The last saved copy stays in Saved journeys.'
+        : 'Discard this journey? Its steps and screenshots are deleted and cannot be recovered.', 'journey-help');
+      scope.id = 'journey-discard-scope';
+      const actions = node('div', undefined, 'journey-step-actions');
+      const confirm = action('Confirm discard journey', () => client.discard(), 'danger', false, 'journey-confirm-discard');
+      confirm.setAttribute('aria-describedby', scope.id);
+      const disarm = () => {
+        confirmingDiscard = null;
+        render();
+        focusControl('journey-discard');
+      };
+      confirm.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); disarm(); }
+      });
+      const keep = node('button', 'Keep reviewing', 'journey-secondary');
+      keep.type = 'button';
+      keep.disabled = busy;
+      keep.addEventListener('click', disarm);
+      actions.append(confirm, keep);
+      section.append(scope, actions);
+    } else {
+      const discard = node('button', 'Discard journey', 'journey-secondary');
+      discard.type = 'button';
+      discard.disabled = busy;
+      discard.setAttribute('data-focus-id', 'journey-discard');
+      discard.addEventListener('click', () => {
+        if (busy) return;
+        confirmingDiscard = draft.id;
+        confirmingRemove = null;
+        confirmingImageRemove = null;
+        render();
+        focusControl('journey-confirm-discard');
+      });
+      section.append(discard);
+    }
+    return section;
+  }
+
+  function renderDelete(item: JourneySavedSummary, name: string, next: JourneySavedSummary | undefined): HTMLElement[] {
     const idle = deletingJourney === null && !deletingAll && !busy;
     if (confirmingDelete === item.journeyId) {
-      const confirm = node('button', `Confirm delete journey ${item.journeyId}`, 'journey-danger');
+      const confirm = node('button', 'Confirm delete', 'journey-danger');
       confirm.type = 'button';
       confirm.disabled = !idle;
+      confirm.setAttribute('aria-label', `Confirm delete journey: ${name}`);
       confirm.setAttribute('data-focus-id', `confirm-delete-${item.journeyId}`);
-      const disarm = (focusTrigger: boolean) => {
+      const disarm = () => {
         confirmingDelete = null;
         render();
-        if (focusTrigger) {
-          const trigger = view.querySelector(`[data-focus-id="${CSS.escape(`delete-${item.journeyId}`)}"]`);
-          if (trigger instanceof HTMLElement) trigger.focus();
-        }
+        focusControl(`delete-${item.journeyId}`);
       };
       confirm.addEventListener('click', () => {
         if (!idle) return;
@@ -897,6 +1108,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         deletingJourney = item.journeyId;
         deleteStatus = '';
         error = '';
+        // A stale delete keeps the row; otherwise land on the next one.
+        pendingFocus = [`delete-${item.journeyId}`, ...(next ? [`reopen-${next.journeyId}`, `delete-${next.journeyId}`] : []), 'journey-saved-heading'];
         render();
         void client.deleteSnapshot(item.journeyId, item.revision).then(() => {
           error = '';
@@ -911,37 +1124,36 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         });
       });
       confirm.addEventListener('keydown', event => {
-        if (event.key === 'Escape') { event.preventDefault(); disarm(true); }
+        if (event.key === 'Escape') { event.preventDefault(); disarm(); }
       });
-      const keep = node('button', `Keep journey ${item.journeyId}`, 'journey-secondary');
+      const keep = node('button', 'Keep', 'journey-secondary');
       keep.type = 'button';
       keep.disabled = !idle;
-      keep.addEventListener('click', () => { disarm(true); });
-      wrap.append(confirm, keep);
-    } else {
-      const remove = node('button', `Delete journey ${item.journeyId}`, 'journey-secondary');
-      remove.type = 'button';
-      remove.disabled = !idle;
-      remove.setAttribute('data-focus-id', `delete-${item.journeyId}`);
-      remove.addEventListener('click', () => {
-        confirmingDelete = item.journeyId;
-        confirmingDeleteAll = false;
-        render();
-        const confirm = view.querySelector(`[data-focus-id="${CSS.escape(`confirm-delete-${item.journeyId}`)}"]`);
-        if (confirm instanceof HTMLElement) confirm.focus();
-      });
-      wrap.append(remove);
+      keep.setAttribute('aria-label', `Keep journey: ${name}`);
+      keep.addEventListener('click', disarm);
+      return [confirm, keep];
     }
-    return wrap;
+    const remove = node('button', 'Delete', 'journey-danger-outline');
+    remove.type = 'button';
+    remove.disabled = !idle;
+    remove.setAttribute('aria-label', `Delete journey: ${name}`);
+    remove.setAttribute('data-focus-id', `delete-${item.journeyId}`);
+    remove.addEventListener('click', () => {
+      confirmingDelete = item.journeyId;
+      confirmingDeleteAll = false;
+      render();
+      focusControl(`confirm-delete-${item.journeyId}`);
+    });
+    return [remove];
   }
 
-  function renderDeleteAll(count: number): HTMLElement {
+  function renderDeleteAll(total: number): HTMLElement {
     const wrap = node('div', undefined, 'journey-saved-delete-all');
     const idle = deletingJourney === null && !deletingAll && !busy;
     if (confirmingDeleteAll) {
       const scope = node(
         'p',
-        `Delete ${count} saved ${count === 1 ? 'journey' : 'journeys'}? This cannot be undone.`,
+        `Delete ${count(total, 'saved journey')}? This cannot be undone.`,
         'journey-help',
       );
       scope.id = 'journey-delete-all-scope';
@@ -952,13 +1164,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       confirm.disabled = !idle;
       confirm.setAttribute('aria-describedby', 'journey-delete-all-scope');
       confirm.setAttribute('data-focus-id', 'confirm-delete-all');
-      const disarm = (focusTrigger: boolean) => {
+      const disarm = () => {
         confirmingDeleteAll = false;
         render();
-        if (focusTrigger) {
-          const trigger = view.querySelector('[data-focus-id="delete-all"]');
-          if (trigger instanceof HTMLElement) trigger.focus();
-        }
+        focusControl('delete-all');
       };
       confirm.addEventListener('click', () => {
         if (!idle) return;
@@ -966,9 +1175,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         deletingAll = true;
         deleteStatus = '';
         error = '';
+        pendingFocus = ['delete-all', 'journey-saved-heading'];
         render();
-        const snapshot = (savedJourneys ?? []).map(item => ({ journeyId: item.journeyId, revision: item.revision }));
-        const failures: string[] = [];
+        const snapshot = (savedJourneys ?? []).map(item => ({ journeyId: item.journeyId, revision: item.revision, title: savedJourneyTitle(item) }));
+        const failed: string[] = [];
         let deleted = 0;
         void (async () => {
           for (const item of snapshot) {
@@ -976,11 +1186,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
               await client.deleteSnapshot(item.journeyId, item.revision);
               deleted += 1;
             } catch {
-              failures.push(item.journeyId);
+              failed.push(item.title);
             }
           }
-          deleteStatus = `Deleted ${deleted} of ${snapshot.length} journeys.`;
-          error = failures.map(journeyId => `Could not delete journey ${journeyId}.`).join(' ');
+          deleteStatus = `Deleted ${deleted} of ${count(snapshot.length, 'journey')}.`;
+          error = failed.map(title => `Could not delete “${title}”.`).join(' ');
         })().finally(() => {
           deletingAll = false;
           if (alive) void refreshSavedList();
@@ -988,16 +1198,16 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         });
       });
       confirm.addEventListener('keydown', event => {
-        if (event.key === 'Escape') { event.preventDefault(); disarm(true); }
+        if (event.key === 'Escape') { event.preventDefault(); disarm(); }
       });
       const cancel = node('button', 'Cancel', 'journey-secondary');
       cancel.type = 'button';
       cancel.disabled = !idle;
-      cancel.addEventListener('click', () => { disarm(true); });
+      cancel.addEventListener('click', disarm);
       actions.append(confirm, cancel);
       wrap.append(actions);
     } else {
-      const remove = node('button', 'Delete all journeys', 'journey-secondary');
+      const remove = node('button', 'Delete all journeys', 'journey-danger-outline');
       remove.type = 'button';
       remove.disabled = !idle;
       remove.setAttribute('data-focus-id', 'delete-all');
@@ -1005,8 +1215,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         confirmingDeleteAll = true;
         confirmingDelete = null;
         render();
-        const confirm = view.querySelector('[data-focus-id="confirm-delete-all"]');
-        if (confirm instanceof HTMLElement) confirm.focus();
+        focusControl('confirm-delete-all');
       });
       wrap.append(remove);
     }
@@ -1017,29 +1226,37 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (savedJourneys === null) return null;
     const section = node('section', undefined, 'journey-saved-list');
     section.setAttribute('aria-label', 'Saved journeys');
-    section.append(node('h2', 'Saved journeys'));
+    const title = node('h2', 'Saved journeys');
+    title.tabIndex = -1;
+    title.setAttribute('data-focus-id', 'journey-saved-heading');
+    section.append(title);
     if (savedJourneys.length === 0) {
       section.append(node('p', 'No saved journeys yet.', 'journey-help'));
     } else {
+      const names = savedJourneyNames(savedJourneys);
       const list = node('ul', undefined, 'journey-saved-items');
-      for (const item of savedJourneys) {
+      savedJourneys.forEach((item, index, items) => {
+        const name = names.get(item.journeyId) ?? savedJourneyTitle(item);
         const row = node('li', undefined, 'journey-saved-item');
-        const steps = `${item.stepCount} ${item.stepCount === 1 ? 'step' : 'steps'}`;
-        row.append(node('span', `Journey ${item.journeyId} · revision ${item.revision} · ${steps} · updated ${item.updatedAt}`, 'journey-saved-label'));
-        if (item.spansPages === true) {
-          const spans = node('span', 'Spans pages', 'journey-saved-spans');
-          row.append(' · ', spans);
-        }
+        row.append(node('p', savedJourneyTitle(item), 'journey-saved-title'));
+        const meta = node('p', undefined, 'journey-saved-meta');
+        const time = node('time', savedJourneyTime(item.updatedAt));
+        time.dateTime = item.updatedAt;
+        meta.append('Saved ', time, ` · ${count(item.stepCount, 'step')}`);
+        if (item.spansPages === true) meta.append(' · ', node('span', 'Spans pages', 'journey-saved-spans'));
+        row.append(meta);
+        const actions = node('div', undefined, 'journey-saved-actions');
         if (typeof (client as Partial<JourneyClient>).reopen === 'function') {
-          const reopen = action(`Reopen journey ${item.journeyId}`, () => client.reopen(item.journeyId));
-          reopen.setAttribute('data-focus-id', `reopen-${item.journeyId}`);
-          row.append(reopen);
+          const reopen = action('Reopen', () => client.reopen(item.journeyId), 'secondary', false, `reopen-${item.journeyId}`);
+          reopen.setAttribute('aria-label', `Reopen journey: ${name}`);
+          actions.append(reopen);
         }
         if (typeof (client as Partial<JourneyClient>).deleteSnapshot === 'function') {
-          row.append(renderDelete(item));
+          actions.append(...renderDelete(item, name, items[index + 1] ?? items[index - 1]));
         }
+        if (actions.childElementCount > 0) row.append(actions);
         list.append(row);
-      }
+      });
       section.append(list);
       if (typeof (client as Partial<JourneyClient>).deleteSnapshot === 'function') {
         section.append(renderDeleteAll(savedJourneys.length));
@@ -1053,10 +1270,120 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
+  // The error sits next to Start so it is seen and announced where the reader acted.
+  function renderStart(): HTMLElement {
+    const wrap = node('div', undefined, 'journey-start');
+    if (client.canStart?.() === false) {
+      wrap.append(node('p', START_ELSEWHERE, 'journey-notice'));
+    } else {
+      const buttons = node('div', undefined, 'journey-actions');
+      const start = node('button', 'Start journey', 'journey-primary');
+      start.type = 'button';
+      start.disabled = busy;
+      start.setAttribute('data-focus-id', 'journey-start');
+      if (startError) start.setAttribute('aria-describedby', 'journey-start-error');
+      start.addEventListener('click', () => {
+        if (busy) return;
+        const current = ++actionVersion;
+        const retry = ['journey-start', 'journey-start-error'];
+        startError = '';
+        error = '';
+        pendingFocus = retry;
+        let request: Promise<void>;
+        try { request = client.start(includeEnteredValues); }
+        catch (caught) {
+          startError = message(caught, 'Could not start the journey. Try again.');
+          render();
+          focusControl(...retry);
+          return;
+        }
+        busy = true;
+        render();
+        void request.catch(caught => {
+          if (current === actionVersion) startError = message(caught, 'Could not start the journey. Try again.');
+        }).finally(async () => {
+          if (current !== actionVersion) return;
+          busy = false;
+          if (!alive) return;
+          await refresh();
+          // A start that briefly reached "starting" moved focus to that heading.
+          const active = scopeActiveElement();
+          if (startError && alive && (focusLost() || active?.getAttribute('data-focus-id') === 'journey-heading')) focusControl(...retry);
+        });
+      });
+      buttons.append(start);
+      if (busy) buttons.append(action('Cancel start', () => client.stop(), 'secondary', true, 'journey-cancel-start'));
+      wrap.append(buttons);
+    }
+    if (startError) {
+      const alert = node('p', startError, 'journey-error');
+      alert.id = 'journey-start-error';
+      alert.setAttribute('role', 'alert');
+      alert.tabIndex = -1;
+      alert.setAttribute('data-focus-id', 'journey-start-error');
+      wrap.append(alert);
+    }
+    return wrap;
+  }
+
+  function renderStep(step: JourneyDraftStep, draft: JourneyDraftV1, sharedSteps: Map<string, number[]>): HTMLElement {
+    const item = node('li'); item.value = step.seq;
+    const targetLabel = step.kind === 'field-change' || step.kind === 'click'
+      ? (typeof step.target.label === 'string' ? step.target.label : 'text field')
+      : '';
+    const label = step.kind === 'initial' ? 'Initial view'
+      : step.kind === 'navigation' ? 'Navigation'
+      : `${step.kind === 'click' ? 'Click' : 'Entered value'}: ${targetLabel}`;
+    const title = node('h2', `Step ${step.seq} · ${label}`);
+    title.tabIndex = -1;
+    title.setAttribute('data-focus-id', `step-${step.id}`);
+    item.append(title, node('p', elapsed(step.elapsedMs), 'journey-time'));
+    item.append(...renderUrl(step, 'Source URL', step.sourceUrl, 'source'));
+    if (step.kind === 'navigation') item.append(...renderUrl(step, 'Destination URL', step.navigation.toUrl, 'destination'));
+    if (step.image.status === 'retained') {
+      const image = draft.images[step.image.imageId];
+      if (image) {
+        item.append(...renderUrl(step, 'Screenshot URL', image.captureUrl, 'capture'));
+        item.append(node('p', `Captured ${image.capturedAt}`, 'journey-time'));
+        if (image.dataUrl) item.append(...renderPreview(step, image as JourneyDraftImage & { dataUrl: string }));
+        item.append(renderImageReview(step, step.image.imageId, image, sharedSteps.get(step.image.imageId) ?? []));
+      }
+    } else {
+      const reason = step.image.status === 'unavailable' ? failures[step.image.reason]
+        : step.image.status === 'removed' ? 'removed during review' : 'capture pending';
+      item.append(node('p', `Screenshot unavailable: ${reason}.`, 'journey-help'));
+    }
+    if (imageStatus?.stepId === step.id) {
+      const status = node('p', imageStatus.text, 'journey-status');
+      status.setAttribute('role', 'status');
+      item.append(status);
+    }
+    const entered = renderEnteredValue(step as { id: string; seq: number; kind: string; enteredValue?: { kind: string; value?: string; values?: string[]; checked?: boolean; truncated?: boolean; edited?: true } });
+    if (entered) item.append(entered);
+    const redact = renderUrlRedact(step, draft);
+    if (redact) item.append(redact);
+    item.append(renderRemove(step, draft.steps));
+    return item;
+  }
+
+  function announceStop(draft: JourneyDraftV1): HTMLElement | null {
+    const reason = draft.stopReason;
+    const text = reason ? stopNotices[reason] : undefined;
+    if (!reason || !text) return null;
+    // A storage failure can still lose the draft, so it interrupts.
+    const storage = reason === 'session-storage-limit';
+    const key = `${draft.id}:${reason}`;
+    if (announcedNotice !== key) {
+      announcedNotice = key;
+      (storage ? urgentLive : politeLive).textContent = text;
+      (storage ? politeLive : urgentLive).textContent = '';
+    }
+    return node('p', text, `journey-notice journey-stop-reason${storage ? ' journey-notice-error' : ''}`);
+  }
+
   function render() {
     if (!alive) return;
-    const scope = view.getRootNode();
-    const activeElement = scope instanceof ShadowRoot ? scope.activeElement : document.activeElement;
+    const activeElement = scopeActiveElement();
     const inView = activeElement instanceof HTMLElement && view.contains(activeElement);
     const focusId = inView ? activeElement.getAttribute('data-focus-id') : null;
     const selection = activeElement instanceof HTMLTextAreaElement && inView
@@ -1064,107 +1391,75 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       : activeElement instanceof HTMLInputElement && activeElement.type === 'text' && inView
         ? [activeElement.selectionStart ?? 0, activeElement.selectionEnd ?? 0] as const
         : null;
-    const oldFocus = view.contains(activeElement) ? activeElement?.textContent : null;
+    const oldFocus = inView ? activeElement.textContent : null;
+    const phaseChanged = renderedPhase !== undefined && renderedPhase !== state.phase;
+    renderedPhase = state.phase;
+    if (state.phase !== 'reviewing' && announcedNotice) {
+      announcedNotice = '';
+      politeLive.textContent = '';
+      urgentLive.textContent = '';
+    }
     rendering = true;
     try { view.replaceChildren(); } finally { rendering = false; }
     view.append(node('p', 'anmerko', 'journey-brand'));
     if (state.phase === 'idle') {
-      view.append(node('h1', 'Record a journey'));
+      view.append(heading('Record a journey'));
       view.append(node('p', 'Record clicks and screenshots on the website you start from. Stop whenever you are ready to review.', 'journey-help'));
       view.append(node('p', 'Screenshots and full URLs can contain personal information, even when entered values are off. Review and remove sensitive details before sharing.', 'journey-notice'));
-      if (client.supportsEnteredValues) {
-        const label = node('label', undefined, 'journey-option');
-        const input = node('input');
-        input.type = 'checkbox'; input.checked = includeEnteredValues; input.disabled = busy;
-        input.setAttribute('data-focus-id', 'journey-include-values');
-        input.setAttribute('aria-label', 'Include entered values');
-        input.addEventListener('change', () => { includeEnteredValues = input.checked; });
-        label.append(input, node('span', 'Include entered values'));
-        view.append(label);
-      } else view.append(node('p', 'Entered values: Off', 'journey-help'));
-      view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded; a different domain, subdomain, or port, or a switch between http and https, ends recording.', 'journey-help'));
-      const buttons = node('div', undefined, 'journey-actions');
-      buttons.append(action('Start journey', () => client.start(includeEnteredValues), true));
-      if (busy) buttons.append(action('Cancel start', () => client.stop(), false, true));
-      view.append(buttons);
+      if (client.pageLoadsEndJourney) view.append(node('p', PAGE_LOAD_NOTICE, 'journey-notice'));
+      if (client.canStart?.() !== false) {
+        if (client.supportsEnteredValues) {
+          const label = node('label', undefined, 'journey-option');
+          const input = node('input');
+          input.type = 'checkbox'; input.checked = includeEnteredValues; input.disabled = busy;
+          input.setAttribute('data-focus-id', 'journey-include-values');
+          input.setAttribute('aria-label', 'Include entered values');
+          input.addEventListener('change', () => { includeEnteredValues = input.checked; });
+          label.append(input, node('span', 'Include entered values'));
+          view.append(label);
+        } else view.append(node('p', 'Entered values: Off', 'journey-help'));
+        view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded; a different domain, subdomain, or port, or a switch between http and https, ends recording.', 'journey-help'));
+      }
+      view.append(renderStart());
       const saved = renderSavedList();
       if (saved) view.append(saved);
     } else if (state.phase === 'saved') {
-      view.append(node('h1', 'Journey saved'));
-      view.append(node('p', `Journey ${state.journeyId} saved (revision ${state.revision}).`, 'journey-help'));
-      view.append(action('Back to comments', () => client.discard(), true));
+      const journeyId = state.journeyId;
+      const entry = savedJourneys?.find(item => item.journeyId === journeyId);
+      view.append(heading('Journey saved'));
+      view.append(node('p', entry
+        ? `“${savedJourneyTitle(entry)}” is saved. Reopen, share, or delete it any time from Saved journeys.`
+        : 'Your journey is saved. Reopen, share, or delete it any time from Saved journeys.', 'journey-help'));
+      const sharing = renderExport({ journeyId, revision: state.revision }, true, true);
+      if (sharing) view.append(sharing);
+      const buttons = node('div', undefined, 'journey-actions');
+      buttons.append(action('Record another journey', () => client.discard(), 'secondary', false, 'journey-record-another'));
+      view.append(buttons);
     } else if (state.phase === 'starting' || state.phase === 'recording') {
       const recording = state.phase === 'recording';
-      view.append(node('h1', recording ? 'Recording journey' : 'Taking the first screenshot…'));
-      const status = node('p', recording ? `${state.draft.steps.length} steps recorded. Continue in the original tab.` : 'Recording begins after the first screenshot succeeds.', 'journey-help');
+      view.append(heading(recording ? 'Recording journey' : 'Taking the first screenshot…'));
+      const status = node('p', recording ? `${count(state.draft.steps.length, 'step')} recorded. Continue in the original tab.` : 'Recording begins after the first screenshot succeeds.', 'journey-help');
       status.setAttribute('role', 'status');
-      view.append(status, action(recording ? 'Stop journey' : 'Cancel start', () => client.stop(), true, true));
+      view.append(status, action(recording ? 'Stop journey' : 'Cancel start', () => client.stop(), 'primary', true, 'journey-stop'));
     } else if (state.phase === 'reviewing') {
-      view.append(node('h1', 'Review journey'));
-      view.append(node('p', `${state.draft.steps.length} retained steps · Entered values: ${state.draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
-      const stopNotice = state.draft.stopReason ? stopNotices[state.draft.stopReason] : undefined;
-      if (stopNotice) {
-        // A storage failure can still lose the draft, so it interrupts.
-        const storage = state.draft.stopReason === 'session-storage-limit';
-        const notice = node('p', stopNotice, `${storage ? 'journey-error' : 'journey-help'} journey-stop-reason`);
-        notice.setAttribute('role', storage ? 'alert' : 'status');
-        view.append(notice);
-      }
-      view.append(renderSummaries(state.draft));
+      const draft = state.draft;
+      view.append(heading('Review journey'));
+      view.append(node('p', `${count(draft.steps.length, 'retained step')} · Entered values: ${draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
+      const notice = announceStop(draft);
+      if (notice) view.append(notice);
+      view.append(renderSummaries(draft));
       const sharedSteps = new Map<string, number[]>();
-      for (const step of state.draft.steps) {
+      for (const step of draft.steps) {
         if (step.image.status === 'retained') sharedSteps.set(step.image.imageId, [...(sharedSteps.get(step.image.imageId) ?? []), step.seq]);
       }
       const list = node('ol', undefined, 'journey-steps');
-      for (const step of state.draft.steps) {
-        const item = node('li'); item.value = step.seq;
-        const targetLabel = step.kind === 'field-change' || step.kind === 'click'
-          ? (typeof step.target.label === 'string' ? step.target.label : 'text field')
-          : '';
-        const label = step.kind === 'initial' ? 'Initial view'
-          : step.kind === 'navigation' ? 'Navigation'
-          : `${step.kind === 'click' ? 'Click' : 'Entered value'}: ${targetLabel}`;
-        const heading = node('h2', `Step ${step.seq} · ${label}`);
-        heading.tabIndex = -1;
-        heading.setAttribute('data-focus-id', `step-${step.id}`);
-        item.append(heading, node('p', elapsed(step.elapsedMs), 'journey-time'));
-        item.append(node('p', 'Source URL', 'journey-meta-label'), node('p', String(step.sourceUrl), 'journey-url'));
-        if (step.kind === 'navigation') {
-          item.append(node('p', 'Destination URL', 'journey-meta-label'), node('p', String(step.navigation.toUrl), 'journey-url'));
-        }
-        if (step.image.status === 'retained') {
-          const image = state.draft.images[step.image.imageId];
-          if (image) {
-            item.append(node('p', 'Screenshot URL', 'journey-meta-label'), node('p', String(image.captureUrl), 'journey-url'));
-            item.append(node('p', `Captured ${image.capturedAt}`, 'journey-time'));
-            if (image.dataUrl) {
-              const preview = privateImage(image.dataUrl, `Screenshot for step ${step.seq}`);
-              preview.className = 'journey-image'; item.append(preview);
-            }
-            item.append(renderImageReview(step, step.image.imageId, image, sharedSteps.get(step.image.imageId) ?? []));
-          }
-        } else {
-          const reason = step.image.status === 'unavailable' ? failures[step.image.reason]
-            : step.image.status === 'removed' ? 'removed during review' : 'capture pending';
-          item.append(node('p', `Screenshot unavailable: ${reason}.`, 'journey-help'));
-        }
-        if (imageStatus?.stepId === step.id) {
-          const status = node('p', imageStatus.text, 'journey-status');
-          status.setAttribute('role', 'status');
-          item.append(status);
-        }
-        const entered = renderEnteredValue(step as { id: string; seq: number; kind: string; enteredValue?: { kind: string; value?: string; values?: string[]; checked?: boolean; truncated?: boolean; edited?: true } });
-        if (entered) item.append(entered);
-        item.append(renderUrlRedact(step, state.draft));
-        item.append(renderRemove(step));
-        list.append(item);
-      }
-      view.append(list, renderSave(state.draft));
-      const sharing = renderExport(state.draft);
+      for (const step of draft.steps) list.append(renderStep(step, draft, sharedSteps));
+      view.append(list, renderSave(draft));
+      const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, draftIsSaved(draft));
       if (sharing) view.append(sharing);
-      view.append(action('Discard journey', () => client.discard()));
+      view.append(renderDiscard(draft));
     } else {
-      view.append(node('h1', 'Saving journey'));
+      view.append(heading('Saving journey'));
       const saving = node('p', 'Saving your reviewed journey…', 'journey-help');
       saving.setAttribute('role', 'status');
       view.append(saving);
@@ -1173,29 +1468,48 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (error) {
       const alert = node('p', error, 'journey-error'); alert.setAttribute('role', 'alert'); view.append(alert);
     }
+    let restored = false;
     if (focusId) {
       const restore = view.querySelector(`[data-focus-id="${CSS.escape(focusId)}"]`);
-      if (restore instanceof HTMLElement) {
+      if (restore instanceof HTMLElement && !restore.matches(':disabled')) {
         restore.focus();
+        restored = true;
         if ((restore instanceof HTMLTextAreaElement || (restore instanceof HTMLInputElement && restore.type === 'text')) && selection) {
           try { restore.setSelectionRange(selection[0], selection[1]); } catch { /* Keep focus without caret restore. */ }
         }
+      } else if (restore instanceof HTMLElement) {
+        // A busy control cannot hold focus; reclaim it once the change settles.
+        pendingFocus = [focusId, ...(pendingFocus ?? []).filter(id => id !== focusId)];
       }
-    } else if (oldFocus) Array.from(view.querySelectorAll('button')).find(button => button.textContent === oldFocus && !button.disabled)?.focus();
-    if (pendingFocus !== null && imageBusy === null) {
-      // Reclaim only focus the pending change dropped; a reader who moved on keeps their place.
-      const settled = document.activeElement;
-      if (settled === null || settled === document.body) focusControl(...pendingFocus);
+    } else if (oldFocus) {
+      const button = Array.from(view.querySelectorAll('button')).find(candidate => candidate.textContent === oldFocus && !candidate.disabled);
+      if (button) { button.focus(); restored = true; }
+    }
+    if (phaseChanged) {
+      // A new view announces itself through its heading unless focus survived.
+      pendingFocus = null;
+      if (!restored && (inView || focusLost())) focusControl('journey-heading');
+    } else if (pendingFocus !== null && !settling()) {
+      // Reclaim only focus the change dropped; a reader who moved on keeps their place.
+      if (!restored && focusLost()) focusControl(...pendingFocus);
       pendingFocus = null;
     }
   }
 
+  // Returning to this surface clears a start error that no longer applies.
+  const reactivated = () => {
+    if (document.visibilityState !== 'visible' || !startError || !alive) return;
+    startError = '';
+    void refresh();
+  };
+  document.addEventListener('visibilitychange', reactivated);
   const unsubscribe = client.subscribe(() => { void refresh(); });
   void refresh();
   return () => {
     alive = false; ++version;
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     imageEditor?.abort.abort();
-    unsubscribe(); view.remove(); imageDialog.remove();
+    document.removeEventListener('visibilitychange', reactivated);
+    unsubscribe(); view.remove(); live.remove(); imageDialog.remove();
   };
 }

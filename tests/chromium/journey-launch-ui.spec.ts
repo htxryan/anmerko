@@ -83,9 +83,14 @@ test('consumed launch intent shows guidance instead of a dead start', async ({ p
   await page.addScriptTag({ content: journeyPageBundle });
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'This journey link already opened' })).toBeVisible();
+  const heading = page.getByRole('heading', { name: 'This journey link already opened' });
+  await expect(heading).toBeFocused();
   await expect(page.getByText('Each journey link works once. Return to the website tab and choose Record journey to start a fresh journey.', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
+  // The guidance keeps the journey surface's styling instead of bare HTML.
+  const section = page.locator('section.journey-view');
+  await expect(section).toContainText('anmerko');
+  expect(await section.evaluate(element => getComputedStyle(element).paddingTop)).toBe('24px');
 });
 
 test('panels without a journey client keep exactly the three comment actions', async ({ page }) => {
@@ -178,4 +183,54 @@ test('a native panel ignores page recording', async ({ page }) => {
   await page.evaluate(() => (window as any).setJourneyRecording(true));
   await expect(panel).toBeVisible();
   expect(await page.locator('anmerko-overlay .app').evaluate(element => element.classList.contains('journey-recording'))).toBe(false);
+});
+
+function contrast(first: string, second: string): number {
+  const luminance = (color: string) => {
+    const [r, g, b] = color.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number).map(value => {
+      const channel = value / 255;
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [light, dark] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+test('journey entry points show a focus ring with at least 3:1 contrast in both themes, and Back returns focus', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, inPanel: true });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const options = page.getByRole('button', { name: 'More Comment Options' });
+  await expect(options).toBeEnabled();
+  const ring = (selector: string) => page.locator(`anmerko-overlay ${selector}`).evaluate(element => {
+    // Settle the theme's background transition before sampling colors.
+    for (const animation of element.getAnimations()) animation.finish();
+    const style = getComputedStyle(element);
+    // The ring sits inside the control when its offset is negative, over the control's own fill.
+    const behind = parseFloat(style.outlineOffset) < 0 ? style.backgroundColor : getComputedStyle(element.closest('.journey-container, .panel')!).backgroundColor;
+    return { outline: style.outlineColor, width: style.outlineWidth, behind };
+  });
+  for (const theme of ['light', 'dark']) {
+    await page.locator('anmerko-overlay .app').evaluate((element, value) => element.setAttribute('data-theme', value), theme);
+    await options.focus();
+    await page.keyboard.press('ArrowDown');
+    const record = page.getByRole('menuitem', { name: 'Record journey', exact: true });
+    await expect(record).toBeFocused();
+    const recordRing = await ring('.journey-record');
+    expect(contrast(recordRing.outline, recordRing.behind), `${theme} record`).toBeGreaterThanOrEqual(3);
+    await page.keyboard.press('Escape');
+    await expect(options).toBeFocused();
+    const optionsRing = await ring('.comment-options');
+    expect(optionsRing.width).toBe('3px');
+    expect(contrast(optionsRing.outline, optionsRing.behind), `${theme} options`).toBeGreaterThanOrEqual(3);
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    const back = page.getByRole('button', { name: 'Back to comments', exact: true });
+    await expect(back).toBeFocused();
+    const backRing = await ring('.journey-return');
+    expect(contrast(backRing.outline, backRing.behind), `${theme} back`).toBeGreaterThanOrEqual(3);
+    await page.keyboard.press('Enter');
+    await expect(back).toHaveCount(0);
+    await expect(options).toBeFocused();
+  }
 });

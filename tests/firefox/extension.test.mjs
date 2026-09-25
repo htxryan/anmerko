@@ -613,13 +613,15 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
     const container = root.querySelector('.journey-container');
     const notice = container.querySelector('.journey-stop-reason');
     return {
-      role: notice?.getAttribute('role'), notice: notice?.textContent,
+      notice: notice?.textContent, styled: notice?.classList.contains('journey-notice'),
+      announced: container.querySelector('.journey-live [aria-live="polite"]')?.textContent,
       steps: [...container.querySelectorAll('.journey-steps > li')].map(step => ({
         heading: step.querySelector('h2')?.textContent, text: step.innerText,
       })),
     };
   `);
-  assert.equal(review.role, 'status');
+  assert.equal(review.styled, true);
+  assert.equal(review.announced, review.notice, 'the stop reason is announced once through the persistent live region');
   assert.match(review.notice, /^Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page\. Firefox does this on every page load/);
   assert.deepEqual(review.steps.map(step => step.heading), ['Step 1 · Initial view', 'Step 2 · Navigation']);
   assert.match(review.steps[1].text, new RegExp(`Destination URL\\s+${origin.replace(/[.]/g, '\\.')}/`));
