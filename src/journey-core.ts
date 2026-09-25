@@ -41,13 +41,16 @@ export type DraftFieldValue =
   | { kind: 'selection'; values: string[]; multiple: boolean; truncated: boolean; edited?: true }
   | { kind: 'checked'; checked: boolean; edited?: true };
 
+// Review redactions per step: URLs, and a click's label, which can echo text
+// the page repeated from the user's input.
 export type JourneyUrlRedactions = {
-  steps: Record<string, { sourceUrl?: true; captureUrl?: true; toUrl?: true }>;
+  steps: Record<string, { sourceUrl?: true; captureUrl?: true; toUrl?: true; label?: true }>;
 };
 
 export type JourneyUrlRedactionTarget = 'source' | 'capture' | 'destination';
 
 export const JOURNEY_REDACTED_URL = '[redacted]';
+export const JOURNEY_REDACTED_LABEL = '[redacted]';
 
 export type ImageState =
   | { status: 'retained'; imageId: string; sharedNavigationResult?: true }
@@ -62,6 +65,10 @@ interface JourneyStepBase<TUrl, TImage extends ImageState | DraftImageState> {
   observedAt: string;
   elapsedMs: number;
   sourceUrl: TUrl;
+  // Pages are numbered when recording stops, in the order the journey first
+  // reached each URL; navigations number their destination as toPage. The
+  // numbers survive redaction, so it never changes which steps share a page.
+  sourcePage?: number;
   image: TImage;
 }
 
@@ -74,7 +81,7 @@ export type JourneyStep =
     })
   | (JourneyStepBase<ReviewedText, ImageState> & {
       kind: 'navigation'; target?: never; enteredValue?: never;
-      navigation: { toUrl: ReviewedText; causedByStepId?: string };
+      navigation: { toUrl: ReviewedText; causedByStepId?: string; toPage?: number };
     })
   | (JourneyStepBase<ReviewedText, ImageState> & {
       kind: 'field-change'; target: SafeTarget; enteredValue: ReviewedFieldValue; navigation?: never;
@@ -89,7 +96,7 @@ export type JourneyDraftStep =
     })
   | (JourneyStepBase<string, DraftImageState> & {
       kind: 'navigation'; target?: never; enteredValue?: never;
-      navigation: { toUrl: string; causedByStepId?: string };
+      navigation: { toUrl: string; causedByStepId?: string; toPage?: number };
     })
   | (JourneyStepBase<string, DraftImageState> & {
       kind: 'field-change'; target: DraftSafeTarget; enteredValue: DraftFieldValue; navigation?: never;
@@ -257,7 +264,7 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const MAX_DATE_MS = 8_640_000_000_000_000;
-const REDACTION_FLAGS: readonly string[] = ['sourceUrl', 'captureUrl', 'toUrl'];
+const REDACTION_FLAGS: readonly string[] = ['sourceUrl', 'captureUrl', 'toUrl', 'label'];
 
 function isObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -292,6 +299,11 @@ function validId(value: unknown): value is string {
 
 function validTimestamp(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
+}
+
+// Each step names at most a source and a destination page.
+function validPage(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= JOURNEY_LIMITS.maxSteps * 2;
 }
 
 function characters(value: string): number { return Array.from(value).length }
@@ -538,12 +550,13 @@ function validateImage(value: unknown, path: string, errors: string[], reviewed:
 function validateStep(value: unknown, path: string, errors: string[], reviewed: boolean): { imageId?: string; fieldBytes: number } {
   if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be a journey step`); return { fieldBytes: 0 }; }
   const base = ['kind', 'id', 'seq', 'observedAt', 'elapsedMs', 'sourceUrl', 'image'];
-  if (value.kind === 'initial') exactKeys(value, base, [], path, errors);
-  else if (value.kind === 'click') exactKeys(value, [...base, 'target'], [], path, errors);
-  else if (value.kind === 'navigation') exactKeys(value, [...base, 'navigation'], [], path, errors);
-  else if (value.kind === 'field-change') exactKeys(value, [...base, 'target', 'enteredValue'], [], path, errors);
+  if (value.kind === 'initial') exactKeys(value, base, ['sourcePage'], path, errors);
+  else if (value.kind === 'click') exactKeys(value, [...base, 'target'], ['sourcePage'], path, errors);
+  else if (value.kind === 'navigation') exactKeys(value, [...base, 'navigation'], ['sourcePage'], path, errors);
+  else if (value.kind === 'field-change') exactKeys(value, [...base, 'target', 'enteredValue'], ['sourcePage'], path, errors);
   else { errors.push(`${path}.kind is unknown`); return { fieldBytes: 0 }; }
   if (!validId(value.id)) errors.push(`${path}.id is invalid`);
+  if (value.sourcePage !== undefined && !validPage(value.sourcePage)) errors.push(`${path}.sourcePage is invalid`);
   if (!Number.isInteger(value.seq) || (value.seq as number) < 1) errors.push(`${path}.seq must be a positive integer`);
   if (!validTimestamp(value.observedAt)) errors.push(`${path}.observedAt is invalid`);
   if (!Number.isInteger(value.elapsedMs) || (value.elapsedMs as number) < 0 || (value.elapsedMs as number) > JOURNEY_LIMITS.maxDurationMs) errors.push(`${path}.elapsedMs is invalid`);
@@ -561,7 +574,8 @@ function validateStep(value: unknown, path: string, errors: string[], reviewed: 
   if (value.kind === 'navigation') {
     if (!isObject(value.navigation)) errors.push(`${path}.navigation is invalid`);
     else {
-      exactKeys(value.navigation, ['toUrl'], ['causedByStepId'], `${path}.navigation`, errors);
+      exactKeys(value.navigation, ['toUrl'], ['causedByStepId', 'toPage'], `${path}.navigation`, errors);
+      if (value.navigation.toPage !== undefined && !validPage(value.navigation.toPage)) errors.push(`${path}.navigation.toPage is invalid`);
       if (reviewed) validateReviewedText(value.navigation.toUrl, `${path}.navigation.toUrl`, errors, true);
       else if (value.navigation.toUrl === JOURNEY_REDACTED_URL) {
         // Redacted during review; the redactions map records the marker.
@@ -643,6 +657,21 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
     fieldBytes += result.fieldBytes;
   }
   if (fieldBytes > JOURNEY_LIMITS.maxJourneyFieldTextBytes) errors.push('journey field text exceeds its total limit');
+  // A page number names one URL, and a URL one page, wherever both still show.
+  const pageUrls = new Map<number, string>();
+  const urlPages = new Map<string, number>();
+  const checkPage = (page: unknown, url: unknown, path: string) => {
+    const text = isObject(url) ? (url.redacted === false ? url.text : undefined) : url;
+    if (!validPage(page) || typeof text !== 'string' || text === JOURNEY_REDACTED_URL) return;
+    if ((pageUrls.get(page) ?? text) !== text || (urlPages.get(text) ?? page) !== page) errors.push(`${path} disagrees with its URL`);
+    pageUrls.set(page, text);
+    urlPages.set(text, page);
+  };
+  if (Array.isArray(copy.steps)) for (const [index, step] of copy.steps.entries()) {
+    if (!isObject(step)) continue;
+    checkPage(step.sourcePage, step.sourceUrl, `journey.steps[${index}].sourcePage`);
+    if (isObject(step.navigation)) checkPage(step.navigation.toPage, step.navigation.toUrl, `journey.steps[${index}].navigation.toPage`);
+  }
   if (copy.redactions !== undefined) {
     if (!isObject(copy.redactions) || !isObject(copy.redactions.steps)) {
       errors.push('journey.redactions must map step IDs to redacted URL flags');
@@ -673,6 +702,10 @@ function validateCommon(value: unknown, reviewed: boolean): ValidationResult<Jou
             if (!isObject(record) || record.captureUrl !== JOURNEY_REDACTED_URL) {
               errors.push(`journey.redactions for step ${stepId} marks a visible capture URL`);
             }
+          }
+          if (flags.label === true && (step.kind !== 'click' || !isObject(step.target)
+            || step.target.label !== JOURNEY_REDACTED_LABEL)) {
+            errors.push(`journey.redactions for step ${stepId} marks a visible click label`);
           }
         }
       }
@@ -1025,12 +1058,14 @@ export function removeJourneyStep(state: JourneySession, input: JourneyRemoveSte
   for (const step of remaining) {
     if (step.image.status === 'retained') references.set(step.image.imageId, (references.get(step.image.imageId) ?? 0) + 1);
   }
-  // A removed click takes its causal link along, and a shared result image
-  // left with one step is no longer a shared click/navigation result.
+  // A removed click takes its causal link along, but not the destination's
+  // page number, and a shared result image left with one step is no longer a
+  // shared click/navigation result.
   const steps = remaining.map(step => {
     let next = step;
     if (next.kind === 'navigation' && next.navigation.causedByStepId === input.stepId) {
-      next = { ...next, navigation: { toUrl: next.navigation.toUrl } };
+      const { causedByStepId: _cause, ...navigation } = next.navigation;
+      next = { ...next, navigation };
     }
     if (next.image.status === 'retained' && next.image.sharedNavigationResult && references.get(next.image.imageId) === 1) {
       next = { ...next, image: { status: 'retained', imageId: next.image.imageId } };
@@ -1069,6 +1104,7 @@ export function pruneJourneyRedactions(draft: JourneyDraftV1): JourneyDraftV1 {
     if (flags.captureUrl && step.image.status === 'retained'
       && draft.images[step.image.imageId]?.captureUrl === JOURNEY_REDACTED_URL) kept.captureUrl = true;
     if (flags.toUrl && step.kind === 'navigation' && step.navigation.toUrl === JOURNEY_REDACTED_URL) kept.toUrl = true;
+    if (flags.label && step.kind === 'click' && step.target.label === JOURNEY_REDACTED_LABEL) kept.label = true;
     if (Object.keys(kept).length > 0) steps[step.id] = kept;
   }
   const { redactions: _pruned, ...rest } = draft;
@@ -1259,6 +1295,32 @@ export function redactJourneyUrl(state: JourneySession, input: JourneyRedactUrlI
   return editedJourneyReview(reviewing, draft);
 }
 
+export interface JourneyRedactLabelInput extends JourneyReviewEdit {
+  stepId: string;
+}
+
+// A click label is page text, and a page can echo what the user typed into
+// it (a suggestion row, a search prompt), even with entered values off. The
+// flag, not the marker text, says it was redacted: a page label may read
+// "[redacted]" itself.
+export function redactJourneyLabel(state: JourneySession, input: JourneyRedactLabelInput): JourneySession {
+  const reviewing = reviewEditGuard(state, input);
+  if (!reviewing || !validId(input.stepId)) return state;
+  const step = reviewing.draft.steps.find(candidate => candidate.id === input.stepId);
+  const redactions = reviewing.draft.redactions ?? { steps: {} };
+  if (!step || step.kind !== 'click' || redactions.steps[input.stepId]?.label) return state;
+  const draft = {
+    ...reviewing.draft,
+    steps: reviewing.draft.steps.map(candidate => candidate.id === input.stepId
+      ? { ...step, target: { ...step.target, label: JOURNEY_REDACTED_LABEL } }
+      : candidate),
+    redactions: { steps: { ...redactions.steps, [input.stepId]: { ...redactions.steps[input.stepId], label: true as const } } },
+    revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
+  };
+  if (validateJourneyDraft(draft).ok === false) return state;
+  return { ...reviewing, draft };
+}
+
 export function commitJourneyNavigation(state: JourneySession, input: NavigationInput): JourneySession {
   if (state.phase !== 'recording' || input.epoch !== state.epoch || input.previousDocumentToken !== state.documentToken
     || !validId(input.documentToken) || !validId(input.id) || state.draft.steps.some(step => step.id === input.id)
@@ -1397,15 +1459,42 @@ export function resolveJourneyCapture(state: JourneySession, input: JourneyCaptu
   return next;
 }
 
+// Recording never redacts, so every URL is still visible when it stops.
+function numberJourneyPages(steps: JourneyDraftStep[]): JourneyDraftStep[] {
+  const pages = new Map<string, number>();
+  const page = (url: string) => {
+    if (!pages.has(url)) pages.set(url, pages.size + 1);
+    return pages.get(url)!;
+  };
+  return steps.map(step => {
+    const sourcePage = page(step.sourceUrl);
+    return step.kind === 'navigation'
+      ? { ...step, sourcePage, navigation: { ...step.navigation, toPage: page(step.navigation.toUrl) } }
+      : { ...step, sourcePage };
+  });
+}
+
+// Counts the pages a journey covers by their numbers, which review keeps. A
+// location without one (a draft stopped before pages were numbered) takes the
+// number its visible URL has elsewhere, or else counts by URL text, every
+// redacted URL as one opaque page, so a hidden value never shows.
+export function journeyPageCount(locations: Array<{ page?: number; url: string }>): number {
+  const numbers = new Map<string, number>();
+  for (const { page, url } of locations) {
+    if (page !== undefined && url !== JOURNEY_REDACTED_URL) numbers.set(url, page);
+  }
+  return new Set(locations.map(({ page, url }) => page ?? numbers.get(url) ?? url)).size;
+}
+
 export function stopJourney(state: JourneySession, input: { epoch: number; stoppedAt: string; reason: StopReason }): JourneySession {
   if (state.phase === 'reviewing' || state.phase === 'saving' || state.phase === 'saved' || state.phase === 'idle') return state;
   if (input.epoch !== state.epoch || !validTimestamp(input.stoppedAt) || !STOP_REASONS.includes(input.reason)) return state;
   if (state.phase === 'starting') return { phase: 'idle', epoch: state.epoch + 1 };
   if (Date.parse(input.stoppedAt) < Date.parse(state.draft.startedAt)) return state;
   const stoppedMs = Date.parse(input.stoppedAt);
-  const steps = state.draft.steps.map(step => step.image.status === 'pending'
+  const steps = numberJourneyPages(state.draft.steps.map(step => step.image.status === 'pending'
     ? { ...step, image: { status: 'unavailable', reason: 'stopped' } as const }
-    : step) as JourneyDraftStep[];
+    : step) as JourneyDraftStep[]);
   return {
     phase: 'reviewing', sessionId: state.sessionId, journeyId: state.journeyId,
     epoch: state.epoch + 1, ownerTabId: state.ownerTabId, ownerWindowId: state.ownerWindowId,

@@ -43,13 +43,14 @@ export function assertFeedbackArchive(zip: Buffer, prompt: string, png: Buffer) 
 }
 
 // Parse a journey archive independently of the extension's archive writer.
-// Verifies the prompt section, the journeys document, every PNG payload, and
-// deterministic unique filenames without depending on entry order.
+// Verifies the prompt, the journeys document, every PNG payload, and
+// deterministic unique filenames without depending on entry order. A journey
+// archive holds nothing else, comments.md included.
 export function assertJourneyArchive(
   zip: Buffer,
-  expected: { commentsMd: string; journeysMd: string; pngs: Map<string, Buffer> },
+  expected: { promptMd: string; journeysMd: string; pngs: Map<string, Buffer> },
 ) {
-  const { commentsMd, journeysMd, pngs } = expected;
+  const { promptMd, journeysMd, pngs } = expected;
   const end = zip.length - 22;
   assert.equal(zip.readUInt32LE(end), 0x06054b50);
   const count = zip.readUInt16LE(end + 10);
@@ -78,7 +79,7 @@ export function assertJourneyArchive(
     offset += 46 + nameLength + extraLength + commentLength;
   }
   assert.equal(offset, end);
-  assert.equal(files.get('comments.md')?.toString('utf8'), commentsMd);
+  assert.equal(files.get('prompt.md')?.toString('utf8'), promptMd);
   assert.equal(files.get('journeys.md')?.toString('utf8'), journeysMd);
   assert.equal(files.size, 2 + pngs.size);
   for (const [name, png] of pngs) {

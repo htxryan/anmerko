@@ -1,4 +1,5 @@
 import {
+  journeyPageCount,
   validateJourneyDraft,
   type JourneyDraftImage,
   type JourneyDraftV1,
@@ -282,15 +283,16 @@ function toSummary(record: unknown): JourneySnapshotSummary | undefined {
   if (!Number.isSafeInteger(stepCount) || (stepCount as number) < 0) return;
   const draft = (record as { draft?: unknown }).draft;
   const steps = isObject(draft) && Array.isArray(draft.steps) ? draft.steps : [];
-  // Stored drafts hold only the redaction marker, so every redacted URL counts
-  // as the same opaque page and the summary never depends on a hidden value.
-  const pages = new Set<string>();
+  // Steps name their pages by number, which redaction keeps; stored drafts
+  // hold only the marker for a redacted URL, never its value.
+  const pages: Array<{ page?: number; url: string }> = [];
+  const location = (page: unknown, url: unknown) => {
+    if (typeof url === 'string') pages.push(typeof page === 'number' ? { page, url } : { url });
+  };
   for (const step of steps) {
     if (!isObject(step)) continue;
-    if (typeof step.sourceUrl === 'string') pages.add(step.sourceUrl);
-    if (step.kind === 'navigation' && isObject(step.navigation) && typeof step.navigation.toUrl === 'string') {
-      pages.add(step.navigation.toUrl);
-    }
+    location(step.sourcePage, step.sourceUrl);
+    if (step.kind === 'navigation' && isObject(step.navigation)) location(step.navigation.toPage, step.navigation.toUrl);
   }
   const expected = isObject(draft) && typeof draft.expected === 'string' ? summaryLabel(draft.expected) : '';
   const startPage = isObject(steps[0]) ? pageLabel(steps[0].sourceUrl) : '';
@@ -299,7 +301,7 @@ function toSummary(record: unknown): JourneySnapshotSummary | undefined {
     revision: revision as number,
     updatedAt: updatedAt as string,
     stepCount: stepCount as number,
-    spansPages: pages.size > 1,
+    spansPages: journeyPageCount(pages) > 1,
     ...(expected ? { expected } : {}),
     ...(startPage ? { startPage } : {}),
   };

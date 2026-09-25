@@ -110,6 +110,13 @@ const bundle = () => buildSync({ stdin: { contents: `
       }
       changed();
     },
+    redactLabel: async stepId => {
+      redactCalls.push([stepId, 'label']);
+      const draft = state.draft;
+      const redactions = draft.redactions ?? { steps: {} };
+      state = { ...state, draft: { ...draft, steps: draft.steps.map(step => step.id === stepId ? { ...step, target: { ...step.target, label: '[redacted]' } } : step), redactions: { steps: { ...redactions.steps, [stepId]: { ...redactions.steps[stepId], label: true } } }, revision: draft.revision + 1 } };
+      changed();
+    },
     reviewImage: async (imageId, change) => {
       reviewImageCalls.push(change.operation === 'replace'
         ? { imageId, operation: 'replace', width: change.image.width, height: change.image.height,
@@ -406,6 +413,14 @@ const bundle = () => buildSync({ stdin: { contents: `
       openSnapshotError = null; reopenError = null; stayInReview = false;
       state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
         warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(reviewingSteps()) };
+      changed();
+    },
+    setReviewingWithEditableClick: () => {
+      summaryError = null; removeError = null; saveError = null;
+      openSnapshotError = null; reopenError = null; stayInReview = false;
+      const steps = [...reviewingSteps(), step('S4', 4, 'click', { status: 'unavailable', reason: 'superseded' }, { target: { label: 'text field', editable: true } })];
+      state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: reviewingDraft(steps) };
       changed();
     },
     setReviewingWithField: () => {
@@ -922,6 +937,39 @@ test('URL redact buttons call with step id and kind and show redacted marker', a
   await expect(step1.getByText('Redacted during review.', { exact: true })).toHaveCount(0);
 });
 
+test('click label redaction replaces the label and names what it removed', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyReviewHarness.setReviewing()');
+  const step2 = page.locator('li', { has: page.getByRole('heading', { name: /^Step 2 / }) });
+  await expect(step2.getByRole('heading', { name: 'Step 2 · Click: Buy now', exact: true })).toBeVisible();
+  // Only a click has a label to redact.
+  await expect(page.getByRole('button', { name: /^Redact click label/ })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Redact click label for step 2', exact: true }).click();
+  await expect.poll(async () => page.evaluate('journeyReviewHarness.redactCalls()'), { timeout: 10_000 })
+    .toEqual([['S2', 'label']]);
+  await expect(step2.getByRole('heading', { name: 'Step 2 · Click: [redacted]', exact: true })).toBeVisible();
+  await expect(page.getByText('Buy now')).toHaveCount(0);
+  // The marker sits under the title that showed the label and takes focus from the button.
+  const marker = step2.getByText('Click label redacted during review.', { exact: true });
+  await expect(marker).toBeFocused();
+  expect(await marker.evaluate(element => element.previousElementSibling?.className)).toBe('journey-time');
+  await expect(page.getByRole('button', { name: 'Redact click label for step 2', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Redact source URL for step 2', exact: true })).toBeEnabled();
+});
+
+test('a click on a text field offers no label redaction because its label is only the field kind', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyReviewHarness.setReviewingWithEditableClick()');
+  await expect(page.getByRole('heading', { name: 'Step 4 · Click: text field', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Redact source URL for step 4', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Redact click label/ })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Redact click label for step 2', exact: true })).toBeVisible();
+});
+
 test('destination redact button appears only for navigation steps and redacts only the destination', async ({ page }) => {
   await openReview(page);
   const navigation = page.getByRole('listitem').filter({ hasText: 'Step 3 · Navigation' });
@@ -995,12 +1043,12 @@ test('the saved screen copies and downloads the saved revision', async ({ page, 
   await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:4173' });
   await page.getByRole('button', { name: 'Copy Prompt', exact: true }).click();
-  await expect(page.getByText('Journey prompt copied. Download the images to attach them with the prompt.', { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('## Recorded journeys');
+  await expect(page.getByText('Journey prompt copied. Paste it into your agent chat, then use Download Markdown + Images for the screenshots; its journeys.md has full step detail.', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('# Recorded journey\n');
   await expect(page.getByRole('button', { name: 'Copy Prompt', exact: true })).toBeFocused();
   const downloading = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
-  expect((await downloading).suggestedFilename()).toBe('journey-J1.zip');
+  expect((await downloading).suggestedFilename()).toBe('anmerko-journey-J1.zip');
   expect(await page.evaluate('journeyReviewHarness.openSnapshotCalls()')).toEqual(['J1', 'J1']);
 });
 
@@ -1170,11 +1218,14 @@ test('copy writes the saved journey prompt with its id and summaries', async ({ 
   await saveReviewWithoutLeaving(page);
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:4173' });
   await page.getByRole('button', { name: 'Copy Prompt', exact: true }).click();
-  await expect(page.getByText('Journey prompt copied. Download the images to attach them with the prompt.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Journey prompt copied. Paste it into your agent chat, then use Download Markdown + Images for the screenshots; its journeys.md has full step detail.', { exact: true })).toBeVisible();
   const text = await page.evaluate(() => navigator.clipboard.readText());
-  expect(text).toContain('## Recorded journeys');
-  expect(text).toContain('J1');
+  expect(text.startsWith('# Recorded journey\n')).toBe(true);
+  expect(text).toContain('- **Journey ID:** `J1`');
   expect(text).toContain('Keeps the item in the cart.');
+  // The prompt carries the steps; only the screenshots travel separately.
+  expect(text).toContain('- **Step 2 · Click** `Checkout` (`button`) on `https://shop.example/items?q=green` · screenshot `journey-J1-step-02.png`');
+  expect(text).toContain('- **Step 7 · Field change** `text field` (`input`) on `https://other.example/pay?q=green`, value `edited query` (edited during review) · no screenshot (superseded by a later action)');
   expect(await page.evaluate('journeyReviewHarness.openSnapshotCalls()')).toEqual(['J1']);
 });
 
@@ -1192,11 +1243,11 @@ test('download produces a ZIP with journeys.md and the PNG', async ({ page }) =>
   const downloading = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download Markdown + Images', exact: true }).click();
   const archive = await downloading;
-  expect(archive.suggestedFilename()).toBe('journey-J1.zip');
+  expect(archive.suggestedFilename()).toBe('anmerko-journey-J1.zip');
   const bytes = await readFile((await archive.path())!);
-  expect(centralDirectoryNames(bytes)).toEqual(['comments.md', 'journeys.md', 'journey-2-J1-image-2-I2.png']);
+  expect(centralDirectoryNames(bytes)).toEqual(['prompt.md', 'journeys.md', 'journey-J1-step-02.png']);
   expect(bytes.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
-  await expect(page.getByText('Journey download started. Extract the ZIP and attach its images with the prompt.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Journey download started. Extract the ZIP and give your agent prompt.md with the screenshots it names; add journeys.md for full step detail.', { exact: true })).toBeVisible();
 });
 
 test('download surfaces the export size limit and keeps the review', async ({ page }) => {

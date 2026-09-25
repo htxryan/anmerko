@@ -32,10 +32,12 @@ You can customize the text before the comments under [**Prompt Preamble** in Set
 
 Share a journey from its review after saving it. **Copy Prompt** and **Download Markdown + Images** stay unavailable until the current version is saved, so unsaved changes are never exported.
 
-**Copy Prompt** copies a short brief: the expected and actual results, the step count, and whether the journey spans pages. The brief refers to `journeys.md` for the steps. **Download Markdown + Images** saves a journey ZIP containing:
+**Copy Prompt** copies the whole journey except its screenshots: the expected and actual results, whether the journey spans pages, why recording stopped, and every step in order with its action, target label, URLs, any entered value, and screenshot filename. Long URLs and values are shortened there. Paste it into your agent chat and attach the screenshots it names.
 
-- `comments.md`, with the same brief
-- `journeys.md`, with every step in order: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, redacted, or masked
-- one PNG for each kept screenshot, named in `journeys.md`
+**Download Markdown + Images** saves a journey ZIP, such as `anmerko-journey-3f1c2a9e.zip`, containing:
 
-Give your agent `journeys.md` and attach the PNG files. Exports larger than 50 MB are refused before anything downloads.
+- `prompt.md`, the same prompt **Copy Prompt** copies
+- `journeys.md`, with every step in full: its action, timing, full URLs, target details, entered values, screenshot filename, and markers for anything you edited, redacted, or masked
+- one PNG for each kept screenshot, named for the journey and the step that captured it, such as `journey-3f1c2a9e-step-02.png`
+
+Give your agent `prompt.md` and the PNG files, and add `journeys.md` when it needs every detail. Exports larger than 50 MB are refused before anything downloads.

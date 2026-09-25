@@ -3,11 +3,15 @@ import { buildSync } from 'esbuild';
 import {
   acceptInitialImage,
   createJourneySession,
+  redactJourneyUrl,
+  removeJourneyStep,
+  reopenJourneySnapshot,
   stopJourney,
   type DraftImageState,
   type JourneyDraftImage,
   type JourneyDraftStep,
   type JourneyDraftV1,
+  type JourneySession,
 } from '../../src/journey-core';
 
 const STARTED_AT = '2026-09-20T12:00:00.000Z';
@@ -259,7 +263,7 @@ test('list marks journeys spanning more than one source URL', async ({ page }) =
   const spanned = baseDraft();
   spanned.steps = spanned.steps.map((step, index) => index === 0
     ? step
-    : { ...step, sourceUrl: 'https://other.example/checkout' });
+    : { ...step, sourceUrl: 'https://other.example/checkout', sourcePage: 2 });
   expect(await invoke(page, 'save', { input: snapshotInput(spanned) })).toEqual({
     ok: true, value: { journeyId: 'journey-1', revision: 0 },
   });
@@ -277,7 +281,8 @@ function withNavigation(draft: JourneyDraftV1, toUrl: string): JourneyDraftV1 {
     observedAt: '2026-09-20T12:00:03.000Z',
     elapsedMs: 3_000,
     sourceUrl: SOURCE_URL,
-    navigation: { toUrl, causedByStepId: 'step-2' },
+    sourcePage: 1,
+    navigation: { toUrl, causedByStepId: 'step-2', toPage: 2 },
     image: { status: 'unavailable', reason: 'navigation-timeout' },
   };
   return { ...draft, steps: [...draft.steps, navigation] };
@@ -311,7 +316,8 @@ test('list counts navigation destinations as pages without exposing redacted one
   expect(JSON.stringify(opened.value)).not.toContain('private-value-7z=2');
   expect(await invoke(page, 'list', {})).toEqual(summary(true, 1, UPDATED_V2_AT));
 
-  // Redacted URLs compare as one opaque page, never by their hidden values.
+  // Redacted URLs keep the page numbers recorded for them, so redacting every
+  // URL leaves the scope as it was without keeping any hidden value.
   const allRedacted: JourneyDraftV1 = {
     ...redacted,
     revision: 2,
@@ -324,7 +330,55 @@ test('list counts navigation destinations as pages without exposing redacted one
     ok: true, value: { journeyId: 'journey-1', revision: 2 },
   });
   // A redacted first page gives no start-page label.
-  expect(await invoke(page, 'list', {})).toEqual(summary(false, 2, UPDATED_V2_AT, { expected: LABELS.expected }));
+  expect(await invoke(page, 'list', {})).toEqual(summary(true, 2, UPDATED_V2_AT, { expected: LABELS.expected }));
+  expect(JSON.stringify(await invoke(page, 'list', {}))).not.toContain('private-value-7z');
+});
+
+test('list keeps a single-page journey single when review redacts one of its URLs', async ({ page }) => {
+  await openStore(page);
+  const single: JourneyDraftV1 = {
+    ...baseDraft(),
+    steps: baseDraft().steps.map(step => step.id === 'step-2' ? { ...step, sourceUrl: '[redacted]' } : step),
+    redactions: { steps: { 'step-2': { sourceUrl: true } } },
+  };
+  expect(await invoke(page, 'save', { input: snapshotInput(single) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: 0 },
+  });
+  expect(await invoke(page, 'list', {})).toEqual({
+    ok: true, value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false, ...LABELS }],
+  });
+});
+
+test('list keeps a journey spanning pages after review redacts its URLs and removes the click that navigated', async ({ page }) => {
+  await openStore(page);
+  const saved = withNavigation(baseDraft(), 'https://example.com/checkout?private-value-7z=2');
+  let session: JourneySession | undefined = reopenJourneySnapshot({ phase: 'idle', epoch: 0 }, {
+    sessionId: 'session-2', ownerTabId: 42, ownerWindowId: 7, nowMs: Date.parse(UPDATED_V2_AT),
+    draft: saved, images: structuredClone(saved.images),
+  });
+  const guards = () => {
+    if (session?.phase !== 'reviewing') throw new Error('expected a reopened review');
+    return { epoch: session.epoch, journeyId: session.journeyId, revision: session.draft.revision, updatedAt: UPDATED_V2_AT };
+  };
+  for (const [stepId, url] of [
+    ['step-1', 'source'], ['step-1', 'capture'], ['step-2', 'source'], ['step-2', 'capture'],
+    ['step-3', 'source'], ['step-3', 'destination'],
+  ] as const) session = redactJourneyUrl(session!, { ...guards(), stepId, url });
+  session = removeJourneyStep(session!, { ...guards(), stepId: 'step-2' });
+  if (session.phase !== 'reviewing') throw new Error('expected a reopened review');
+  expect(session.draft.steps.map(step => step.id)).toEqual(['step-1', 'step-3']);
+  expect(JSON.stringify(session.draft)).not.toContain('private-value-7z');
+
+  expect(await invoke(page, 'save', { input: snapshotInput(session.draft) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: session.draft.revision },
+  });
+  expect(await invoke(page, 'list', {})).toEqual({
+    ok: true,
+    value: [{
+      journeyId: 'journey-1', revision: session.draft.revision, updatedAt: UPDATED_V2_AT, stepCount: 2,
+      spansPages: true, expected: LABELS.expected,
+    }],
+  });
 });
 
 test('snapshots saved with only source and capture redactions still open', async ({ page }) => {
