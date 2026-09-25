@@ -2636,6 +2636,9 @@ async function recordFromLaunchTab(page: Page) {
   return { launch, launchTabId: launch.sender.tab.id as number, recording };
 }
 
+const tabReviewRecord = (page: Page) => page.evaluate(() =>
+  (globalThis as HarnessWindow).harness.sessionStorage['anmerko:journey-tab-review:v1']);
+
 const tabActivations = (page: Page) => page.evaluate(() => (globalThis as HarnessWindow).harness.tabUpdates
   .filter(update => update.details.active).map(update => update.tabId));
 
@@ -2664,7 +2667,10 @@ test('a journey started from a launch tab brings that tab forward as its review 
     await expect.poll(() => tabActivations(page), reason).toEqual([launchTabId]);
     expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.length), reason)
       .toBe(cases.findIndex(([name]) => name === reason) + 1);
+    // Which review belongs in a tab is remembered only while that review lasts.
+    expect(await tabReviewRecord(page), reason).toBe(recording.sessionId);
     expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+    expect(await tabReviewRecord(page), reason).toBeUndefined();
     await page.evaluate(() => {
       const harness = (globalThis as HarnessWindow).harness;
       if ((globalThis as any).realNow) Date.now = (globalThis as any).realNow;
@@ -2765,6 +2771,16 @@ test('a recording that outlives a background restart still brings its launch tab
     .toEqual({ ok: true });
   await expect.poll(() => tabActivations(page)).toEqual([launchTabId]);
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+
+  // A record left behind by a review that ended is dropped on the next start.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.sessionStorage['anmerko:journey-tab-review:v1'] = 'session-ended';
+    harness.reboot();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect(await tabReviewRecord(page)).toBeUndefined();
 });
 
 test('a journey started in the native side panel reviews there without opening a journey tab', async ({ page }) => {

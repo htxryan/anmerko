@@ -634,6 +634,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     publishedState = state;
     decorateForState(state);
     if (state.phase === 'starting') rememberTabReview(startingFromLaunch ? state.sessionId : undefined);
+    // Once the review ends, no tab holds it.
+    else if (state.phase === 'idle' || state.phase === 'saved') rememberTabReview(undefined);
     // A journey started from a launch tab has no native side panel showing
     // it, so its end brings that tab forward as the review, unless the reader
     // deliberately went elsewhere.
@@ -1044,6 +1046,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     try {
       const stored = (await api.storage.session.get([TAB_REVIEW_KEY]))[TAB_REVIEW_KEY];
       if ('sessionId' in restored && stored === restored.sessionId) tabReviewSession = stored;
+      else if (stored !== undefined) await api.storage.session.remove([TAB_REVIEW_KEY]);
     } catch { /* The review then stays where the reader opens it. */ }
     controller = makeController(restored);
     const state = controller.getState();
