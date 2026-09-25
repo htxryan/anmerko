@@ -109,7 +109,7 @@ test('supported browser targets build clean resources and reject development hel
     for (const marker of ['ANMERKO_JOURNEY_OPEN', 'ANMERKO_JOURNEY_PENDING', 'ANMERKO_JOURNEY_PHASE', 'Record journey', 'Review journey', 'Saved journeys',
       'anmerko journey recording', 'anmerko-journey-strip', '.journey-view', 'function attachJourneyPanel(', 'function mountJourneyUI(',
       'function createJourneyClient(', 'function bindJourneyPage(', 'function validateJourneyDraft(', 'var JOURNEY_LIMITS =',
-      'function journeyArchiveFiles(', 'function journeyPromptSection(', 'function journeysAvailable(', 'function stripUrlCredentials(']) {
+      'function journeyArchive(', 'function journeyPrompt(', 'function journeysAvailable(', 'function stripUrlCredentials(']) {
       assert.equal(content.includes(marker), target.journeys, `${target.name}: content.js ${marker}`);
     }
     // Every bundle reads the capability from the build: an unreplaced define
