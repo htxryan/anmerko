@@ -12,6 +12,7 @@ import {
   type SafeTarget,
 } from './journey-core';
 import { JOURNEY_LIMITS } from './journey-limits';
+import { formatJourneySelectorPath } from './journey-selector';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 
@@ -55,7 +56,7 @@ function pushTarget(lines: string[], target: SafeTarget): void {
   if (target.role) lines.push(`Target role: ${inlineCode(target.role)}`);
   lines.push(`Target editable: ${yesNo(target.editable)}`);
   pushReviewedText(lines, 'Target label', target.label);
-  lines.push(`Selector path: ${target.selectorPath.map(inlineCode).join(' → ')}`,
+  lines.push(`Selector path: ${formatJourneySelectorPath(target.selectorPath, inlineCode)}`,
     `Target viewport: ${target.viewport.width} × ${target.viewport.height}`,
     `Target scroll: x ${target.scroll.x}, y ${target.scroll.y}`);
   if (target.point) lines.push(`Target point: x ${target.point.x}, y ${target.point.y}`);

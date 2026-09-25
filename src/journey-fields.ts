@@ -1,6 +1,7 @@
 import { JOURNEY_LIMITS } from './journey-limits';
 import { stripUrlCredentials, type JourneyFieldChangeEvent } from './journey-events';
 import type { DraftFieldValue } from './journey-core';
+import { journeySelectorPath, parentAcrossShadow } from './journey-selector';
 import { createUuid } from './uuid';
 
 export interface JourneyFieldsOptions {
@@ -36,18 +37,54 @@ type FieldKind = 'text' | 'select' | 'check';
 
 const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'tel', 'url', 'number']);
 const UI_HOSTS = new Set(['anmerko-overlay', 'anmerko-journey-strip']);
-// Exact, tokenized name/id/autocomplete cues. Matching is fail-closed:
-// ambiguous security/payment controls are omitted. Matching uses whole
-// tokens (split on non-alphanumerics), so `cardboard` does not match `card`
-// but `card-cvv`, `user-token`, and `login-passwd` do.
-const SECRET_TOKENS = new Set([
-  'password', 'passwd', 'pass', 'pwd', 'passcode',
-  'secret', 'secrets', 'token', 'tokens', 'apikey',
-  'ssn', 'cvv', 'cvc', 'csc', 'cvn', 'cid',
-  'otp', 'totp', 'hotp', 'pin', 'card', 'cc', 'ccnum', 'ccn', '2fa',
+// Secret cues come from a field's name, id, and autocomplete (identifiers)
+// and from its label, aria-label, aria-labelledby text, and placeholder
+// (prose). Matching is fail-closed: ambiguous security, payment, and banking
+// controls are omitted. Text loses diacritics and is split into lowercase
+// tokens on non-alphanumerics and camelCase boundaries; a run of single
+// letters also counts as one token (`C.V.V.`, `P I N`).
+//
+// Whole-word cues match a single token (trailing digits ignored, so `cvv2`
+// matches) or two adjacent tokens joined (`account no`, `acctNo`,
+// `sort-code`), so short cues never match inside longer words: `cardboard`,
+// `spinner`, and `accountNotes` stay recordable.
+const SECRET_WORDS = new Set([
+  'password', 'passwd', 'pwd', 'passcode', 'passphrase', 'passkey',
+  'secret', 'secrets', 'token', 'tokens', 'apikey', 'credential', 'credentials',
+  'ssn', 'cvv', 'cvc', 'ccv', 'csc', 'cvn', 'cvd', 'otp', 'totp', 'hotp', 'pin', '2fa', 'mfa', 'twofa',
+  'iban', 'mnemonic', 'expiry', 'expiration', 'mmyy', 'mmyyyy', 'ccexp',
+  'accountno', 'accountnum', 'acctno', 'acctnum', 'acctnumber', 'accno', 'accnum', 'accnumber',
+  'routingno', 'routingnum', 'sortcode',
+  'authcode', 'accesscode', 'resetcode', 'logincode', 'smscode', 'activationcode',
+  'licensekey', 'licencekey', 'productkey', 'activationkey', 'recoverykey', 'encryptionkey',
+  'signingkey', 'sshkey', 'masterkey', 'senha',
 ]);
-// Separator-insensitive compounds (`one-time-code`, `credit_card`, `cardNumber`).
-const COMPOUND_SECRET_PATTERN = /(password|passwd|secret|apikey|onetime|totp|hotp|cardnumber|cardnum|creditcard|ccnum|socialsecurity)/;
+// Identifier-only words: in label or placeholder prose they are too ambiguous
+// (`Boarding pass`, `Cc`, `Card title`).
+const IDENTIFIER_SECRET_WORDS = new Set(['pass', 'pw', 'card', 'cc', 'ccnum', 'ccn', 'cid']);
+// Card security code spellings match anywhere inside one token (`cardcvv`,
+// `cvvnumber`, `CARDCCV`), since no ordinary word contains them; `csc` and
+// `cvn` match at a token's start or end (`cscnumber`, `cardcsc`). They never
+// match across words, so `CV cover letter` and `Basic CV` stay recordable.
+const CARD_CODE_TOKEN = /cvv|cvc|ccv|^(?:csc|cvn)|(?:csc|cvn)$/;
+// Distinctive compounds matched anywhere once separators are removed
+// (`userPassword`, `x_api_key`, `Security code`, `Mot de passe`). `code`,
+// `number`, `key`, and `name` alone are never cues, so postal, promo,
+// coupon, and confirmation codes, phone numbers, and account or display
+// names stay recordable.
+const COMPOUND_SECRET_PATTERN = new RegExp([
+  'password', 'passwd', 'passwort', 'kennwort', 'motdepasse', 'contrasen', 'wachtwoord',
+  'passphrase', 'passcode', 'secret', 'apikey', 'onetimecode', 'twofactor',
+  'cardnum', 'creditcard', 'debitcard', 'cardholder', 'nameoncard', 'cardverification', 'cardsecurity', 'ccnum',
+  'socialsecurity', 'securitycode', 'securityanswer', 'securityquestion', 'sicherheitscode', 'codigodeseguridad',
+  'verif(?:y|ication)?code', 'auth(?:entication|orization)?code', 'recoverycode', 'backupcode',
+  'priv(?:ate)?key', 'accesskey', 'seedphrase', 'recoveryphrase', 'walletseed', 'mnemonic',
+  'accountnumber', 'routingnumber', 'bankacc(?:oun)?t', '(?:exp|expiry|expiration)(?:month|year|date|mm|yy|yr)',
+].join('|'));
+// Identifier-only compounds: in prose they also join ordinary words
+// (`One-time donation`, `Shot put`, `Hotpot order`); prose still matches
+// `TOTP`, `HOTP`, and `one-time code`.
+const IDENTIFIER_COMPOUND_PATTERN = /onetime|totp|hotp/;
 const SENSITIVE_AUTOCOMPLETE = new Set(['current-password', 'new-password', 'one-time-code']);
 
 function isFieldElement(value: unknown): value is FieldElement {
@@ -65,12 +102,6 @@ function fieldKind(element: FieldElement): FieldKind | null {
   return null;
 }
 
-function parentAcrossShadow(element: Element): Element | null {
-  if (element.parentElement) return element.parentElement;
-  const root = element.getRootNode();
-  return root instanceof ShadowRoot ? root.host : null;
-}
-
 function insideExtensionUi(element: Element): boolean {
   let current: Element | null = element;
   while (current) {
@@ -80,14 +111,28 @@ function insideExtensionUi(element: Element): boolean {
   return false;
 }
 
-function metadataHaystack(element: Element): string {
-  const parts = [element.getAttribute('name'), element.getAttribute('id'), element.getAttribute('autocomplete')];
-  return parts.filter((part): part is string => part !== null).join(' ').toLowerCase();
+// Label text excludes option and default-value text of fields it wraps, and
+// is bounded because a label element can wrap a large subtree.
+const NON_LABEL_TAGS = new Set(['select', 'option', 'optgroup', 'datalist', 'textarea', 'script', 'style', 'template']);
+const MAX_LABEL_CHARACTERS = 512;
+
+function cueTokens(text: string): string[] {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/([a-z\d])(?=[A-Z])|([A-Z])(?=[A-Z][a-z])/g, '$1$2 ')
+    .toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
-function hasSecretCues(haystack: string): boolean {
-  if (haystack.split(/[^a-z0-9]+/).filter(Boolean).some(token => SECRET_TOKENS.has(token))) return true;
-  return COMPOUND_SECRET_PATTERN.test(haystack.replace(/[^a-z0-9]/g, ''));
+function hasSecretCues(text: string, identifier: boolean): boolean {
+  const tokens = cueTokens(text);
+  const letterRuns = (tokens.join(' ').match(/\b[a-z](?: [a-z]\b)+/g) ?? []).map(run => run.replace(/ /g, ''));
+  const secret = (word: string) => SECRET_WORDS.has(word) || (identifier && IDENTIFIER_SECRET_WORDS.has(word));
+  if (tokens.some((token, index) => {
+    const bare = token.replace(/\d+$/, '');
+    return secret(token) || secret(bare) || CARD_CODE_TOKEN.test(bare)
+      || (index > 0 && secret(tokens[index - 1] + token));
+  }) || letterRuns.some(run => secret(run) || CARD_CODE_TOKEN.test(run))) return true;
+  const joined = tokens.join('');
+  return COMPOUND_SECRET_PATTERN.test(joined) || (identifier && IDENTIFIER_COMPOUND_PATTERN.test(joined));
 }
 
 function hasRevealCues(haystack: string): boolean {
@@ -100,11 +145,45 @@ function sensitiveAutocomplete(value: string | null): boolean {
     .some(token => SENSITIVE_AUTOCOMPLETE.has(token) || token.startsWith('cc-'));
 }
 
-function isSensitive(element: FieldElement): boolean {
+function boundedText(node: Node): string {
+  let text = '';
+  let visited = 0;
+  const visit = (current: Node): void => {
+    if (++visited > 256 || text.length >= MAX_LABEL_CHARACTERS) return;
+    if (current instanceof Text) { text += current.data; return; }
+    if (current instanceof Element && NON_LABEL_TAGS.has(current.localName)) return;
+    for (let child = current.firstChild; child; child = child.nextSibling) visit(child);
+  };
+  visit(node);
+  return text;
+}
+
+// Each prose source is checked on its own, so words from different sources
+// never pair up.
+function proseCues(element: FieldElement): string[] {
+  const texts = [element.getAttribute('aria-label') ?? '', element.getAttribute('placeholder') ?? ''];
+  for (const label of Array.from(element.labels ?? []).slice(0, 4)) texts.push(boundedText(label));
+  const ids = (element.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean).slice(0, 8);
+  const root = element.getRootNode();
+  if (ids.length && (root instanceof Document || root instanceof ShadowRoot)) {
+    texts.push(ids.map(id => {
+      const labelElement = root.getElementById(id);
+      return labelElement ? boundedText(labelElement) : '';
+    }).join(' '));
+  }
+  return texts.filter(Boolean);
+}
+
+// `wasPassword` holds fields seen as password inputs during this journey: a
+// show-password toggle that turns one into text does not make it collectible.
+function isSensitive(element: FieldElement, wasPassword: WeakSet<Element>): boolean {
+  if (wasPassword.has(element)) return true;
   if (element instanceof HTMLInputElement && element.type.toLowerCase() === 'password') return true;
   if (sensitiveAutocomplete(element.getAttribute('autocomplete'))) return true;
-  const haystack = metadataHaystack(element);
-  return hasSecretCues(haystack) || hasRevealCues(haystack);
+  const identifiers = [element.getAttribute('name'), element.getAttribute('id'), element.getAttribute('autocomplete')]
+    .filter((part): part is string => part !== null).join(' ');
+  if (hasSecretCues(identifiers, true) || hasRevealCues(identifiers.toLowerCase())) return true;
+  return proseCues(element).some(text => hasSecretCues(text, false));
 }
 
 // Structural eligibility only (no sensitive classification): used to mark
@@ -118,8 +197,8 @@ function structurallyEligible(element: Element): element is FieldElement {
   return !insideExtensionUi(element);
 }
 
-function collectible(element: Element): element is FieldElement {
-  return structurallyEligible(element) && !isSensitive(element);
+function collectible(element: Element, wasPassword: WeakSet<Element>): element is FieldElement {
+  return structurallyEligible(element) && !isSensitive(element, wasPassword);
 }
 
 function truncateChars(value: string, limit: number): { text: string; truncated: boolean } {
@@ -128,8 +207,8 @@ function truncateChars(value: string, limit: number): { text: string; truncated:
   return { text: chars.slice(0, limit).join(''), truncated: true };
 }
 
-function readEnteredValue(element: FieldElement): DraftFieldValue | null {
-  if (!collectible(element)) return null;
+function readEnteredValue(element: FieldElement, wasPassword: WeakSet<Element>): DraftFieldValue | null {
+  if (!collectible(element, wasPassword)) return null;
   if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
     return { kind: 'checked', checked: element.checked };
   }
@@ -174,24 +253,6 @@ function roleFor(element: FieldElement): string {
   return 'textbox';
 }
 
-function selectorSegment(element: Element): string {
-  const tag = element.localName;
-  const parent = element.parentElement ?? (element.getRootNode() instanceof ShadowRoot ? element.getRootNode() as ShadowRoot : null);
-  if (!parent) return tag;
-  const siblings = Array.from(parent.children).filter(candidate => candidate.localName === tag);
-  return siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(element) + 1})` : tag;
-}
-
-function structuralSelector(element: Element): string[] {
-  const segments: string[] = [];
-  let current: Element | null = element;
-  while (current && segments.length < 12) {
-    segments.push(selectorSegment(current));
-    current = parentAcrossShadow(current);
-  }
-  return segments.reverse();
-}
-
 function visibleViewport(): { width: number; height: number } {
   const visual = window.visualViewport;
   return { width: Math.round(visual?.width ?? window.innerWidth), height: Math.round(visual?.height ?? window.innerHeight) };
@@ -208,6 +269,8 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
   const pending = new Set<FieldElement>();
   const composing = new WeakSet<FieldElement>();
   const lastCommitted = new WeakMap<FieldElement, string>();
+  const wasPassword = new WeakSet<Element>();
+  const observedRoots = new WeakSet<Node>();
   let disposed = false;
 
   // Composed path reaches the true target inside open shadow roots; closed
@@ -218,9 +281,51 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
     return first instanceof Element ? first : null;
   };
 
+  // Password tracking: every password input in the document and its open
+  // shadow roots is remembered when attached, inserted, or retyped, before a
+  // reveal toggle can turn it into text. A shadow root attached after its
+  // host was inserted is found when the user first presses, focuses, or
+  // types anywhere inside it, including inside a nested component's root.
+  const notePassword = (element: Element): void => {
+    if (element instanceof HTMLInputElement && element.type.toLowerCase() === 'password') wasPassword.add(element);
+  };
+  const scan = (root: Node): void => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let node = root instanceof Element ? root : walker.nextNode(); node; node = walker.nextNode()) {
+      const element = node as Element;
+      notePassword(element);
+      if (element.shadowRoot) observeRoot(element.shadowRoot);
+    }
+  };
+  const observer = new MutationObserver(records => {
+    if (disposed) return;
+    for (const record of records) {
+      if (record.type === 'attributes') {
+        if (record.oldValue?.trim().toLowerCase() === 'password' && record.target instanceof HTMLInputElement) {
+          wasPassword.add(record.target);
+        }
+        if (record.target instanceof Element) notePassword(record.target);
+      } else {
+        for (const node of Array.from(record.addedNodes)) if (node instanceof Element) scan(node);
+      }
+    }
+  });
+  const observeRoot = (root: Document | ShadowRoot): void => {
+    if (observedRoots.has(root)) return;
+    observedRoots.add(root);
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['type'], attributeOldValue: true });
+    scan(root);
+  };
+  const notePath = (event: Event): void => {
+    const target = trueTarget(event);
+    if (target !== null) notePassword(target);
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    for (const node of path) if (node instanceof ShadowRoot) observeRoot(node);
+  };
+
   const emit = (element: FieldElement): void => {
     if (composing.has(element)) return;
-    const enteredValue = readEnteredValue(element);
+    const enteredValue = readEnteredValue(element, wasPassword);
     if (enteredValue === null) { pending.delete(element); return; }
     const signature = signatureOf(enteredValue);
     pending.delete(element);
@@ -239,7 +344,7 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
       target: {
         tag: element.localName,
         role: roleFor(element),
-        selectorPath: structuralSelector(element),
+        selectorPath: journeySelectorPath(element),
         label: genericLabel(element),
         editable: true,
         viewport: visibleViewport(),
@@ -283,6 +388,7 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
   // commit trigger (change, focus exit, submit, or pre-click flush).
   const onInput = (event: Event): void => {
     if (disposed || !event.isTrusted) return;
+    notePath(event);
     const target = trueTarget(event);
     if ((event as InputEvent).isComposing === true) {
       if (target !== null && isFieldElement(target)) composing.add(target);
@@ -305,6 +411,13 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
     if (target !== null && isFieldElement(target)) flush(target);
   };
 
+  // Presses and focus only note password inputs, before page handlers for
+  // the same event can reveal them.
+  const onNotePath = (event: Event): void => {
+    if (disposed || !event.isTrusted) return;
+    notePath(event);
+  };
+
   const onFocusOut = (event: FocusEvent): void => {
     if (disposed || !event.isTrusted) return;
     const target = trueTarget(event);
@@ -322,8 +435,9 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
 
   const onClick = (event: MouseEvent): void => {
     if (disposed || !event.isTrusted) return;
-    flushPending();
+    notePath(event);
     const target = trueTarget(event);
+    flushPending();
     // The click itself toggles checkable controls (their input/change events
     // arrive after this capture phase), so commit the toggled state now when
     // it differs from the last commit. Unchanged controls suppress via
@@ -334,16 +448,24 @@ export function attachJourneyFields(options: JourneyFieldsOptions): () => void {
   document.addEventListener('input', onInput, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
   document.addEventListener('change', onChange, true);
+  document.addEventListener('pointerdown', onNotePath, true);
+  document.addEventListener('mousedown', onNotePath, true);
+  document.addEventListener('focusin', onNotePath, true);
   document.addEventListener('focusout', onFocusOut, true);
   document.addEventListener('submit', onSubmit, true);
   document.addEventListener('click', onClick, true);
+  observeRoot(document);
   return () => {
     if (disposed) return;
     disposed = true;
     pending.clear();
+    observer.disconnect();
     document.removeEventListener('input', onInput, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
     document.removeEventListener('change', onChange, true);
+    document.removeEventListener('pointerdown', onNotePath, true);
+    document.removeEventListener('mousedown', onNotePath, true);
+    document.removeEventListener('focusin', onNotePath, true);
     document.removeEventListener('focusout', onFocusOut, true);
     document.removeEventListener('submit', onSubmit, true);
     document.removeEventListener('click', onClick, true);

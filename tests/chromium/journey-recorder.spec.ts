@@ -319,8 +319,9 @@ test('uses bounded visible text and structural selectors without reading editabl
   expect(button.label).toHaveLength(120);
   expect(button.label.startsWith('Visible label')).toBe(true);
   expect(button.selectorPath).toHaveLength(12);
+  expect(button.selectorPath[0]).toBe('…');
   expect(button.selectorPath.at(-1)).toBe('button');
-  expect(button.selectorPath.every((segment: string) => /^[a-z][a-z0-9-]*(?::nth-of-type\([1-9][0-9]*\))?$/.test(segment))).toBe(true);
+  expect(button.selectorPath.slice(1).every((segment: string) => /^[a-z][a-z0-9-]*(?::nth-of-type\([1-9][0-9]*\))?$/.test(segment))).toBe(true);
   expect(JSON.stringify(button)).not.toMatch(/secret-id|secret-name|attribute-secret|aria-secret/);
   expect(recorded[1].events[0].target).toMatchObject({ tag: 'input', role: 'textbox', label: 'text field' });
   expect(recorded[1].events[0].target.editable).toBe(true);
@@ -332,4 +333,40 @@ test('uses bounded visible text and structural selectors without reading editabl
   expect(Array.from(recorded[4].events[0].target.label)).toHaveLength(120);
   expect(recorded[4].events[0].target.label).toMatch(/^visible-0 visible-1/);
   expect(await page.evaluate(() => (globalThis as RecorderWindow).valueReads)).toBe(0);
+});
+
+test('labels never echo text typed into design-mode documents or ARIA text boxes', async ({ page }) => {
+  await page.setContent(`
+    <main>
+      <p id="designed">Draft:</p>
+      <div role="textbox" id="aria-box" tabindex="0" style="min-height:24px"></div>
+      <div id="wrapper" style="padding:20px"><span>Wrapper</span><div role="searchbox" id="aria-search"></div></div>
+    </main>
+  `);
+  await attach(page);
+
+  // A custom text box renders what the user typed without contenteditable.
+  await page.locator('#aria-box').click();
+  await page.evaluate(() => {
+    document.querySelector('#aria-box')!.textContent = 'typed-aria-secret';
+    document.querySelector('#aria-search')!.textContent = 'typed-search-secret';
+  });
+  await page.locator('#aria-box').click();
+  await page.locator('#wrapper').click({ position: { x: 4, y: 4 } });
+
+  // Design mode makes the whole document editable.
+  await page.evaluate(() => { document.designMode = 'on'; });
+  await page.locator('#designed').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' typed-design-secret');
+  await page.locator('#designed').click();
+
+  const recorded = await batches(page);
+  expect(recorded).toHaveLength(5);
+  const targets = recorded.map(batch => batch.events[0].target);
+  expect(targets[1]).toMatchObject({ tag: 'div', role: 'textbox', label: 'text field', editable: true });
+  expect(targets[2]).toMatchObject({ tag: 'div', label: 'div', editable: false });
+  expect(targets[4]).toMatchObject({ tag: 'p', label: 'text field', editable: true });
+  expect(JSON.stringify(recorded)).not.toMatch(/typed-(aria|search|design)-secret/);
+  expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
 });

@@ -35,7 +35,7 @@ Choose **Record journey** from **More Comment Options** on a website. No permiss
 
 Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar.
 
-**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. Password inputs are always skipped, as are fields whose autocomplete, name, or ID marks them as payment, one-time code, or other secret fields. Other fields are recorded even when they hold private data, and screenshots and full URLs can still show values either way; review everything before sharing.
+**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. Password inputs are always skipped, even after a show-password control switches them to plain text during the journey, as are fields whose autocomplete, name, ID, label, or placeholder marks them as payment, banking, one-time code, or other secret fields. Other fields are recorded even when they hold private data, and screenshots and full URLs can still show values either way; review everything before sharing.
 
 ### When recording ends
 
