@@ -63,8 +63,9 @@ export const STOP_REASONS = [
 
 export type StopReason = typeof STOP_REASONS[number];
 
-// What a draft lost while recording, in plain language. A draft records each
-// once; review and journeys.md show them verbatim.
+// What a draft lost while recording, or why its stop reason no longer says
+// how recording ended, in plain language. A draft records each once; review
+// and journeys.md show them verbatim.
 export const JOURNEY_LIMITATIONS = {
   enteredValuesTruncated: `Some entered values were too long to keep in full. Each value keeps up to ${JOURNEY_LIMITS.maxFieldValueCharacters.toLocaleString('en-US')} characters and a journey up to ${JOURNEY_LIMITS.maxJourneyFieldTextBytes / 1_024} KB of entered text; shortened or emptied values are marked truncated.`,
   sessionStorage: 'Temporary journey storage filled up or failed, so recording stopped early. The latest action or screenshot may be missing.',
@@ -73,3 +74,11 @@ export const JOURNEY_LIMITATIONS = {
   imageBudget: `Screenshots reached the journey's ${JOURNEY_LIMITS.maxJourneyImageBytes / (1_024 * 1_024)} MB storage limit, so recording stopped and the last screenshot was not kept.`,
   captureFailed: 'anmerko lost track of the page after it changed, so recording stopped early. The latest page change or action may be missing.',
 } as const;
+
+// A storage failure after recording had stopped relabels the draft's stop
+// reason and records reviewStorage; nothing recorded is missing. Review and
+// exports then describe that failure, never a recording cut short.
+export function storageFailedAfterRecording(journey: { stopReason?: StopReason; limitations?: unknown }): boolean {
+  return journey.stopReason === 'session-storage-limit'
+    && Array.isArray(journey.limitations) && journey.limitations.includes(JOURNEY_LIMITATIONS.reviewStorage);
+}

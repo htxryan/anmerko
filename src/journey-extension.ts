@@ -631,7 +631,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       // Recording had already finished, and the draft in memory still holds
       // every step and edit; only the stored copy is behind. The storage stop
       // reason makes review urge an immediate save, and its limitation says
-      // the original reason was replaced while no recorded step was lost.
+      // the original reason was replaced while no recorded step was lost. A
+      // draft with no room for that limitation keeps its reason; the toolbar
+      // still warns.
       const marked = markJourneyReviewStorageFailure(current);
       controller = makeController(marked);
       publishedState = marked;

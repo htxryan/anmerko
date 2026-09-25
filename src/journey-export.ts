@@ -14,7 +14,7 @@ import {
   type ReviewedText,
   type SafeTarget,
 } from './journey-core';
-import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
+import { JOURNEY_LIMITS, storageFailedAfterRecording, type CaptureFailure, type StopReason } from './journey-limits';
 import { formatJourneySelectorPath } from './journey-selector';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
@@ -251,6 +251,9 @@ const STOP_DESCRIPTIONS: Record<StopReason, string> = {
   'capture-failed': 'recording lost track of the page after it changed',
   'page-access-lost': 'the browser withdrew page access when a page loaded',
 };
+// Storage that failed after recording stopped replaced the recorded reason
+// and lost nothing recorded.
+const REVIEW_STORAGE_DESCRIPTION = 'unknown; journey storage failed after recording stopped and replaced the reason, but no recorded step is missing';
 
 // Why a step has no screenshot, in the review's words; journeys.md keeps the
 // code.
@@ -340,7 +343,7 @@ export function journeyPrompt(manifest: JourneyManifestV1): string {
     `- **Revision:** ${reviewed.revision}`,
     `- **Steps:** ${reviewed.steps.length}`,
     `- **Scope:** ${pages > 1 ? 'Spans pages' : 'Single page'}`,
-    `- **Stopped because:** ${STOP_DESCRIPTIONS[reviewed.stopReason]} (${inlineCode(reviewed.stopReason)})`,
+    `- **Stopped because:** ${storageFailedAfterRecording(reviewed) ? REVIEW_STORAGE_DESCRIPTION : STOP_DESCRIPTIONS[reviewed.stopReason]} (${inlineCode(reviewed.stopReason)})`,
     `- **Entered values:** ${reviewed.includeEnteredValues ? 'On' : 'Off'}`, '',
     '## Expected', '', literalBlock(reviewed.expected), '',
     '## Actual', '', literalBlock(reviewed.actual), '',
