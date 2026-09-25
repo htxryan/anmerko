@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { createJourneyController, type JourneyControllerAdapter, type JourneyPageIdentity } from '../../src/journey-controller';
-import type { JourneyDraftImage, JourneySession } from '../../src/journey-core';
+import { validateJourneyDraft, type JourneyDraftImage, type JourneySession, type ReviewingJourneySession } from '../../src/journey-core';
 import type { JourneyEventBatchV1 } from '../../src/journey-events';
+import { journeyDraftToManifest, journeyPrompt } from '../../src/journey-export';
 import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
 
 const START_MS = Date.parse('2026-09-20T12:00:00.000Z');
@@ -865,3 +866,95 @@ async function eventually(assertion: () => void): Promise<void> {
     catch { return false; }
   }).toBe(true);
 }
+
+test('navigations in a click\'s capture window, redirects and document loads included, are caused by that click', async () => {
+  const fixture = navigationFixture({
+    connect: async (_tabId, expectedUrl) => identity('document-done', expectedUrl, 3),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL, 'capture-click'), 42);
+  state = recording(controller.getState());
+  const click = state.draft.steps.at(-1)!;
+  const clickMs = Date.parse(click.observedAt);
+
+  // The click's route change and then its redirect both land in its window.
+  fixture.nowMs = clickMs + 300;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/result', kind: 'same-document' });
+  fixture.nowMs = clickMs + 800;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/redirected', kind: 'same-document' });
+  // The redirect still shares the click's window: no settle delay is left,
+  // and its screenshot must land 4.2 s later, five seconds after the click.
+  expect(fixture.pendingDelays().slice(-2)).toEqual([0, 4_200]);
+  fixture.nowMs = clickMs + 1_200;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/done', kind: 'document' });
+  state = recording(controller.getState());
+  expect(state.draft.steps.slice(1).map(step => [step.kind, step.image, step.kind === 'navigation' ? step.navigation.causedByStepId : null]))
+    .toEqual([
+      // Supersession is unchanged: each navigation displaces the pending screenshot before it.
+      ['click', { status: 'unavailable', reason: 'superseded' }, null],
+      ['navigation', { status: 'unavailable', reason: 'superseded' }, click.id],
+      ['navigation', { status: 'unavailable', reason: 'superseded' }, click.id],
+      ['navigation', { status: 'pending', captureId: expect.any(String) }, click.id],
+    ]);
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-done'));
+
+  // Once the click's window has closed, a navigation had no recent action.
+  fixture.nowMs = clickMs + 5_000;
+  fixture.current = identity('document-done', 'https://example.com/timer', 3);
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/timer', kind: 'same-document' });
+  state = recording(controller.getState());
+  expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/timer' });
+  expect(validateJourneyDraft(state.draft).ok).toBe(true);
+
+  // The prompt names the cause, and removing the click in review drops every link to it.
+  await controller.stop();
+  let review = controller.getState();
+  if (review.phase !== 'reviewing') throw new Error('Expected review');
+  const guards = (current: ReviewingJourneySession) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date(Math.max(fixture.nowMs, Date.parse(current.draft.updatedAt))).toISOString(),
+  });
+  await controller.updateSummary({ ...guards(review), expected: 'The result page stays.', actual: 'It redirects twice.' });
+  review = controller.getState();
+  if (review.phase !== 'reviewing') throw new Error('Expected review');
+  const prompt = journeyPrompt(journeyDraftToManifest(review.draft));
+  for (const seq of [3, 4, 5]) expect(prompt).toContain(`- **Step ${seq} · Navigation** from `);
+  expect(prompt.match(/, caused by step 2 · /g)).toHaveLength(3);
+  expect(prompt).not.toContain('caused by step 1 ');
+  await controller.removeStep({ ...guards(review), stepId: click.id });
+  review = controller.getState();
+  if (review.phase !== 'reviewing') throw new Error('Expected review');
+  expect(review.draft.steps.some(step => step.kind === 'navigation' && step.navigation.causedByStepId)).toBe(false);
+});
+
+test('a click that arrives after the route change it made is recorded as its cause', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  // The browser reports the route change before the click batch that made it.
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/route', kind: 'same-document' });
+  let state = recording(controller.getState());
+  expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/route' });
+  const late = clickBatch(state, 1, START_URL, 'capture-late');
+  late.events[0] = { ...late.events[0], id: 'late-click', observedAt: new Date(START_MS + 900).toISOString(), elapsedMs: 900 };
+  controller.acceptBatch(late, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps.map(step => step.kind === 'navigation' ? [step.id, step.navigation.causedByStepId] : [step.id]))
+    .toEqual([[state.draft.steps[0].id], ['late-click'], [state.draft.steps[2].id, 'late-click']]);
+  expect(validateJourneyDraft(state.draft).ok).toBe(true);
+
+  // A click more than five seconds before the route change did not make it.
+  fixture.nowMs = START_MS + 12_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/later', kind: 'same-document' });
+  state = recording(controller.getState());
+  const stale = clickBatch(state, 2, 'https://example.com/route', 'capture-stale');
+  stale.events[0] = { ...stale.events[0], id: 'stale-click', observedAt: new Date(START_MS + 6_500).toISOString(), elapsedMs: 6_500 };
+  controller.acceptBatch(stale, 42);
+  state = recording(controller.getState());
+  expect(state.draft.steps.slice(-2).map(step => step.id)).toEqual(['stale-click', state.draft.steps.at(-1)!.id]);
+  expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/later' });
+});

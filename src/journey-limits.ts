@@ -23,6 +23,12 @@ export const JOURNEY_LIMITS = {
   maxLimitations: 30,
   maxLimitationCharacters: 500,
   sessionMetadataReserveBytes: 1_024,
+  // Each action opens a capture window: its screenshot, and that of any
+  // navigation landing in the window, is taken from postActionDelayMs after
+  // it until captureWindowMs after it. A navigation in a click's window is
+  // recorded as caused by that click.
+  postActionDelayMs: 500,
+  captureWindowMs: 5_000,
 } as const;
 
 export const CAPTURE_FAILURES = [

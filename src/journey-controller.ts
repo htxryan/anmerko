@@ -18,6 +18,7 @@ import {
   supersedeJourneyImagesAfter,
   updateJourneySummary,
   type JourneyDraftImage,
+  type JourneyDraftStep,
   type JourneyDraftV1,
   type JourneyEditValueInput,
   type JourneyRedactLabelInput,
@@ -123,8 +124,8 @@ export class JourneyControllerError extends Error {
   }
 }
 
-const POST_ACTION_DELAY_MS = 500;
-const NAVIGATION_WINDOW_MS = 5_000;
+const POST_ACTION_DELAY_MS = JOURNEY_LIMITS.postActionDelayMs;
+const NAVIGATION_WINDOW_MS = JOURNEY_LIMITS.captureWindowMs;
 
 // A saved journey is finished: its confirmation never holds the recorder.
 export function journeyStartable(state: JourneySession): boolean {
@@ -308,6 +309,7 @@ export function createJourneyController(
     const elapsedMs = Math.max(lastElapsed, elapsed(Date.parse(previous.draft.startedAt), observedAt));
     const generation = invalidateWork();
     const captureId = newId('capture');
+    const actionWindow = captureWindow(previous, receiptMs);
     let next: JourneySession = settlePendingCaptures(previous, 'superseded');
     if (next.phase !== 'recording') return;
 
@@ -338,6 +340,7 @@ export function createJourneyController(
       elapsedMs,
       sourceUrl,
       toUrl,
+      ...(actionWindow.causedByStepId ? { causedByStepId: actionWindow.causedByStepId } : {}),
       previousDocumentToken: next.documentToken,
       documentToken,
       image: { status: 'pending', captureId },
@@ -357,7 +360,7 @@ export function createJourneyController(
     const abort = new AbortController();
     navigationAbort = abort;
     void completeNavigation({
-      generation, captureId, toUrl, windowStartMs: captureWindowStartMs(previous, receiptMs),
+      generation, captureId, toUrl, windowStartMs: actionWindow.startMs,
       handshake: handshake ? { ...handshake } : undefined,
       handshakeReady: !handshake,
       signal: abort.signal,
@@ -838,13 +841,21 @@ function sameOrigin(first: string, second: string | undefined): boolean {
 // restarting it. A navigation observed after the window closed had no recent
 // action (an idle reload, back/forward, or a timer): it opens its own window
 // from the moment it was observed, and its redirects share that one.
-function captureWindowStartMs(state: RecordingJourneySession, receiptMs: number): number {
+// A navigation in a click's window, redirects included, is caused by that
+// click. The schema links navigations only to clicks, so one in the window
+// of a field change, or of the initial screenshot, has no recorded cause.
+function captureWindow(state: RecordingJourneySession, receiptMs: number): { startMs: number; causedByStepId?: string } {
   let startMs = Date.parse(state.draft.startedAt);
+  let opener: JourneyDraftStep | undefined;
   for (const step of state.draft.steps) {
     const observedMs = Date.parse(step.observedAt);
-    if (step.kind !== 'navigation' || observedMs >= startMs + NAVIGATION_WINDOW_MS) startMs = observedMs;
+    if (step.kind !== 'navigation' || observedMs >= startMs + NAVIGATION_WINDOW_MS) {
+      startMs = observedMs;
+      opener = step;
+    }
   }
-  return receiptMs >= startMs + NAVIGATION_WINDOW_MS ? receiptMs : startMs;
+  if (receiptMs >= startMs + NAVIGATION_WINDOW_MS) return { startMs: receiptMs };
+  return opener?.kind === 'click' ? { startMs, causedByStepId: opener.id } : { startMs };
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
