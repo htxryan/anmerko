@@ -1,6 +1,6 @@
-import journeyStyles from './journey.css';
 import { createJourneyClient } from './journey-client';
 import { journeysEnabled } from './journey-feature';
+import { journeySurfaceStyles } from './journey-styles';
 import { mountJourneyUI } from './journey-ui';
 
 const root = document.querySelector<HTMLElement>('#journey');
@@ -21,7 +21,7 @@ if (!journeysEnabled) {
   root.append(section);
 } else {
   const style = document.createElement('style');
-  style.textContent = journeyStyles;
+  style.textContent = journeySurfaceStyles;
   document.head.append(style);
   const base = createJourneyClient(undefined, launchIntent(location.hash));
   const client = {

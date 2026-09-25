@@ -1,7 +1,7 @@
 import { extensionApi } from './platform';
 import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
 import { isJourneyBackgroundSender } from './journey-messaging';
-import type { JourneyClient } from './journey-ui';
+import type { JourneyClient, JourneyImageChange } from './journey-ui';
 
 type JourneyOwner = { ownerTabId?: number; ownerWindowId?: number };
 type JourneyResponse = { ok: true; value?: unknown } | { ok: false; code?: unknown; error?: unknown };
@@ -83,6 +83,18 @@ export function createJourneyClient(
       await command('ANMERKO_JOURNEY_REDACT_URL', {
         epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
         updatedAt: new Date().toISOString(), stepId, url,
+      });
+    },
+    reviewImage: async (imageId: string, change: JourneyImageChange): Promise<void> => {
+      const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+      if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
+      // A mask drawn on older pixels must not overwrite a change another review tab made since.
+      if (change.operation === 'replace' && current.draft.images[imageId]?.dataUrl !== change.maskedFrom) {
+        throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
+      }
+      await command('ANMERKO_JOURNEY_REVIEW_IMAGE', {
+        epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision, imageId,
+        operation: change.operation, ...(change.operation === 'replace' ? { dataUrl: change.image.dataUrl } : {}),
       });
     },
     save: async (acknowledged: boolean): Promise<{ journeyId: string; revision: number }> => {

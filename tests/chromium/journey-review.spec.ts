@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 const bundle = () => buildSync({ stdin: { contents: `
   import { mountJourneyUI } from './src/journey-ui';
   import { JOURNEY_LIMITS as journeyLimits } from './src/journey-limits';
-  import styles from './src/journey.css';
+  import { journeySurfaceStyles as styles } from './src/journey-styles';
   const style = document.createElement('style');
   style.textContent = styles;
   document.head.append(style);
@@ -17,6 +17,9 @@ const bundle = () => buildSync({ stdin: { contents: `
   const editCalls = [];
   const redactCalls = [];
   const saveCalls = [];
+  const reviewImageCalls = [];
+  let lastReplacement = null;
+  let reviewImageError = null;
   let summaryError = null;
   let removeError = null;
   let saveError = null;
@@ -65,6 +68,26 @@ const bundle = () => buildSync({ stdin: { contents: `
         const imageId = step?.image?.imageId;
         const redactions = draft.redactions ?? { steps: {} };
         state = { ...state, draft: { ...draft, images: { ...draft.images, [imageId]: { ...draft.images[imageId], captureUrl: '[redacted]' } }, redactions: { steps: { ...redactions.steps, [stepId]: { ...redactions.steps[stepId], captureUrl: true } } }, revision: draft.revision + 1 } };
+      }
+      changed();
+    },
+    reviewImage: async (imageId, change) => {
+      const draft = state.draft;
+      reviewImageCalls.push(change.operation === 'replace'
+        ? { imageId, operation: 'replace', width: change.image.width, height: change.image.height,
+          maskedCurrent: change.maskedFrom === draft.images[imageId]?.dataUrl }
+        : { imageId, operation: 'remove' });
+      if (reviewImageError) throw reviewImageError;
+      if (change.operation === 'replace') {
+        lastReplacement = change.image.dataUrl;
+        const image = { ...draft.images[imageId], dataUrl: change.image.dataUrl, byteLength: change.image.byteLength, redacted: true };
+        state = { ...state, draft: { ...draft, images: { ...draft.images, [imageId]: image }, revision: draft.revision + 1 } };
+      } else {
+        const images = { ...draft.images };
+        delete images[imageId];
+        const steps = draft.steps.map(step => step.image.status === 'retained' && step.image.imageId === imageId
+          ? { ...step, image: { status: 'removed' } } : step);
+        state = { ...state, draft: { ...draft, images, steps, revision: draft.revision + 1 } };
       }
       changed();
     },
@@ -185,6 +208,26 @@ const bundle = () => buildSync({ stdin: { contents: `
     { ...fieldStep('F2', 5, { kind: 'selection', values: ['Green'], multiple: false, truncated: false }) },
     { ...fieldStep('F3', 6, { kind: 'checked', checked: true }) },
   ];
+  // Real PNGs so the mask editor can open: 40×20, one solid color per image.
+  const png = color => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 40; canvas.height = 20;
+    const context = canvas.getContext('2d');
+    context.fillStyle = color;
+    context.fillRect(0, 0, 40, 20);
+    const dataUrl = canvas.toDataURL('image/png');
+    return { dataUrl, width: 40, height: 20, byteLength: atob(dataUrl.split(',')[1]).length };
+  };
+  const imageDraft = () => {
+    const draft = reviewingDraft([
+      step('S1', 1, 'initial', { status: 'retained', imageId: 'I1' }),
+      step('S2', 2, 'click', { status: 'retained', imageId: 'I2', sharedNavigationResult: true }, { target: { label: 'Checkout' } }),
+      step('S3', 3, 'navigation', { status: 'retained', imageId: 'I2', sharedNavigationResult: true }, { navigation: { toUrl: 'https://example.test/checkout' } }),
+    ]);
+    draft.images.I1 = { ...draft.images.I1, ...png('rgb(200, 100, 50)') };
+    draft.images.I2 = { ...draft.images.I2, ...png('rgb(40, 120, 200)') };
+    return draft;
+  };
   mountJourneyUI(document.body, client);
   window.journeyReviewHarness = {
     summaryCalls: () => summaryCalls,
@@ -193,6 +236,17 @@ const bundle = () => buildSync({ stdin: { contents: `
     editCalls: () => editCalls,
     redactCalls: () => redactCalls,
     saveCalls: () => saveCalls,
+    reviewImageCalls: () => reviewImageCalls,
+    lastReplacement: () => lastReplacement,
+    failReviewImage: () => {
+      reviewImageError = Object.assign(new Error('Another review tab changed this journey. Reload the review and try again.'), { code: 'stale-review' });
+    },
+    setReviewingWithImages: () => {
+      reviewImageError = null;
+      state = { phase: 'reviewing', epoch: 2, sessionId: 'SESS', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+        warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z', draft: imageDraft() };
+      changed();
+    },
     openSnapshotCalls: () => openSnapshotCalls,
     reopenCalls: () => reopenCalls,
     deleteCalls: () => deleteCalls,
@@ -308,6 +362,124 @@ test('step removal confirms inline and preserves sequence gaps', async ({ page }
   await expect(page.getByRole('heading', { name: /Step 2 / })).toHaveCount(0);
 });
 
+async function openImageReview(page: Page) {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyReviewHarness.setReviewingWithImages()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+}
+
+const stepItem = (page: Page, seq: number) =>
+  page.locator('li', { has: page.getByRole('heading', { name: new RegExp(`^Step ${seq} `) }) });
+
+test('screenshot masking opens from the keyboard, applies through the client, and returns focus', async ({ page }) => {
+  await openImageReview(page);
+  await expect(page.getByText('Keep, mask, or remove this screenshot during full image review.')).toHaveCount(0);
+  await expect(stepItem(page, 1).getByText('Mask part of this screenshot or remove it before saving. Masks cannot be undone.', { exact: true })).toBeVisible();
+  const mask = page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true });
+  await page.getByLabel('Actual result').focus();
+  await page.keyboard.press('Tab');
+  await expect(mask).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Mask sensitive details' })).toBeFocused();
+  // The shared surface stylesheet styles the dialog, not just the review list.
+  expect(await dialog.evaluate(element => getComputedStyle(element).borderTopLeftRadius)).toBe('12px');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(mask).toBeFocused();
+  expect(await page.evaluate('journeyReviewHarness.reviewImageCalls()')).toEqual([]);
+
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('spinbutton', { name: 'X', exact: true }).fill('0');
+  await dialog.getByRole('spinbutton', { name: 'Y', exact: true }).fill('0');
+  await dialog.getByRole('spinbutton', { name: 'Width', exact: true }).fill('10');
+  await dialog.getByRole('spinbutton', { name: 'Height', exact: true }).fill('5');
+  await dialog.getByRole('button', { name: 'Apply mask', exact: true }).click();
+  await expect.poll(async () => page.evaluate('journeyReviewHarness.reviewImageCalls()'), { timeout: 10_000 })
+    .toEqual([{ imageId: 'I1', operation: 'replace', width: 40, height: 20, maskedCurrent: true }]);
+  await expect(dialog).toHaveCount(0);
+  await expect(stepItem(page, 1).getByText('Masked during review.', { exact: true })).toBeVisible();
+  await expect(stepItem(page, 2).getByText('Masked during review.', { exact: true })).toHaveCount(0);
+  await expect(mask).toBeFocused();
+  const pixels = await page.evaluate(async () => {
+    const dataUrl = (globalThis as any).journeyReviewHarness.lastReplacement();
+    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d')!;
+    context.drawImage(bitmap, 0, 0);
+    return [Array.from(context.getImageData(9, 4, 1, 1).data), Array.from(context.getImageData(10, 5, 1, 1).data)];
+  });
+  expect(pixels).toEqual([[0, 0, 0, 255], [200, 100, 50, 255]]);
+});
+
+test('removing a shared screenshot confirms inline, names every affected step, and keeps focus on the step', async ({ page }) => {
+  await openImageReview(page);
+  const note = 'Steps 2 and 3 share this screenshot. Masking or removing it changes all of them.';
+  await expect(stepItem(page, 2).getByText(note, { exact: true })).toBeVisible();
+  await expect(stepItem(page, 3).getByText(note, { exact: true })).toBeVisible();
+  await expect(stepItem(page, 1).getByText(note, { exact: true })).toHaveCount(0);
+  const remove = page.getByRole('button', { name: 'Remove screenshot for step 2', exact: true });
+  await expect(remove).toHaveAccessibleDescription(note);
+  await expect(page.getByRole('button', { name: 'Mask screenshot for step 3', exact: true })).toHaveAccessibleDescription(note);
+
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const confirm = page.getByRole('button', { name: 'Confirm remove screenshot for step 2', exact: true });
+  await expect(confirm).toBeFocused();
+  await expect(confirm).toHaveAccessibleDescription(note);
+  await page.keyboard.press('Escape');
+  await expect(confirm).toHaveCount(0);
+  await expect(remove).toBeFocused();
+  await remove.click();
+  await page.getByRole('button', { name: 'Keep screenshot for step 2', exact: true }).click();
+  await expect(remove).toBeFocused();
+  expect(await page.evaluate('journeyReviewHarness.reviewImageCalls()')).toEqual([]);
+
+  await remove.click();
+  await confirm.click();
+  await expect.poll(async () => page.evaluate('journeyReviewHarness.reviewImageCalls()'), { timeout: 10_000 })
+    .toEqual([{ imageId: 'I2', operation: 'remove' }]);
+  await expect(stepItem(page, 2).getByText('Screenshot unavailable: removed during review.', { exact: true })).toBeVisible();
+  await expect(stepItem(page, 3).getByText('Screenshot unavailable: removed during review.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^Step 2 / })).toBeFocused();
+  await expect(page.getByRole('button', { name: /screenshot for step [23]$/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true })).toBeVisible();
+});
+
+test('the mask editor repeats the shared-step warning and its Remove applies to every step', async ({ page }) => {
+  await openImageReview(page);
+  await page.getByRole('button', { name: 'Mask screenshot for step 3', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+  await expect(dialog.getByText('Steps 2 and 3 share this screenshot. Masking or removing it changes all of them.', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Remove screenshot', exact: true }).click();
+  await expect.poll(async () => page.evaluate('journeyReviewHarness.reviewImageCalls()'), { timeout: 10_000 })
+    .toEqual([{ imageId: 'I2', operation: 'remove' }]);
+  await expect(dialog).toHaveCount(0);
+  await expect(stepItem(page, 2).getByText('Screenshot unavailable: removed during review.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^Step 3 / })).toBeFocused();
+});
+
+test('a rejected screenshot change keeps the image and reports the client message', async ({ page }) => {
+  await openImageReview(page);
+  await page.evaluate('journeyReviewHarness.failReviewImage()');
+  const mask = page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true });
+  await mask.click();
+  const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+  await dialog.getByRole('spinbutton', { name: 'X', exact: true }).fill('1');
+  await dialog.getByRole('spinbutton', { name: 'Y', exact: true }).fill('1');
+  await dialog.getByRole('spinbutton', { name: 'Width', exact: true }).fill('4');
+  await dialog.getByRole('spinbutton', { name: 'Height', exact: true }).fill('4');
+  await dialog.getByRole('button', { name: 'Apply mask', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('Another review tab changed this journey. Reload the review and try again.');
+  await expect(stepItem(page, 1).getByText('Masked during review.', { exact: true })).toHaveCount(0);
+  await expect(mask).toBeFocused();
+});
+
 test('review explains a stop that left the starting site', async ({ page }) => {
   await openReview(page);
   await page.evaluate('journeyReviewHarness.setStopReason("left-site")');
@@ -332,12 +504,12 @@ test('save stays disabled until summaries and acknowledgement are ready', async 
   const save = page.getByRole('button', { name: 'Save journey', exact: true });
   await expect(save).toBeDisabled();
   await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toBeVisible();
-  await expect(page.getByText('Acknowledge that full URLs and entered values are retained.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Acknowledge that full URLs, entered values, and kept screenshots are retained.', { exact: true })).toBeVisible();
   await page.getByLabel('Expected result').fill('Sharable summary');
   await page.getByLabel('Actual result').fill('Matches');
-  await page.getByLabel('I understand this journey retains full URLs and any entered values.').check();
+  await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
   await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Acknowledge that full URLs and entered values are retained.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Acknowledge that full URLs, entered values, and kept screenshots are retained.', { exact: true })).toHaveCount(0);
   await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
   await expect(page.getByText('This review is ready to save.', { exact: true })).toBeVisible();
 });
@@ -355,7 +527,7 @@ test('save explains pending screenshots and missing retained steps', async ({ pa
 
 test('acknowledgement checkbox state is visible and survives re-renders', async ({ page }) => {
   await openReview(page);
-  const ack = page.getByLabel('I understand this journey retains full URLs and any entered values.');
+  const ack = page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.');
   await expect(ack).not.toBeChecked();
   await ack.check();
   await expect(ack).toBeChecked();
@@ -482,7 +654,7 @@ test('save enables when ready, saves with acknowledgement, and shows confirmatio
   await expect(save).toBeDisabled();
   await page.getByLabel('Expected result').fill('Keeps the item in the cart.');
   await page.getByLabel('Actual result').fill('Checkout is empty.');
-  await page.getByLabel('I understand this journey retains full URLs and any entered values.').check();
+  await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
   await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
   await save.click();
   await expect.poll(async () => page.evaluate('journeyReviewHarness.saveCalls()'), { timeout: 10_000 }).toEqual([true]);
@@ -547,7 +719,7 @@ test('stale save keeps typed summaries', async ({ page }) => {
   await page.evaluate('journeyReviewHarness.failSaveStale()');
   await page.getByLabel('Expected result').fill('Typed before stale save');
   await page.getByLabel('Actual result').fill('Actual stays');
-  await page.getByLabel('I understand this journey retains full URLs and any entered values.').check();
+  await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
   const save = page.getByRole('button', { name: 'Save journey', exact: true });
   await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
   await save.click();
@@ -588,7 +760,7 @@ async function saveReviewWithoutLeaving(page: Page) {
   await expect
     .poll(async () => Number(await page.evaluate('journeyReviewHarness.summaryCalls().length')), { timeout: 10_000 })
     .toBe(2);
-  await page.getByLabel('I understand this journey retains full URLs and any entered values.').check();
+  await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
   const save = page.getByRole('button', { name: 'Save journey', exact: true });
   await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
   await save.click();

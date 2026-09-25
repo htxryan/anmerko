@@ -38,6 +38,7 @@
 .journey-input { width:100%; font:inherit; color:inherit; background:var(--surface,#fff); padding:10px 12px; border:1px solid var(--border,#dce1ec); border-radius:8px; }
 .journey-input:disabled { opacity:.55; }
 .journey-url-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.journey-image-actions { margin-top:12px; }
 .journey-saved-list { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
 .journey-saved-items { margin:0 0 12px; padding-left:20px; overflow-wrap:anywhere; }
 .journey-saved-item { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:7px 0; overflow-wrap:anywhere; word-break:break-word; }
