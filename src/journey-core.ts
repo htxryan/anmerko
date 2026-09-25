@@ -32,15 +32,20 @@ export interface SafeTarget {
 
 export interface DraftSafeTarget extends Omit<SafeTarget, 'label'> { label: string }
 
+// Every kind says whether review edited or removed it. A removed value keeps
+// only its field's kind: its payload is empty (no text, no options, not
+// checked) and never stands for what was entered. A reviewed text value is
+// redacted through its ReviewedText; a selection or checked state carries the
+// markers itself, since it may have no text to carry them.
 export type ReviewedFieldValue =
   | { kind: 'text'; value: ReviewedText; truncated: boolean }
-  | { kind: 'selection'; values: ReviewedText[]; multiple: boolean; truncated: boolean }
-  | { kind: 'checked'; checked: boolean };
+  | { kind: 'selection'; values: ReviewedText[]; multiple: boolean; truncated: boolean; edited?: true; redacted?: true }
+  | { kind: 'checked'; checked: boolean; edited?: true; redacted?: true };
 
 export type DraftFieldValue =
-  | { kind: 'text'; value: string; truncated: boolean; edited?: true }
-  | { kind: 'selection'; values: string[]; multiple: boolean; truncated: boolean; edited?: true }
-  | { kind: 'checked'; checked: boolean; edited?: true };
+  | { kind: 'text'; value: string; truncated: boolean; edited?: true; removed?: true }
+  | { kind: 'selection'; values: string[]; multiple: boolean; truncated: boolean; edited?: true; removed?: true }
+  | { kind: 'checked'; checked: boolean; edited?: true; removed?: true };
 
 // Review redactions per step: URLs, and a click's label, which can echo text
 // the page repeated from the user's input.
@@ -371,13 +376,14 @@ function withLimitation(limitations: string[], limitation: string | undefined): 
   return [...limitations, limitation];
 }
 
-// Stops that lose recorded information say what is missing.
-const STOP_LIMITATIONS: Partial<Record<StopReason, string>> = {
+// Stops that lose recorded information say what is missing. Review states
+// each in its stop notice instead of listing it again under Limitations.
+export const STOP_LIMITATIONS: Readonly<Partial<Record<StopReason, string>>> = Object.freeze({
   'session-storage-limit': JOURNEY_LIMITATIONS.sessionStorage,
   'page-access-lost': JOURNEY_LIMITATIONS.pageAccessLost,
   'image-budget': JOURNEY_LIMITATIONS.imageBudget,
   'capture-failed': JOURNEY_LIMITATIONS.captureFailed,
-};
+});
 // How much longer than the storage stop's limitation another stop's can be.
 const STOP_LIMITATION_HEADROOM_BYTES = Math.max(...Object.values(STOP_LIMITATIONS).map(text => bytes(text ?? '')))
   - bytes(JOURNEY_LIMITATIONS.sessionStorage);
@@ -446,11 +452,33 @@ function validateTarget(value: unknown, path: string, errors: string[], reviewed
   return errors.length === 0;
 }
 
+// A draft value removed in review, or a reviewed selection or checked state
+// redacted, is marked edited and keeps an empty payload, so nothing it held
+// can remain or pass for a recorded state.
+function validateReviewMarkers(value: Record<string, unknown>, path: string, errors: string[], reviewed: boolean): void {
+  const marker = reviewed ? 'redacted' : 'removed';
+  if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
+  if (value[marker] === undefined) return;
+  if (value[marker] !== true) { errors.push(`${path}.${marker} must be true when present`); return; }
+  if (value.edited !== true) errors.push(`${path}.${marker} value must be marked edited`);
+  const empty = value.kind === 'text' ? value.value === ''
+    : value.kind === 'selection' ? Array.isArray(value.values) && value.values.length === 0
+      : value.checked === false;
+  if (!empty || value.truncated === true) errors.push(`${path}.${marker} value must be empty`);
+}
+
 function validateFieldValue(value: unknown, path: string, errors: string[], reviewed: boolean): number {
   if (!isObject(value) || typeof value.kind !== 'string') { errors.push(`${path} must be a field value`); return 0; }
-  if (value.kind === 'text') {
-    exactKeys(value, ['kind', 'value', 'truncated'], ['edited'], path, errors);
+  // A reviewed text value is redacted through its ReviewedText instead.
+  const reviewedText = reviewed && value.kind === 'text';
+  const markers = (kind: 'text' | 'selection' | 'checked') => reviewed
+    ? (kind === 'text' ? ['edited'] : ['edited', 'redacted'])
+    : ['edited', 'removed'];
+  if (reviewedText) {
     if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
+  } else if (['text', 'selection', 'checked'].includes(value.kind)) validateReviewMarkers(value, path, errors, reviewed);
+  if (value.kind === 'text') {
+    exactKeys(value, ['kind', 'value', 'truncated'], markers('text'), path, errors);
     if (typeof value.truncated !== 'boolean') errors.push(`${path}.truncated must be a boolean`);
     if (reviewed) {
       validateReviewedText(value.value, `${path}.value`, errors);
@@ -465,8 +493,7 @@ function validateFieldValue(value: unknown, path: string, errors: string[], revi
     return 0;
   }
   if (value.kind === 'selection') {
-    exactKeys(value, ['kind', 'values', 'multiple', 'truncated'], ['edited'], path, errors);
-    if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
+    exactKeys(value, ['kind', 'values', 'multiple', 'truncated'], markers('selection'), path, errors);
     if (typeof value.multiple !== 'boolean') errors.push(`${path}.multiple must be a boolean`);
     if (typeof value.truncated !== 'boolean') errors.push(`${path}.truncated must be a boolean`);
     if (!Array.isArray(value.values) || value.values.length > 100) { errors.push(`${path}.values is invalid`); return 0; }
@@ -486,8 +513,7 @@ function validateFieldValue(value: unknown, path: string, errors: string[], revi
     return total;
   }
   if (value.kind === 'checked') {
-    exactKeys(value, ['kind', 'checked'], ['edited'], path, errors);
-    if (value.edited !== undefined && value.edited !== true) errors.push(`${path}.edited must be true when present`);
+    exactKeys(value, ['kind', 'checked'], markers('checked'), path, errors);
     if (typeof value.checked !== 'boolean') errors.push(`${path}.checked must be a boolean`);
     return 0;
   }
@@ -1259,8 +1285,29 @@ function sanitizeFieldValue(value: unknown): DraftFieldValue | undefined {
   return undefined;
 }
 
+// A removed value keeps only its field's kind, and whether a selection allows
+// several options, so review can still offer the matching editor.
+function removedFieldValue(recorded: DraftFieldValue): DraftFieldValue {
+  if (recorded.kind === 'text') return { kind: 'text', value: '', truncated: false, edited: true, removed: true };
+  if (recorded.kind === 'selection') {
+    return { kind: 'selection', values: [], multiple: recorded.multiple, truncated: false, edited: true, removed: true };
+  }
+  return { kind: 'checked', checked: false, edited: true, removed: true };
+}
+
+// The value a review edit leaves on a field-change step: the value entered in
+// review, marked edited, or for { removed: true } the recorded field emptied
+// and marked removed. undefined refuses the edit.
+export function reviewedFieldValue(recorded: DraftFieldValue, input: unknown): DraftFieldValue | undefined {
+  if (!isObject(input)) return undefined;
+  if (input.removed === true) return removedFieldValue(recorded);
+  if (input.removed !== undefined) return undefined;
+  return sanitizeFieldValue(input);
+}
+
 export interface JourneyEditValueInput extends JourneyReviewEdit {
   stepId: string;
+  // A field value entered in review, or { removed: true } to remove the value.
   value: unknown;
 }
 
@@ -1269,7 +1316,7 @@ export function editJourneyValue(state: JourneySession, input: JourneyEditValueI
   if (!reviewing || !validId(input.stepId)) return state;
   const step = reviewing.draft.steps.find(candidate => candidate.id === input.stepId);
   if (!step || step.kind !== 'field-change') return state;
-  const enteredValue = sanitizeFieldValue(input.value);
+  const enteredValue = reviewedFieldValue(step.enteredValue, input.value);
   if (!enteredValue) return state;
   const steps = reviewing.draft.steps.map(candidate => candidate.id === input.stepId
     ? { ...candidate, target: candidate.target, enteredValue } as JourneyDraftStep

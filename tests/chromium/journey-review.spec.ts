@@ -5,6 +5,7 @@ import { STOP_REASONS } from '../../src/journey-limits';
 
 const bundle = () => buildSync({ stdin: { contents: `
   import { mountJourneyUI } from './src/journey-ui';
+  import { reviewedFieldValue } from './src/journey-core';
   import { JOURNEY_LIMITS as journeyLimits } from './src/journey-limits';
   import { journeySurfaceStyles as styles } from './src/journey-styles';
   const style = document.createElement('style');
@@ -56,6 +57,8 @@ const bundle = () => buildSync({ stdin: { contents: `
   let staleListResult = [];
   let failingDeleteIds = [];
   let startError = null;
+  // Like the extension client, a start that can be tried again says so.
+  let startRetry = false;
   let startHook = null;
   let startGate = null;
   let stopCalls = 0;
@@ -79,7 +82,7 @@ const bundle = () => buildSync({ stdin: { contents: `
       startCalls.push(includeEnteredValues);
       startHook?.();
       if (startGate) await startGate.promise;
-      if (startError) throw new Error(startError);
+      if (startError) throw Object.assign(new Error(startError), startRetry ? { retry: true } : {});
     },
     stop: async () => { stopCalls += 1; },
     // Like the background, a discard names its view: an already-closed journey
@@ -125,7 +128,8 @@ const bundle = () => buildSync({ stdin: { contents: `
       refuseStale(review);
       if (state.phase === 'saving') throw savingError();
       if (editError) throw editError;
-      state = { ...state, draft: { ...state.draft, steps: state.draft.steps.map(step => step.id === stepId ? { ...step, enteredValue: { ...structuredClone(value), edited: true } } : step), revision: state.draft.revision + 1 } };
+      // The value the background keeps, as journey-core makes it.
+      state = { ...state, draft: { ...state.draft, steps: state.draft.steps.map(step => step.id === stepId ? { ...step, enteredValue: reviewedFieldValue(step.enteredValue, value) ?? step.enteredValue } : step), revision: state.draft.revision + 1 } };
       changed();
     },
     redactUrl: async (stepId, kind, review) => {
@@ -381,7 +385,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     openSnapshotCalls: () => openSnapshotCalls,
     reopenCalls: () => reopenCalls,
     deleteCalls: () => deleteCalls,
-    failStart: message => { startError = message; },
+    failStart: (message, retry = false) => { startError = message; startRetry = retry; },
     // Runs inside Start, as the background does when it switches to the website tab.
     onStart: hook => { startHook = hook; },
     holdStart: () => { startGate = gate(); },
@@ -862,12 +866,12 @@ test('save stays disabled until summaries and acknowledgement are ready', async 
   await openReview(page);
   const save = page.getByRole('button', { name: 'Save journey', exact: true });
   await expect(save).toBeDisabled();
-  await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Enter both an expected and an actual result.', { exact: true })).toBeVisible();
   await expect(page.getByText('Acknowledge that full URLs, entered values, and kept screenshots are retained.', { exact: true })).toBeVisible();
   await page.getByLabel('Expected result').fill('Sharable summary');
   await page.getByLabel('Actual result').fill('Matches');
   await page.getByLabel('I understand this journey retains full URLs, any entered values, and its kept screenshots.').check();
-  await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Enter both an expected and an actual result.', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Acknowledge that full URLs, entered values, and kept screenshots are retained.', { exact: true })).toHaveCount(0);
   await expect.poll(async () => save.isEnabled(), { timeout: 10_000 }).toBe(true);
   await expect(page.getByText('This review is ready to save.', { exact: true })).toBeVisible();
@@ -963,7 +967,7 @@ test('value edit persists through the client and marks edited', async ({ page })
   await expect(page.getByText('Edited during review.', { exact: true }).first()).toBeVisible();
 });
 
-test('value removal clears through the client', async ({ page }) => {
+test('value removal asks the client to remove it and shows it removed in place of the value', async ({ page }) => {
   await page.goto('http://127.0.0.1:4173');
   await page.setContent('<!doctype html><html><body></body></html>');
   await page.addScriptTag({ content: bundle() });
@@ -971,11 +975,51 @@ test('value removal clears through the client', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
   await page.getByRole('button', { name: 'Remove value for step 4', exact: true }).click();
   await expect.poll(async () => page.evaluate('journeyReviewHarness.editCalls()'), { timeout: 10_000 })
-    .toEqual([[ 'F1', { kind: 'text', value: '', truncated: false } ]]);
-  await expect(page.getByText('Edited during review.', { exact: true }).first()).toBeVisible();
+    .toEqual([[ 'F1', { removed: true } ]]);
+  const value = stepItem(page, 4).locator('.journey-entered-value');
+  await expect(value.locator('.journey-value')).toHaveText('[redacted]');
+  await expect(value.getByText('Value removed during review.', { exact: true })).toBeVisible();
+  await expect(value.getByText('Edited during review.', { exact: true })).toHaveCount(0);
+  // Nothing is left to remove; a new value can still be entered.
+  await expect(value.getByRole('button', { name: 'Remove value for step 4', exact: true })).toHaveCount(0);
+  await value.getByRole('button', { name: 'Edit value for step 4', exact: true }).click();
+  await expect(page.getByLabel('Edit entered value for step 4')).toHaveValue('');
 });
 
-test('selection and checked values render matching controls', async ({ page }) => {
+test('a removed checkbox or select value shows as removed, never as unchecked or unselected', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyReviewHarness.setReviewingWithAllValues()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+  for (const seq of [5, 6]) {
+    const value = stepItem(page, seq).locator('.journey-entered-value');
+    await value.getByRole('button', { name: `Remove value for step ${seq}`, exact: true }).click();
+    await expect(value.locator('.journey-value')).toHaveText('[redacted]');
+    await expect(value.getByText('Value removed during review.', { exact: true })).toBeVisible();
+    await expect(value).not.toContainText('Not checked');
+    await expect(value).not.toContainText('nothing selected');
+  }
+  expect(await page.evaluate('journeyReviewHarness.editCalls()')).toEqual([['F2', { removed: true }], ['F3', { removed: true }]]);
+  // The draft keeps each field's kind, emptied and marked removed.
+  const values = await page.evaluate(() => (window as any).journeyReviewHarness.state().draft.steps
+    .filter((step: { kind: string }) => step.kind === 'field-change').map((step: { enteredValue: unknown }) => step.enteredValue));
+  expect(values.slice(1)).toEqual([
+    { kind: 'selection', values: [], multiple: false, truncated: false, edited: true, removed: true },
+    { kind: 'checked', checked: false, edited: true, removed: true },
+  ]);
+  // Editing the removed checkbox records a state again, marked edited.
+  await page.getByRole('button', { name: 'Edit value for step 6', exact: true }).click();
+  const recorded = page.getByRole('checkbox', { name: 'Recorded as checked (step 6)', exact: true });
+  await expect(recorded).not.toBeChecked();
+  await recorded.check();
+  await page.getByRole('button', { name: 'Save value for step 6', exact: true }).click();
+  const checkbox = stepItem(page, 6).locator('.journey-entered-value');
+  await expect(checkbox.locator('.journey-value')).toHaveText('Checked');
+  await expect(checkbox.getByText('Edited during review.', { exact: true })).toBeVisible();
+});
+
+test('selection and checked values render matching controls, the checkbox named by the state it records', async ({ page }) => {
   await page.goto('http://127.0.0.1:4173');
   await page.setContent('<!doctype html><html><body></body></html>');
   await page.addScriptTag({ content: bundle() });
@@ -984,7 +1028,18 @@ test('selection and checked values render matching controls', async ({ page }) =
   await expect(page.getByRole('button', { name: 'Edit value for step 5', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit value for step 6', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Edit value for step 6', exact: true }).click();
-  await expect(page.getByLabel('Edit entered value for step 6')).toBeVisible();
+  const recorded = page.getByRole('checkbox', { name: 'Recorded as checked (step 6)', exact: true });
+  await expect(recorded).toBeFocused();
+  await expect(recorded).toBeChecked();
+  await expect(page.getByLabel('Edit entered value for step 6')).toHaveCount(0);
+  // Unticking it records the box as not checked, marked edited.
+  await recorded.uncheck();
+  await page.getByRole('button', { name: 'Save value for step 6', exact: true }).click();
+  await expect.poll(async () => page.evaluate('journeyReviewHarness.editCalls()'), { timeout: 10_000 })
+    .toEqual([['F3', { kind: 'checked', checked: false }]]);
+  const value = stepItem(page, 6).locator('.journey-entered-value');
+  await expect(value.locator('.journey-value')).toHaveText('Not checked');
+  await expect(value.getByText('Edited during review.', { exact: true })).toBeVisible();
 });
 
 test('URL redact buttons call with step id and kind and show redacted marker', async ({ page }) => {
@@ -1663,6 +1718,71 @@ test('each review error shows beside the control that failed and is announced on
   await expect(shown).toHaveCount(1);
 });
 
+test('an autosave that keeps failing the same way is announced once, not on every pause in typing', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate(() => {
+    (window as any).alertTexts = [];
+    new MutationObserver(() => { (window as any).alertTexts.push(document.querySelector('.journey-live [role="alert"]')!.textContent); })
+      .observe(document.querySelector('.journey-live [role="alert"]')!, { childList: true, characterData: true, subtree: true });
+  });
+  const announced = () => page.evaluate(() => ((window as any).alertTexts as string[]).filter(Boolean));
+  await page.evaluate('journeyReviewHarness.failSummary()');
+  const expected = page.getByLabel('Expected result');
+  const failures = page.locator('.journey-summary + .journey-error');
+  await expected.fill('First pause');
+  await expect(failures).toHaveText(STALE, { timeout: 10_000 });
+  await expect.poll(announced).toEqual([STALE]);
+  // Each later pause fails the same way: the error stays in view, unannounced.
+  for (const text of ['Second pause', 'Third pause']) {
+    const calls = Number(await page.evaluate('journeyReviewHarness.summaryCalls().length'));
+    await expected.fill(text);
+    await expect.poll(async () => Number(await page.evaluate('journeyReviewHarness.summaryCalls().length')), { timeout: 10_000 })
+      .toBeGreaterThan(calls);
+    await expect(failures).toHaveText(STALE);
+  }
+  await page.waitForTimeout(300);
+  expect(await announced()).toEqual([STALE]);
+  // After a quiet spell, a failure that still repeats is announced again.
+  await page.evaluate(() => { const now = Date.now; Date.now = () => now() + 31_000; });
+  await expected.fill('Much later');
+  await expect.poll(announced, { timeout: 10_000 }).toEqual([STALE, STALE]);
+  // A failure the reader caused by pressing a control is always announced.
+  await page.evaluate(`journeyReviewHarness.failEdits(${JSON.stringify(STALE)})`);
+  await page.getByRole('button', { name: 'Redact source URL for step 1', exact: true }).click();
+  await expect.poll(announced, { timeout: 10_000 }).toEqual([STALE, STALE, STALE]);
+});
+
+test('stop and deadline notices leave the hidden live regions once announced', async ({ page }) => {
+  await openReview(page);
+  const polite = page.locator('.journey-live [aria-live="polite"]');
+  const urgent = page.locator('.journey-live [aria-live="assertive"]');
+  await page.evaluate('journeyReviewHarness.setStopReason("focus-lost")');
+  await expect(polite).toHaveText(/^Recording ended because the recorded tab lost focus/);
+  // The notice stays in view; the region empties, so a virtual cursor meets it once.
+  await expect(polite).toHaveText('', { timeout: 10_000 });
+  await expect(page.locator('.journey-stop-reason')).toHaveText(/^Recording ended because the recorded tab lost focus/);
+  await page.evaluate('journeyReviewHarness.setReviewDeadline(-1_000, 120_000)');
+  await expect(urgent).toHaveText(/^This unsaved review will be deleted at /);
+  await expect(urgent).toHaveText('', { timeout: 10_000 });
+  await expect(page.locator('.journey-deadline')).toContainText(/^This unsaved review will be deleted at /);
+  // Re-renders never bring either back.
+  await page.getByLabel('Expected result').fill('Typing re-renders the review');
+  await expect.poll(async () => Number(await page.evaluate('journeyReviewHarness.summaryCalls().length')), { timeout: 10_000 }).toBe(1);
+  await expect(polite).toHaveText('');
+  await expect(urgent).toHaveText('');
+});
+
+test('the result fields, their section and the Save checklist name them the same way', async ({ page }) => {
+  await openReview(page);
+  const section = page.getByRole('region', { name: 'Results', exact: true });
+  await expect(section.getByLabel('Expected result', { exact: true })).toBeVisible();
+  await expect(section.getByLabel('Actual result', { exact: true })).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'Enter both an expected and an actual result.' })).toBeVisible();
+  await expect(page.locator('.journey-view')).not.toContainText(/summar/i);
+  // A mounted view never renames the page it is in: only a journey tab asks for titles.
+  expect(await page.title()).toBe('');
+});
+
 test('a failed screenshot removal shows its error in its step', async ({ page }) => {
   await openImageReview(page);
   await page.evaluate('journeyReviewHarness.failReviewImage()');
@@ -1746,6 +1866,8 @@ test('the acknowledgement checkbox keeps its size when its label wraps', async (
     expect(box!.height).toBeCloseTo(20, 0);
   }
 });
+
+const START_ELSEWHERE = 'To record a new journey, go to the website tab, click anmerko in the browser toolbar or Extensions menu, and choose Record journey from More Comment Options.';
 
 async function openIdle(page: Page) {
   await page.goto('http://127.0.0.1:4173');
@@ -1878,6 +2000,32 @@ test('a start error seen in a visible sidebar never pulls focus back from the pa
   expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
 
+test('a failed start that can be tried again says how: with Start here, or from the website tab once Start is gone', async ({ page }) => {
+  await openIdle(page);
+  const start = page.getByRole('button', { name: 'Start journey', exact: true });
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify('The first journey screenshot failed.')}, true)`);
+  await start.click();
+  const here = 'The first journey screenshot failed. Try again.';
+  await expect(page.getByRole('alert')).toHaveText(here);
+  await expect(page.locator('#journey-start-error')).toHaveText(here);
+  await expect(start).toHaveAccessibleDescription(here);
+  await expect(start).toBeFocused();
+
+  // A journey tab's link is spent by its one start, even a failed one: it
+  // offers no Start, so the error says where to start again instead.
+  await page.evaluate('journeyReviewHarness.setIdle()');
+  await page.evaluate('journeyReviewHarness.onStart(() => journeyReviewHarness.setStartable(false))');
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify('Could not start the journey.')}, true)`);
+  await start.click();
+  const elsewhere = 'Could not start the journey. To try again, go to the website tab and choose Record journey again.';
+  await expect(page.getByRole('alert')).toHaveText(elsewhere);
+  await expect(page.locator('#journey-start-error')).toHaveText(elsewhere);
+  await expect(start).toHaveCount(0);
+  await expect(page.locator('.journey-start')).toHaveText(`${START_ELSEWHERE}${elsewhere}`);
+  await expect(page.locator('.journey-view')).not.toContainText('Try again');
+  await expect(page.locator('#journey-start-error')).toBeFocused();
+});
+
 test('Firefox launches say up front that page loads end the journey', async ({ page }) => {
   await openIdle(page);
   const notice = 'In Firefox, reloading the page or opening another page ends the journey there. Navigation inside the page, such as a single-page app route change, keeps recording.';
@@ -1895,7 +2043,7 @@ test('a surface that cannot start again explains how to record instead of offeri
   await page.evaluate('journeyReviewHarness.setStartable(false)');
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
   await expect(page.getByLabel('Include entered values')).toHaveCount(0);
-  await expect(page.getByText('To record a new journey, go to the website tab, click anmerko in the browser toolbar or Extensions menu, and choose Record journey from More Comment Options.', { exact: true })).toBeVisible();
+  await expect(page.getByText(START_ELSEWHERE, { exact: true })).toBeVisible();
 });
 
 test('recording and review counts use singular and plural forms', async ({ page }) => {
@@ -1976,9 +2124,10 @@ test('value editing moves focus into the editor and back to Edit on save, cancel
   await page.getByRole('button', { name: 'Save value for step 4', exact: true }).click();
   await expect(page.getByText('edited search', { exact: true })).toBeVisible();
   await expect(edit).toBeFocused();
+  // The removed marker replaces Remove value, and takes its focus.
   await page.getByRole('button', { name: 'Remove value for step 4', exact: true }).click();
-  await expect(page.getByText('(empty value)', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Remove value for step 4', exact: true })).toBeFocused();
+  await expect(page.getByText('Value removed during review.', { exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Remove value for step 4', exact: true })).toHaveCount(0);
 });
 
 test('discarding an unsaved review asks for confirmation that Keep or Escape disarms', async ({ page }) => {
@@ -2128,14 +2277,14 @@ test('Save becomes available as soon as both summaries are typed, before the aut
   const actual = page.getByLabel('Actual result');
   await actual.pressSequentially('O');
   await expect(save).toBeEnabled();
-  await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Enter both an expected and an actual result.', { exact: true })).toHaveCount(0);
   // Typing continues in place.
   await expect(actual).toBeFocused();
   await actual.pressSequentially('pens');
   await expect(actual).toHaveValue('Opens');
   await actual.fill('');
   await expect(save).toBeDisabled();
-  await expect(page.getByText('Enter both an expected and an actual summary.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Enter both an expected and an actual result.', { exact: true })).toBeVisible();
   await expect(actual).toBeFocused();
 });
 
@@ -2228,7 +2377,7 @@ test('a save that completes elsewhere reports the edits it left out', async ({ p
   await page.evaluate('journeyReviewHarness.completeSaving()');
   await expect(page.getByRole('heading', { name: 'Journey saved' })).toBeVisible();
   // Remove step 2 only asked for confirmation, so the typed summary alone is missing.
-  await expect(page.getByRole('alert')).toHaveText(savedWithout('the summary text you typed'));
+  await expect(page.getByRole('alert')).toHaveText(savedWithout('the result text you typed'));
 });
 
 const SAVE_IN_PROGRESS = 'This journey is being saved. Wait for the save to finish, then try again.';
@@ -2282,7 +2431,7 @@ test('a summary held by a save is never written into the next journey under revi
   expect(await page.evaluate('journeyReviewHarness.summaryCalls()')).toEqual([]);
   expect(await page.evaluate('journeyReviewHarness.state().draft')).toMatchObject({ id: 'J2', expected: '', actual: '' });
   await expect(page.getByLabel('Expected result')).toHaveValue('');
-  await expect(page.getByRole('alert')).toHaveText(notApplied('the summary text you typed'));
+  await expect(page.getByRole('alert')).toHaveText(notApplied('the result text you typed'));
   // Text typed into J2's review goes to J2, named as such.
   await page.getByLabel('Expected result').fill('Typed for J2');
   await expect.poll(() => page.evaluate('journeyReviewHarness.state().draft.expected'), { timeout: 10_000 }).toBe('Typed for J2');
@@ -2302,7 +2451,7 @@ test('a summary typed just before another journey takes over the review is never
   expect(await page.evaluate('journeyReviewHarness.state().draft')).toMatchObject({ id: 'J2', expected: '', actual: '' });
   await expect(page.getByLabel('Expected result')).toHaveValue('');
   await expect(page.getByRole('checkbox', { name: /^I understand this journey retains/ })).not.toBeChecked();
-  await expect(page.getByRole('alert')).toHaveText(notApplied('the summary text you typed'));
+  await expect(page.getByRole('alert')).toHaveText(notApplied('the result text you typed'));
 });
 
 test('a save elsewhere reports an open value editor with unsent input as lost', async ({ page }) => {
@@ -2625,20 +2774,20 @@ test('each in-view error describes its control, and the hidden alert empties aft
   }
 });
 
-test('the same error failing again is announced again', async ({ page }) => {
+test('the same error failing again when the reader tries again is announced again', async ({ page }) => {
   await openReview(page);
-  await page.evaluate('journeyReviewHarness.failSummary()');
+  await page.evaluate(`journeyReviewHarness.failEdits(${JSON.stringify(STALE)})`);
   const alert = page.getByRole('alert');
-  const expected = page.getByLabel('Expected result');
-  await expected.fill('First try');
+  const redact = page.getByRole('button', { name: 'Redact source URL for step 1', exact: true });
+  await redact.click();
   await expect(alert).toHaveText(STALE, { timeout: 10_000 });
   await page.evaluate(() => {
     (window as any).alertTexts = [];
     new MutationObserver(() => { (window as any).alertTexts.push(document.querySelector('.journey-live [role="alert"]')!.textContent); })
       .observe(document.querySelector('.journey-live [role="alert"]')!, { childList: true, characterData: true, subtree: true });
   });
-  // The autosave fails again with the same message: the region empties, then says it again.
-  await expected.fill('Second try');
+  // Pressed again, it fails with the same message: the region empties, then says it again.
+  await redact.click();
   await expect.poll(() => page.evaluate('window.alertTexts'), { timeout: 10_000 }).toEqual(['', STALE]);
   await expect(page.locator('.journey-view .journey-error')).toHaveCount(1);
 });

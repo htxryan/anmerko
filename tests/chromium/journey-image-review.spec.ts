@@ -211,6 +211,57 @@ test('number inputs expose invalid geometry and preserve a valid image-space rec
   await expect(page.locator('#review-root')).toBeEmpty();
 });
 
+test('the region fields give the screenshot size and each range, and say in words which field is out of range', async ({ page }) => {
+  await loadEditor(page, { width: 390, height: 844 });
+  await begin(page, 1280, 800);
+  const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+  const size = 'The screenshot is 1280 × 800 pixels. X and Y count from its top-left corner.';
+  await expect(dialog.getByText(size, { exact: true })).toBeVisible();
+  const field = (name: string) => page.getByRole('spinbutton', { name, exact: true });
+  const problems = dialog.locator('.journey-image-review__problems');
+  await expect(problems).toHaveAttribute('aria-live', 'polite');
+  for (const [name, max] of [['X', '1279'], ['Y', '799'], ['Width', '1280'], ['Height', '800']]) {
+    await expect(field(name)).toHaveAttribute('max', max);
+    await expect(field(name)).toHaveAccessibleDescription(size);
+  }
+  // A valid field alone is never marked invalid, whatever is still empty.
+  await field('X').fill('0');
+  await expect(field('X')).toHaveAttribute('aria-invalid', 'false');
+  await expect(problems).toBeEmpty();
+
+  // Only the field that overflows is marked, and its description says why.
+  await setGeometry(page, { x: 0, y: 0, width: 400, height: 900 });
+  const tooTall = 'Height must be a number greater than 0 and at most 800.';
+  for (const name of ['X', 'Y', 'Width']) {
+    await expect(field(name)).toHaveAttribute('aria-invalid', 'false');
+    await expect(field(name)).toHaveAccessibleDescription(size);
+  }
+  await expect(field('Height')).toHaveAttribute('aria-invalid', 'true');
+  await expect(field('Height')).toHaveAccessibleDescription(`${size} ${tooTall}`);
+  await expect(problems).toHaveText(tooTall);
+  await expect(problems).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Apply mask' })).toBeDisabled();
+  // The preview shows no region while the fields hold an invalid one.
+  await expect(dialog.locator('.journey-image-review__selection')).toBeHidden();
+  // A size that fits alone but not from its position blames the size, saying why.
+  await setGeometry(page, { x: 0, y: 500, width: 400, height: 400 });
+  await expect(field('Y')).toHaveAttribute('aria-invalid', 'false');
+  await expect(field('Height')).toHaveAccessibleDescription(`${size} Y plus Height must be at most 800.`);
+
+  // A position outside the image is its own problem; the size beside it is not blamed.
+  await setGeometry(page, { x: 5000, y: 0, width: 400, height: 900 });
+  await expect(field('X')).toHaveAttribute('aria-invalid', 'true');
+  await expect(field('X')).toHaveAccessibleDescription(`${size} X must be a number from 0 to 1279.`);
+  await expect(field('Width')).toHaveAttribute('aria-invalid', 'false');
+  await expect(problems).toHaveText(`X must be a number from 0 to 1279. ${tooTall}`);
+
+  await setGeometry(page, { x: 0, y: 0, width: 400, height: 800 });
+  for (const name of ['X', 'Y', 'Width', 'Height']) await expect(field(name)).toHaveAttribute('aria-invalid', 'false');
+  await expect(problems).toBeEmpty();
+  await expect(page.getByRole('button', { name: 'Apply mask' })).toBeEnabled();
+  await expect(dialog.locator('.journey-image-review__selection')).toBeVisible();
+});
+
 test('pointer cancellation and a second touch leave the completed rectangle unchanged', async ({ page }) => {
   await loadEditor(page);
   await begin(page);
