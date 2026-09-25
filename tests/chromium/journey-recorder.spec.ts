@@ -97,8 +97,11 @@ test('trusted mouse and keyboard clicks emit ordered raw batches without changin
   expect(await page.evaluate(() => (globalThis as RecorderWindow).normalActions)).toBe(3);
 });
 
-test('click context reports the visible viewport under zoom and pan', async ({ page }) => {
-  await page.setContent('<button type="button">Zoomed action</button>');
+test('click context reports the visible viewport and a point inside it under zoom and pan', async ({ page }) => {
+  await page.setContent(`
+    <button type="button" style="position:absolute;left:300px;top:400px">Zoomed action</button>
+    <button type="button" style="position:absolute;left:0;top:0">Panned away</button>
+  `);
   await page.evaluate(() => {
     Object.defineProperty(window, 'visualViewport', {
       configurable: true,
@@ -107,11 +110,20 @@ test('click context reports the visible viewport under zoom and pan', async ({ p
   });
   await attach(page);
 
-  await page.getByRole('button', { name: 'Zoomed action' }).click();
+  const zoomed = page.getByRole('button', { name: 'Zoomed action' });
+  const box = (await zoomed.boundingBox())!;
+  await zoomed.click();
+  // Outside the visible viewport there is no honest point, but the click stays.
+  await page.getByRole('button', { name: 'Panned away' }).click({ position: { x: 2, y: 2 } });
   const recorded = await batches(page);
-  expect(recorded).toHaveLength(1);
+  expect(recorded).toHaveLength(2);
   expect(recorded[0].events[0].target.viewport).toEqual({ width: 640, height: 360 });
   expect(recorded[0].events[0].target.scroll).toEqual({ x: 120, y: 80 });
+  const { point } = recorded[0].events[0].target;
+  expect(Math.abs(point.x - (box.x + box.width / 2 - 120))).toBeLessThanOrEqual(1);
+  expect(Math.abs(point.y - (box.y + box.height / 2 - 80))).toBeLessThanOrEqual(1);
+  expect(recorded[1].events[0].target.label).toBe('Panned away');
+  expect(recorded[1].events[0].target.point).toBeUndefined();
   expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
 });
 
