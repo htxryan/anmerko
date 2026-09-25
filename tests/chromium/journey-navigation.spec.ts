@@ -424,31 +424,100 @@ test('same-origin path changes and same-URL reloads keep recording instead of le
   expect(state.draft.steps.slice(-2).map(step => step.kind === 'navigation' && step.navigation.toUrl)).toEqual([reloadUrl, reloadUrl]);
 });
 
-test('an idle same-origin reload gets its own window to reconnect and keeps recording', async () => {
+test('an idle same-origin reload gets its own capture window and keeps its destination screenshot', async () => {
   const connect = deferred<JourneyPageIdentity>();
   const fixture = navigationFixture({ connect: () => connect.promise });
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
 
-  // Long after the last action, so the screenshot window has already passed.
+  // Long after the last action, so no recent action's window can hold it.
   fixture.nowMs = START_MS + 20_000;
   fixture.current = identity('document-reload', START_URL, 2);
   controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
-  expect(fixture.pendingDelays()).toEqual([0, 5_000]);
-  // A real zero-delay timer fires before the browser answers the handshake.
-  fixture.resolveDelay(0, 0);
-  await Promise.resolve();
-  expect(controller.getState().phase).toBe('recording');
+  expect(fixture.pendingDelays()).toEqual([500, 5_000]);
 
   connect.resolve(fixture.current);
-  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
-    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
+  await eventually(() => expect(fixture.calls.begin).toHaveLength(2));
+  expect(fixture.calls.begin.at(-1)?.input).toMatchObject({ documentToken: 'document-reload', expectedUrl: START_URL });
+  expect(fixture.calls.capture).toHaveLength(1);
+
+  fixture.nowMs = START_MS + 20_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
   const state = recording(controller.getState());
+  const step = state.draft.steps.at(-1)!;
+  if (step.image.status !== 'retained') throw new Error('Expected a retained reload screenshot');
+  expect(state.draft.images[step.image.imageId]).toMatchObject({
+    captureUrl: START_URL, capturedAt: new Date(START_MS + 20_600).toISOString(),
+  });
   expect(state.documentToken).toBe('document-reload');
   expect(state.draft.stopReason).toBeUndefined();
-  expect(fixture.calls.begin.at(-1)?.input).toMatchObject({ documentToken: 'document-reload', expectedUrl: START_URL });
-  // The late destination is not captured only to be discarded.
+});
+
+test('an unprompted same-document navigation after the action window still captures its destination', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL), 42);
+  state = recording(controller.getState());
+  const clickMs = Date.parse(state.draft.steps.at(-1)!.observedAt);
+
+  // A timer-driven route change exactly when the click's five-second window closes.
+  fixture.nowMs = clickMs + 5_000;
+  fixture.current = identity(state.documentToken, 'https://example.com/timer', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  expect(fixture.pendingDelays()).toEqual([500, 5_000]);
+  fixture.nowMs = clickMs + 5_500;
+  fixture.resolveDelay(500, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image.status).toBe('retained'));
+});
+
+test('a navigation inside the last action window stays bound to that window', async () => {
+  const fixture = navigationFixture();
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  let state = recording(controller.getState());
+  controller.acceptBatch(clickBatch(state, 1, START_URL), 42);
+  state = recording(controller.getState());
+  const clickMs = Date.parse(state.draft.steps.at(-1)!.observedAt);
+
+  // One millisecond before the window closes the navigation is the click's
+  // result: it gets only what remains of the click's five seconds.
+  fixture.nowMs = clickMs + 4_999;
+  fixture.current = identity(state.documentToken, 'https://example.com/late-result', 2);
+  controller.observeNavigation({ ownerTabId: 42, url: fixture.current.url, kind: 'same-document' });
+  expect(fixture.pendingDelays()).toEqual([0, 1]);
+  fixture.nowMs = clickMs + 5_000;
+  fixture.resolveDelay(1, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
+    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
   expect(fixture.calls.capture).toHaveLength(1);
+});
+
+test('redirects after an unprompted reload share its window instead of restarting it', async () => {
+  const fixture = navigationFixture({
+    connect: async (_tabId, expectedUrl) => identity(expectedUrl.endsWith('/final') ? 'document-final' : 'document-reload', expectedUrl, 2),
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 20_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  expect(fixture.pendingDelays()).toEqual([500, 5_000]);
+  fixture.nowMs = START_MS + 21_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/final', kind: 'document' });
+  // The redirect's screenshot has no settle delay left and must land by
+  // 25 s, five seconds after the reload; only its connection gets a fresh five.
+  expect(fixture.pendingDelays()).toEqual([500, 5_000, 0, 5_000]);
+  await eventually(() => expect(recording(controller.getState()).documentToken).toBe('document-final'));
+  fixture.current = identity('document-final', 'https://example.com/final', 2);
+  fixture.nowMs = START_MS + 25_000;
+  fixture.resolveDelay(0, 0);
+  await eventually(() => expect(recording(controller.getState()).draft.steps.at(-1)?.image)
+    .toEqual({ status: 'unavailable', reason: 'navigation-timeout' }));
+  expect(recording(controller.getState()).draft.steps.slice(-2).map(step => step.image))
+    .toEqual([{ status: 'unavailable', reason: 'superseded' }, { status: 'unavailable', reason: 'navigation-timeout' }]);
 });
 
 test('a same-origin document load that withdraws page access stops promptly as page-access-lost', async () => {
