@@ -121,6 +121,47 @@ test('extension runner targets the authenticated document when supplied and neve
     .rejects.toThrow(COMPONENT_CONTEXT_PROBE_FAILURE);
 });
 
+test('extension runner treats a returned failure token as a failed probe, not a clean none', async () => {
+  // Chrome resolves a thrown injected function as null, so probes return the token instead.
+  const api = { scripting: { async executeScript() {
+    return [{ frameId: 0, documentId: 'document-1', result: COMPONENT_CONTEXT_PROBE_FAILURE }];
+  } } } as unknown as typeof chrome;
+  await expect(createExtensionComponentContextProbeRunner(api)(probes[0], target, { tabId: 42, documentId: 'document-1' }))
+    .rejects.toThrow(COMPONENT_CONTEXT_PROBE_FAILURE);
+});
+
+test('reruns a failed probe at most twice, only while enabled and before the shared deadline', async () => {
+  const attempts: number[] = [];
+  const recovering = broker(async probe => {
+    const index = probes.indexOf(probe as typeof probes[number]);
+    attempts.push(index);
+    if (index === 0 && attempts.length < 3) throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE);
+    return index === 0 ? react : null;
+  });
+  await expect(recovering.handle(request, sender)).resolves.toMatchObject({ framework: 'react', path: ['App', 'Button'] });
+  expect(attempts).toEqual([0, 0, 0, 1, 2, 3]);
+
+  let failures = 0;
+  const failing = broker(async () => { failures++; throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE); });
+  await expect(failing.handle(request, sender)).resolves.toBeNull();
+  expect(failures).toBe(3);
+
+  let enabled = true;
+  let disabledRuns = 0;
+  const disabled = broker(async () => { disabledRuns++; enabled = false; throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE); }, async () => enabled);
+  await expect(disabled.handle(request, sender)).resolves.toBeNull();
+  expect(disabledRuns).toBe(1);
+
+  let lateRuns = 0;
+  const late = broker(async () => {
+    lateRuns++;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE);
+  }, async () => true, 10);
+  await expect(late.handle(request, sender)).resolves.toBeNull();
+  expect(lateRuns).toBe(1);
+});
+
 test('extension runner falls back to the already-authenticated top frame only when no sender document ID exists', async () => {
   let details: any;
   const api = { scripting: { async executeScript(value: unknown) { details = value; return [{ frameId: 0, result: null }]; } } } as unknown as typeof chrome;

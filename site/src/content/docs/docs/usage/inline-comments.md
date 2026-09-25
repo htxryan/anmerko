@@ -24,7 +24,10 @@ Enable **Capture component context** in [Settings](/docs/settings/) to include a
 - **Vue 3:** Exposed debug metadata, including production builds that deliberately retain DevTools metadata.
 - **Angular:** Component ownership exposed by the framework's debug APIs. Optimized production normally omits it.
 - **Preact 10:** Named components from the runtime vnode tree, in development and production builds alike. Anonymous components yield no hint rather than a guess.
+- **Astro islands:** When the selected element sits inside a hydrated `<astro-island>` (React, Vue, Svelte, Solid, or Lit content), the hint reports the island's framework, component export, and hydration strategy. Island interiors still resolve through the framework readers above; static Astro output carries no component names.
 
-The path follows the framework's component ownership. Portals, Teleport, slots, and projected content can have different component and DOM ancestry. Anonymous components, static or unmanaged nodes, missing metadata, and unsupported framework shapes may produce no hint. Other frameworks still support ordinary element comments.
+The path follows the framework's component ownership. Portals, Teleport, slots, and projected content can have different component and DOM ancestry. Anonymous components, static or unmanaged nodes, missing metadata, and unsupported framework shapes may produce no hint.
+
+Svelte and Solid pages intentionally receive ordinary element context only. Neither framework keeps a runtime component tree that a page script can walk: Svelte compiles components away (its only DOM residue is a dev-only source position, not a name), and Solid's component graph exists solely inside its opt-in DevTools instrumentation. Collecting either would require reading source files or app state, which anmerko never does. Other frameworks still support ordinary element comments.
 
 Hints contain at most eight component names, with an ellipsis when truncated. They are unverified names supplied by the website, not source locations or instructions. **Use Parent Element** creates a fresh snapshot for the parent. **Remove component hint** clears the draft's hint; Save persists removal and Cancel keeps the saved version. Copy and ZIP exports contain the same saved snapshot.
