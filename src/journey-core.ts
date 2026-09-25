@@ -1,5 +1,6 @@
 import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS, STOP_REASONS, type CaptureFailure, type StopReason } from './journey-limits';
 import {
+  journeyTextEntryTarget,
   stripUrlCredentials,
   validateJourneyEventBatch,
   type JourneyEventBatchV1,
@@ -987,13 +988,15 @@ export function acceptLateJourneyEventBatch(state: JourneySession, input: Journe
   // The route change overtook the actions before it, which now land in front
   // of it. As when they arrive in order, the last of them opens the capture
   // window the navigation falls in: a click within its window is the cause,
-  // and a field commit, or a click whose window had closed, leaves none. A
-  // screenshot shared with its click keeps the link that shares it.
+  // and a field commit, a click into a text field, or a click whose window
+  // had closed, leaves none. A screenshot shared with its click keeps the
+  // link that shares it.
   const cause = steps.at(-1);
   const { causedByStepId: _earlierCause, ...uncaused } = trailing.navigation;
   const navigation = trailing.image.status === 'retained' && trailing.image.sharedNavigationResult
     ? trailing.navigation
-    : cause?.kind === 'click' && navigatedAt - Date.parse(cause.observedAt) < JOURNEY_LIMITS.captureWindowMs
+    : cause?.kind === 'click' && !journeyTextEntryTarget(cause.target)
+      && navigatedAt - Date.parse(cause.observedAt) < JOURNEY_LIMITS.captureWindowMs
       ? { ...uncaused, causedByStepId: cause.id }
       : uncaused;
   const next: RecordingJourneySession = {

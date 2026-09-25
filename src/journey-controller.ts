@@ -10,6 +10,7 @@ import {
   redactJourneyLabel,
   redactJourneyUrl,
   removeJourneyStep,
+  recordingSessionFits,
   reopenJourneySnapshot,
   resolveJourneyCapture,
   resumeSavingReview,
@@ -32,9 +33,9 @@ import {
   type SavingJourneySession,
   type Viewport,
 } from './journey-core';
-import { stripUrlCredentials, validateJourneyEventBatch } from './journey-events';
+import { journeyTextEntryTarget, stripUrlCredentials, validateJourneyEventBatch, type JourneyEventBatchV1 } from './journey-events';
 import type { NormalizedJourneyPng } from './journey-image';
-import { CAPTURE_FAILURES, JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
+import { CAPTURE_FAILURES, JOURNEY_LIMITATIONS, JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
 import { applyJourneyImageReview } from './journey-review';
 
 export interface JourneyPageIdentity {
@@ -152,6 +153,9 @@ export function createJourneyController(
     state = next;
     adapter.changed(state);
   };
+  const publishIfChanged = (next: JourneySession) => {
+    if (next !== state) publish(next);
+  };
 
   async function start(input: { ownerTabId: number; ownerWindowId: number; includeEnteredValues?: boolean }): Promise<void> {
     if (!Number.isInteger(input.ownerTabId) || input.ownerTabId < 0 || !Number.isInteger(input.ownerWindowId) || input.ownerWindowId < 0
@@ -243,12 +247,15 @@ export function createJourneyController(
     if (!expectedUrl) return;
     if (validated.value.events.some(event => !sameUrl(event.sourceUrl, expectedUrl))) {
       const late = acceptLateJourneyEventBatch(state, validated.value);
-      if (late !== state) publish(late);
+      publishIfChanged(late !== state ? late : noteUnplacedValues(state, validated.value));
       return;
     }
     const previous = state;
     const candidate = acceptJourneyEventBatch(previous, validated.value);
-    if (candidate === previous) return;
+    if (candidate === previous) {
+      publishIfChanged(noteUnplacedValues(previous, validated.value));
+      return;
+    }
     const firstObservedAt = validated.value.events.reduce((earliest, event) => (
       Date.parse(event.observedAt) < Date.parse(earliest) ? event.observedAt : earliest
     ), validated.value.events[0].observedAt);
@@ -300,6 +307,11 @@ export function createJourneyController(
     }
     const sourceUrl = committedUrl(state);
     if (!sourceUrl) return;
+    // history.replaceState or pushState that keeps the URL, as a router does
+    // when it stamps history.state on load or after a click, leaves the page
+    // where it was. It is not a step, and must not take the screenshot of the
+    // action or page load before it. A reload is a document commit and counts.
+    if (input.kind === 'same-document' && sameUrl(toUrl, sourceUrl)) return;
     const previous = state;
     const lastObservedMs = Date.parse(previous.draft.steps.at(-1)?.observedAt ?? previous.draft.startedAt);
     const receiptMs = Math.max(now(), lastObservedMs);
@@ -839,6 +851,20 @@ function uniqueProvisionalToken(state: RecordingJourneySession): string {
   return token;
 }
 
+// A current batch from the recording page that carries entered values but
+// could not be placed, because the page changed more than once before it
+// arrived, leaves those values out. The draft says so rather than dropping
+// them silently. A stale, replayed, or foreign batch changes nothing.
+function noteUnplacedValues(state: RecordingJourneySession, batch: JourneyEventBatchV1): RecordingJourneySession {
+  const limitation = JOURNEY_LIMITATIONS.enteredValuesUnplaced;
+  if (!state.draft.includeEnteredValues || !batch.events.some(event => event.kind === 'field-change')
+    || batch.sessionId !== state.sessionId || batch.epoch !== state.epoch || batch.documentToken !== state.documentToken
+    || batch.localCounter <= (state.documentCounters[batch.documentToken] ?? 0)
+    || state.draft.limitations.includes(limitation) || state.draft.limitations.length >= JOURNEY_LIMITS.maxLimitations) return state;
+  const next: RecordingJourneySession = { ...state, draft: { ...state.draft, limitations: [...state.draft.limitations, limitation] } };
+  return recordingSessionFits(next) ? next : state;
+}
+
 function committedUrl(state: RecordingJourneySession): string | undefined {
   const step = state.draft.steps.at(-1);
   if (!step) return;
@@ -869,18 +895,25 @@ function sameOrigin(first: string, second: string | undefined): boolean {
 // A navigation in a click's window, redirects included, is caused by that
 // click. The schema links navigations only to clicks, so one in the window
 // of a field change, or of the initial screenshot, has no recorded cause.
+// A click into a text field only focuses it: the typing and Enter that
+// follow load the next page, not the click. A navigation after one has no
+// recorded cause and, like an idle navigation, opens its own window.
 function captureWindow(state: RecordingJourneySession, receiptMs: number): { startMs: number; causedByStepId?: string } {
   let startMs = Date.parse(state.draft.startedAt);
   let opener: JourneyDraftStep | undefined;
   for (const step of state.draft.steps) {
     const observedMs = Date.parse(step.observedAt);
-    if (step.kind !== 'navigation' || observedMs >= startMs + NAVIGATION_WINDOW_MS) {
+    if (step.kind !== 'navigation' || observedMs >= startMs + NAVIGATION_WINDOW_MS || focusesTextEntry(opener)) {
       startMs = observedMs;
       opener = step;
     }
   }
-  if (receiptMs >= startMs + NAVIGATION_WINDOW_MS) return { startMs: receiptMs };
+  if (receiptMs >= startMs + NAVIGATION_WINDOW_MS || focusesTextEntry(opener)) return { startMs: receiptMs };
   return opener?.kind === 'click' ? { startMs, causedByStepId: opener.id } : { startMs };
+}
+
+function focusesTextEntry(step: JourneyDraftStep | undefined): boolean {
+  return step?.kind === 'click' && journeyTextEntryTarget(step.target);
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {

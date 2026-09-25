@@ -3,7 +3,7 @@ import {
   stripUrlCredentials, type JourneyClickEvent, type JourneyEventBatchV1, type JourneyFieldChangeEvent, type JourneyInputEvent,
 } from './journey-events';
 import { JOURNEY_LIMITS } from './journey-limits';
-import { journeySelectorPath, parentAcrossShadow } from './journey-selector';
+import { journeySelectorPath, journeyTagName, parentAcrossShadow } from './journey-selector';
 
 export type JourneyRecorderOptions = {
   sessionId: string;
@@ -16,6 +16,7 @@ export type JourneyRecorderOptions = {
 };
 
 const EDITABLE_TAGS = new Set(['input', 'select', 'textarea']);
+const LABEL_CHARACTERS = JOURNEY_LIMITS.maxTargetTextCharacters;
 // Text boxes a page renders itself hold typed text just like native fields.
 const TEXT_BOX_ROLES = new Set(['textbox', 'searchbox']);
 const EDITABLE_SELECTOR = 'input, select, textarea, [contenteditable]:not([contenteditable="false"]), [role~="textbox" i], [role~="searchbox" i]';
@@ -30,9 +31,10 @@ const SEMANTIC_ROLES = new Set([
   'rowheader', 'scrollbar', 'search', 'searchbox', 'separator', 'slider', 'spinbutton', 'status', 'switch', 'tab',
   'table', 'tablist', 'tabpanel', 'term', 'textbox', 'timer', 'toolbar', 'tooltip', 'tree', 'treegrid', 'treeitem',
 ]);
-const ROLE_BY_TAG: Record<string, string> = {
-  a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
-};
+const ROLE_BY_TAG = new Map([['a', 'link'], ['button', 'button'], ['select', 'combobox'], ['textarea', 'textbox']]);
+// Input types that act when clicked rather than take typed text: an image
+// input is a submit button drawn as a picture.
+const BUTTON_INPUT_TYPES = new Set(['button', 'image', 'reset', 'submit']);
 
 // `isContentEditable` also covers design-mode documents, where every element
 // shows what the user typed.
@@ -58,20 +60,20 @@ function roleFor(element: Element): string | undefined {
   if (element.localName === 'a' && !element.hasAttribute('href')) return undefined;
   if (element.localName === 'input') {
     const type = (element.getAttribute('type') || 'text').toLowerCase();
-    if (['button', 'reset', 'submit'].includes(type)) return 'button';
+    if (BUTTON_INPUT_TYPES.has(type)) return 'button';
     if (type === 'checkbox') return 'checkbox';
     if (type === 'radio') return 'radio';
     if (type === 'range') return 'slider';
     return 'textbox';
   }
   if (element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false') return 'textbox';
-  return ROLE_BY_TAG[element.localName];
+  return ROLE_BY_TAG.get(element.localName);
 }
 
 function genericLabel(element: Element): string {
   if (element.localName === 'input') {
     const type = (element.getAttribute('type') || 'text').toLowerCase();
-    if (['button', 'reset', 'submit'].includes(type)) return 'button';
+    if (BUTTON_INPUT_TYPES.has(type)) return 'button';
     if (type === 'checkbox') return 'checkbox';
     if (type === 'radio') return 'radio button';
     if (type === 'range') return 'range field';
@@ -79,7 +81,8 @@ function genericLabel(element: Element): string {
   }
   if (element.localName === 'select') return 'select field';
   if (isEditableElement(element)) return 'text field';
-  return element.localName.replace(/-/g, ' ');
+  // A custom element's name can be longer than any label may be.
+  return Array.from(element.localName.replace(/-/g, ' ')).slice(0, LABEL_CHARACTERS).join('').trim() || 'element';
 }
 
 function safeText(element: Element): string {
@@ -183,19 +186,18 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
       if (delivered && typeof delivered.catch === 'function') void delivered.catch(() => {});
     } catch { /* Recording must remain passive when its consumer rejects a batch. */ }
   };
-  const currentUrl = (): string | undefined => {
-    try { return stripUrlCredentials(location.href); }
-    catch { return undefined; }
-  };
+  // A value entered before an in-page route change keeps the URL it was
+  // entered on: it travels ahead of the route's later events, and the
+  // background places it before the navigation. Only a commit without a
+  // usable URL, which the background would refuse along with its whole
+  // batch, is left out.
   const drainFieldCommits = (): JourneyFieldChangeEvent[] => {
-    const here = currentUrl();
-    if (here === undefined) return [];
     let pending: JourneyFieldChangeEvent[] = [];
     try {
       pending = options.drainFieldCommits?.() ?? [];
     } catch { return []; }
     return pending.filter(commit => {
-      try { return stripUrlCredentials(commit.sourceUrl) === here; }
+      try { return stripUrlCredentials(commit.sourceUrl) === commit.sourceUrl; }
       catch { return false; }
     });
   };
@@ -210,6 +212,8 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
   // The background refuses a batch past its payload or event-count limit
   // whole, click included. A long form's commits therefore travel in order,
   // in as many batches as they need, and the click that carried them last.
+  // A batch also keeps to one URL: events from before a route change go in
+  // their own batch, which the background can still place before it.
   const postEvents = (events: JourneyInputEvent[]) => {
     const envelope = jsonBytes(batchOf([], Number.MAX_SAFE_INTEGER));
     const room = JOURNEY_LIMITS.maxEventPayloadBytes - envelope;
@@ -219,7 +223,8 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
       const fitted = fitEventAlone(event, room);
       const size = jsonBytes(fitted);
       // Events after the first are joined by a comma inside the array.
-      if (chunk.length > 0 && (used + 1 + size > room || chunk.length >= JOURNEY_LIMITS.maxSteps)) {
+      if (chunk.length > 0 && (used + 1 + size > room || chunk.length >= JOURNEY_LIMITS.maxSteps
+        || fitted.sourceUrl !== chunk[0].sourceUrl)) {
         postBatch(batchOf(chunk, ++localCounter));
         chunk = [];
         used = 0;
@@ -251,7 +256,7 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
       elapsedMs: Number.isFinite(startedAt) ? Math.max(0, now.getTime() - startedAt) : 0,
       sourceUrl: stripUrlCredentials(location.href),
       target: {
-        tag: target.localName,
+        tag: journeyTagName(target),
         ...(role ? { role } : {}),
         selectorPath: journeySelectorPath(target),
         label: safeText(target),
@@ -264,11 +269,33 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
     };
     postEvents([...drainFieldCommits(), input]);
   };
+  // Values committed before the page moves on are sent before it does, as
+  // their own batch, rather than with the next click. A form submitted with
+  // Enter in a single-page app changes the route in its submit handler, which
+  // runs after this capture listener, while the URL is still the form's; the
+  // field module, attached first, has already committed that form's values.
+  // Where the Navigation API exists, its navigate event likewise precedes any
+  // other change of URL: a route change, a traversal, or a page load. Without
+  // it, a traversal or fragment change is seen just after the URL changed.
+  const beforeNavigate = (event: Event) => {
+    const destination = (event as Event & { destination?: { url?: unknown } }).destination?.url;
+    if (typeof destination === 'string' && destination === location.href) return;
+    flushFieldCommits();
+  };
+  const navigation = (window as Window & { navigation?: EventTarget }).navigation;
   document.addEventListener('click', click, { capture: true, passive: true });
+  document.addEventListener('submit', flushFieldCommits, true);
+  navigation?.addEventListener?.('navigate', beforeNavigate);
+  window.addEventListener('popstate', flushFieldCommits);
+  window.addEventListener('hashchange', flushFieldCommits);
   const dispose = () => {
     if (disposed) return;
     disposed = true;
     document.removeEventListener('click', click, true);
+    document.removeEventListener('submit', flushFieldCommits, true);
+    navigation?.removeEventListener?.('navigate', beforeNavigate);
+    window.removeEventListener('popstate', flushFieldCommits);
+    window.removeEventListener('hashchange', flushFieldCommits);
   };
   return { dispose, flushFieldCommits };
 }

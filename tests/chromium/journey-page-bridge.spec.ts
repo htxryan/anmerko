@@ -595,6 +595,41 @@ test('entered values collect only with an explicit flag and merge before the cli
   expect(portMessages[1].batch.events[0].enteredValue).toEqual({ kind: 'text', value: 'blue', truncated: false });
 });
 
+test('a value submitted with Enter in a single-page app is sent before its route change, and a password never is', async ({ page }) => {
+  await page.evaluate(() => {
+    document.body.innerHTML = '<input type="password" name="pin" aria-label="PIN"><form id="spa"><input name="q" aria-label="Search"></form>'
+      + '<button id="add" type="button">Add to cart</button>';
+    // No submit button: Enter in its only field submits, and the app routes
+    // instead of loading a page.
+    document.querySelector('#spa')!.addEventListener('submit', event => {
+      event.preventDefault();
+      history.pushState({}, '', `/search?q=${encodeURIComponent((document.querySelector('[name=q]') as HTMLInputElement).value)}`);
+    });
+  });
+  const identity = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt: new Date(Date.now() - 100).toISOString(),
+    includeEnteredValues: true })).toMatchObject({ ok: true });
+
+  await page.getByLabel('PIN').fill('4321');
+  await page.getByLabel('Search').fill('shoes');
+  await page.getByLabel('Search').press('Enter');
+  await expect(page).toHaveURL(/\/search\?q=shoes$/);
+  let portMessages = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages);
+  expect(portMessages).toHaveLength(1);
+  expect(portMessages[0].batch.events.map((event: any) => [event.kind, event.enteredValue.value, event.sourceUrl]))
+    .toEqual([['field-change', 'shoes', identity.url]]);
+
+  await page.getByRole('button', { name: 'Add to cart' }).click();
+  portMessages = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages);
+  expect(portMessages).toHaveLength(2);
+  expect(portMessages[1].batch.events.map((event: any) => [event.kind, event.sourceUrl]))
+    .toEqual([['click', 'http://127.0.0.1:4173/search?q=shoes']]);
+  expect(portMessages.map((message: any) => message.batch.localCounter)).toEqual([1, 2]);
+  expect(portMessages.every((message: any) => validateJourneyEventBatch(message.batch).ok)).toBe(true);
+  expect(JSON.stringify(portMessages)).not.toContain('4321');
+});
+
 test('a tap right after an excluded password edit keeps a valid click while the keyboard pans the viewport', async ({ page }) => {
   await page.evaluate(() => {
     document.body.innerHTML = '<input type="password" name="password" aria-label="Password">'

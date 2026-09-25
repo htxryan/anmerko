@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
-import { validateJourneyEventBatch } from '../../src/journey-events';
+import { journeyTextEntryTarget, validateJourneyEventBatch } from '../../src/journey-events';
 
 type RecorderWindow = typeof globalThis & {
   anmerkoJourneyRecorder: {
@@ -127,24 +127,26 @@ test('click context reports the visible viewport and a point inside it under zoo
   expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
 });
 
-test('drained field commits merge ahead of the click and stale URLs are dropped', async ({ page }) => {
+test('drained field commits merge ahead of the click, and commits from an earlier route travel first on their own', async ({ page }) => {
   await page.setContent('<button type="button">Buy now</button>');
   await page.addScriptTag({ content: bundle });
   await page.evaluate(() => {
     const state = globalThis as RecorderWindow;
     state.journeyBatches = [];
-    const fieldCommit = {
-      kind: 'field-change', id: '00000000-0000-4000-8000-000000000001',
+    const fieldCommit = (id: number, sourceUrl: string, value: string) => ({
+      kind: 'field-change', id: `00000000-0000-4000-8000-00000000000${id}`,
       observedAt: new Date(Date.now() - 50).toISOString(), elapsedMs: 50,
-      sourceUrl: location.href,
+      sourceUrl,
       target: {
         tag: 'input', selectorPath: ['input'], label: 'text field', editable: true,
         viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
       },
-      enteredValue: { kind: 'text', value: 'green', truncated: false },
-      image: { status: 'pending', captureId: '00000000-0000-4000-8000-000000000002' },
-    };
-    const staleCommit = { ...fieldCommit, id: '00000000-0000-4000-8000-000000000003', sourceUrl: 'https://other.example/' };
+      enteredValue: { kind: 'text', value, truncated: false },
+      image: { status: 'pending', captureId: `10000000-0000-4000-8000-00000000000${id}` },
+    });
+    // A search form submitted with Enter pushed a new route before the click.
+    const route = new URL(location.href);
+    const earlierUrl = `${route.origin}/search-form`;
     let drained = false;
     state.disposeJourneyRecorder = state.anmerkoJourneyRecorder.attachJourneyRecorder({
       sessionId: 'session-1', epoch: 3, documentToken: 'document-1',
@@ -153,18 +155,110 @@ test('drained field commits merge ahead of the click and stale URLs are dropped'
       drainFieldCommits: () => {
         if (drained) return [];
         drained = true;
-        return [fieldCommit, staleCommit];
+        return [
+          fieldCommit(1, earlierUrl, 'shoes'),
+          fieldCommit(3, 'about:blank', 'unusable'),
+          fieldCommit(5, location.href, 'green'),
+        ];
       },
     });
   });
 
   await page.getByRole('button', { name: 'Buy now' }).click();
   const recorded = await batches(page);
-  expect(recorded).toHaveLength(1);
-  expect(recorded[0].events.map((event: any) => event.kind)).toEqual(['field-change', 'click']);
-  expect(recorded[0].events[0].id).toBe('00000000-0000-4000-8000-000000000001');
-  expect(recorded[0].events[0].enteredValue).toEqual({ kind: 'text', value: 'green', truncated: false });
+  expect(recorded.map(batch => batch.localCounter)).toEqual([1, 2]);
+  expect(recorded.map(batch => batch.events.map((event: any) => [event.kind, event.enteredValue?.value ?? event.target.label])))
+    .toEqual([[['field-change', 'shoes']], [['field-change', 'green'], ['click', 'Buy now']]]);
+  expect(recorded[0].events[0].sourceUrl).toBe('http://127.0.0.1:4173/search-form');
+  expect(recorded[1].events.every((event: any) => event.sourceUrl === 'http://127.0.0.1:4173/recorder?item=green&item=large#start')).toBe(true);
   expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
+});
+
+test('committed values are sent before a submit handler or a route change moves the page on', async ({ page }) => {
+  await page.setContent(`
+    <form id="spa"><input id="q" aria-label="Search"></form>
+    <button id="route" type="button">Route</button>
+    <script>
+      document.querySelector('#spa').addEventListener('submit', event => {
+        event.preventDefault();
+        history.pushState({}, '', '/search?q=' + encodeURIComponent(document.querySelector('#q').value));
+      });
+    </script>
+  `);
+  await page.addScriptTag({ content: bundle });
+  await page.evaluate(() => {
+    const state = globalThis as RecorderWindow & { queued: unknown[]; commitsSeen: number };
+    state.journeyBatches = [];
+    state.queued = [];
+    const startedMs = Date.now() - 100;
+    // Stands in for the field module: each change is committed as the page
+    // sees it and queued until the recorder drains it.
+    document.addEventListener('change', event => {
+      const input = event.target as HTMLInputElement;
+      const now = Date.now();
+      state.queued.push({
+        kind: 'field-change', id: crypto.randomUUID(), observedAt: new Date(now).toISOString(), elapsedMs: now - startedMs,
+        sourceUrl: location.href,
+        target: { tag: 'input', role: 'textbox', selectorPath: ['input'], label: 'text field', editable: true,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 } },
+        enteredValue: { kind: 'text', value: input.value, truncated: false },
+        image: { status: 'pending', captureId: crypto.randomUUID() },
+      });
+    }, true);
+    state.disposeJourneyRecorder = state.anmerkoJourneyRecorder.attachJourneyRecorder({
+      sessionId: 'session-1', epoch: 3, documentToken: 'document-1',
+      startedAt: new Date(startedMs).toISOString(),
+      onBatch: batch => { state.journeyBatches.push({ ...(batch as object), postedAt: location.href }); },
+      drainFieldCommits: () => state.queued.splice(0),
+    });
+  });
+
+  await page.locator('#q').fill('shoes');
+  await page.locator('#q').press('Enter');
+  await expect(page).toHaveURL(/\/search\?q=shoes$/);
+  let recorded = await batches(page);
+  expect(recorded).toHaveLength(1);
+  // Sent while the URL was still the form's, before the route changed.
+  expect(recorded[0]).toMatchObject({ localCounter: 1, postedAt: 'http://127.0.0.1:4173/recorder?item=green&item=large#start' });
+  expect(recorded[0].events.map((event: any) => [event.kind, event.enteredValue.value, event.sourceUrl]))
+    .toEqual([['field-change', 'shoes', 'http://127.0.0.1:4173/recorder?item=green&item=large#start']]);
+
+  // A committed value is also sent before any other change of URL, here a
+  // route change a timer makes, not after the next click.
+  await page.evaluate(() => {
+    const input = document.querySelector('#q') as HTMLInputElement;
+    input.value = 'boots';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    history.pushState({}, '', '/elsewhere');
+  });
+  recorded = await batches(page);
+  expect(recorded).toHaveLength(2);
+  expect(recorded[1]).toMatchObject({ localCounter: 2, postedAt: 'http://127.0.0.1:4173/search?q=shoes' });
+  expect(recorded[1].events.map((event: any) => [event.enteredValue.value, event.sourceUrl]))
+    .toEqual([['boots', 'http://127.0.0.1:4173/search?q=shoes']]);
+  // A history update that keeps the URL sends nothing early.
+  await page.evaluate(() => {
+    const input = document.querySelector('#q') as HTMLInputElement;
+    input.value = 'sandals';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    history.replaceState({ idx: 0 }, '');
+  });
+  expect(await batches(page)).toHaveLength(2);
+  await page.locator('#route').click();
+  recorded = await batches(page);
+  expect(recorded).toHaveLength(3);
+  expect(recorded[2].events.map((event: any) => event.kind)).toEqual(['field-change', 'click']);
+  for (const { postedAt: _postedAt, ...batch } of recorded) expect(validateJourneyEventBatch(batch)).toMatchObject({ ok: true });
+
+  // After dispose nothing more is sent.
+  await page.evaluate(() => {
+    (globalThis as RecorderWindow).disposeJourneyRecorder.dispose();
+    const input = document.querySelector('#q') as HTMLInputElement;
+    input.value = 'slippers';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    history.pushState({}, '', '/after');
+  });
+  expect(await batches(page)).toHaveLength(3);
 });
 
 test('a long form travels in batches within the payload and event limits, its click last', async ({ page }) => {
@@ -427,5 +521,31 @@ test('labels never echo text typed into design-mode documents or ARIA text boxes
   expect(targets[2]).toMatchObject({ tag: 'div', label: 'div', editable: false });
   expect(targets[4]).toMatchObject({ tag: 'p', label: 'text field', editable: true });
   expect(JSON.stringify(recorded)).not.toMatch(/typed-(aria|search|design)-secret/);
+  expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
+});
+
+test('buttons of every kind record as buttons, and text entry as text fields', async ({ page }) => {
+  await page.setContent(`<form onsubmit="return false">
+    <input type="image" alt="Go" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="40" height="20">
+    <input type="submit" value="Send">
+    <input type="reset" value="Clear">
+    <input type="text" aria-label="Query">
+    <textarea aria-label="Notes"></textarea>
+    <div contenteditable="true"><p>Draft</p></div>
+  </form>`);
+  await attach(page);
+  for (const selector of ['input[type=image]', 'input[type=submit]', 'input[type=reset]', 'input[type=text]', 'textarea', '[contenteditable] p']) {
+    await page.locator(selector).click();
+  }
+  const recorded = await batches(page);
+  const targets = recorded.map(batch => batch.events[0].target);
+  expect(targets.map(target => [target.tag, target.role, target.label, journeyTextEntryTarget(target)])).toEqual([
+    ['input', 'button', 'button', false],
+    ['input', 'button', 'button', false],
+    ['input', 'button', 'button', false],
+    ['input', 'textbox', 'text field', true],
+    ['textarea', 'textbox', 'text field', true],
+    ['p', undefined, 'text field', true],
+  ]);
   expect(recorded.every(batch => validateJourneyEventBatch(batch).ok)).toBe(true);
 });

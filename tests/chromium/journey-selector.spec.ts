@@ -138,6 +138,65 @@ test('a truncated path keeps a shadow-root crossing next to its marker', async (
   expect(validateJourneyEventBatch(recorded[0]).ok).toBe(true);
 });
 
+test('any real element records: SVG, prefixed, and unusual custom element names fold to valid segments and tags', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173/recorder');
+  // Mermaid draws node labels as HTML inside SVG foreignObject; Word exports
+  // write <o:p>; custom element names may hold '.', '_' and non-ASCII letters.
+  await page.setContent(`<main>
+    <svg width="200" height="60"><foreignObject width="200" height="60"><div><button id="node" type="button">Node label</button></div></foreignObject></svg>
+    <svg width="200" height="40"><path id="curve" d="M10 30 H190" fill="none"/><text><textPath id="path-label" href="#curve">Along the path</textPath></text></svg>
+    <p id="word">Exported <o:p id="prefixed">paragraph</o:p></p>
+    <x_y-el id="underscore">Underscore element</x_y-el>
+    <constructor id="builtin-name">Prototype name</constructor>
+  </main>`);
+  await page.evaluate(() => {
+    const main = document.querySelector('main')!;
+    for (const [id, name, text] of [
+      ['dotted', 'my.widget-x', 'Dotted element'],
+      ['accented', 'café-élément', 'Accented element'],
+      ['cjk', '漢字-el', ''],
+      ['long', `x-${'y'.repeat(300)}`, ''],
+    ]) {
+      const element = main.appendChild(document.createElement(name));
+      element.id = id;
+      element.textContent = text;
+      (element as HTMLElement).style.cssText = 'display:block;min-height:20px;min-width:40px';
+    }
+  });
+  await page.addScriptTag({ content: bundle });
+  await page.evaluate(() => {
+    const state = globalThis as TargetsWindow;
+    state.recordedBatches = [];
+    state.journeyTargets.attachJourneyRecorder({
+      sessionId: 'session-1', epoch: 1, documentToken: 'document-1', startedAt: new Date(Date.now() - 100).toISOString(),
+      onBatch: value => { state.recordedBatches.push(value); },
+    });
+  });
+
+  for (const id of ['node', 'path-label', 'prefixed', 'underscore', 'builtin-name', 'dotted', 'accented', 'cjk', 'long']) {
+    await page.locator(`#${id}`).click();
+  }
+  const recorded = await page.evaluate(() => (globalThis as TargetsWindow).recordedBatches);
+  expect(recorded).toHaveLength(9);
+  for (const value of recorded) expect(validateJourneyEventBatch(value), JSON.stringify(value.events[0].target)).toMatchObject({ ok: true });
+  const targets = recorded.map(value => value.events[0].target);
+  expect(targets[0]).toMatchObject({ tag: 'button', label: 'Node label', role: 'button' });
+  expect(targets[0].selectorPath).toEqual(['html', 'body', 'main', 'svg:nth-of-type(1)', 'foreignobject', 'div', 'button']);
+  expect(targets[1]).toMatchObject({ tag: 'textpath', label: 'Along the path' });
+  expect(targets[2]).toMatchObject({ tag: 'o-p', label: 'paragraph' });
+  expect(targets[2].selectorPath.slice(-2)).toEqual(['p', 'o-p']);
+  expect(targets[3]).toMatchObject({ tag: 'x-y-el', label: 'Underscore element' });
+  expect(targets[4]).toMatchObject({ tag: 'constructor', label: 'Prototype name' });
+  expect(targets[4].role).toBeUndefined();
+  expect(targets[5]).toMatchObject({ tag: 'my-widget-x', label: 'Dotted element' });
+  expect(targets[6]).toMatchObject({ tag: 'cafe-element', label: 'Accented element' });
+  // Without text the label is the element's own name, bounded like any label.
+  expect(targets[7]).toMatchObject({ tag: 'x-el', label: '漢字 el' });
+  expect(targets[8].tag).toBe(`x-${'y'.repeat(62)}`);
+  expect(targets[8].selectorPath.at(-1)).toBe(`x-${'y'.repeat(62)}`);
+  expect(Array.from(targets[8].label)).toHaveLength(120);
+});
+
 test('event and manifest validation accept marked paths and reject misplaced markers', () => {
   const valid = [
     ['button'],

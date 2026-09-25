@@ -15,7 +15,7 @@ import { tmpdir, release, arch } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve, join, relative } from 'node:path';
-import { Builder, By, until } from 'selenium-webdriver';
+import { Builder, By, Key, until } from 'selenium-webdriver';
 import { Command } from 'selenium-webdriver/lib/command.js';
 import { Pointer } from 'selenium-webdriver/lib/input.js';
 import firefox from 'selenium-webdriver/firefox.js';
@@ -639,6 +639,58 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
   assert.deepEqual(review.steps.map(step => step.heading), ['Step 1 · Initial view', 'Step 2 · Navigation']);
   assert.match(review.steps[1].text, new RegExp(`Destination URL\\s+${origin.replace(/[.]/g, '\\.')}/`));
   assert.match(review.steps[1].text, /Screenshot unavailable: screenshot permission was denied\./);
+}));
+
+// Single-page apps stamp history.state without changing the URL, and submit
+// search forms with Enter by changing the route. Neither may cost a step, a
+// screenshot, or an entered value.
+test('Firefox records a single-page app journey without history-stamp steps and keeps a value submitted with Enter', { timeout: 90000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+  const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
+  await driver.executeScript(() => {
+    document.body.insertAdjacentHTML('afterbegin', '<div id="spa-fixture" style="position:fixed;top:8px;left:8px;z-index:2147483646;background:#fff;padding:8px">'
+      + '<button id="stamp" type="button">Remember tab</button> <form id="spa" style="display:inline"><input id="q" name="q" aria-label="Search"></form></div>');
+    const script = document.createElement('script');
+    script.textContent = `
+      document.querySelector('#stamp').addEventListener('click', () => history.replaceState({ tab: Math.random() }, ''));
+      document.querySelector('#spa').addEventListener('submit', event => {
+        event.preventDefault();
+        history.pushState({}, '', '/search?q=' + encodeURIComponent(document.querySelector('#q').value));
+      });`;
+    document.head.append(script);
+  });
+  await activateDock();
+  await dockClick('.comment-options');
+  await dockClick('.journey-record');
+  await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  await docked("root.querySelector('[data-focus-id=\"journey-include-values\"]').scrollIntoView({ block: 'center' })");
+  await dockClick('[data-focus-id="journey-include-values"]');
+  await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
+  await dockClick('.journey-container .journey-primary');
+  await driver.wait(async () => /1 step recorded/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+
+  await driver.findElement(By.id('stamp')).click();
+  await driver.wait(async () => /2 steps recorded/.test(await journey()), 5000, 'the click is recorded');
+  // Its screenshot is taken after half a second; a history-stamp step would supersede it.
+  await driver.sleep(1500);
+  assert.match(await journey(), /2 steps recorded/, 'replaceState on the same URL adds no navigation step');
+
+  await driver.findElement(By.id('q')).click();
+  await driver.findElement(By.id('q')).sendKeys('shoes', Key.ENTER);
+  await driver.wait(async () => (await driver.getCurrentUrl()).endsWith('/search?q=shoes'), 5000, 'Enter routes the single-page app');
+  await driver.wait(async () => /5 steps recorded/.test(await journey()), 5000, 'the click, entered value and route change are recorded');
+  await driver.sleep(1500);
+  await docked("root.querySelector('[data-focus-id=\"journey-stop\"]').click()");
+  await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'stopping opens the review');
+  const steps = await docked("return [...root.querySelectorAll('.journey-container .journey-steps > li')].map(step => ({ heading: step.querySelector('h2')?.textContent, text: step.innerText }))");
+  assert.deepEqual(steps.map(step => step.heading), [
+    'Step 1 · Initial view', 'Step 2 · Click: Remember tab', 'Step 3 · Click: text field',
+    'Step 4 · Entered value: text field', 'Step 5 · Navigation',
+  ]);
+  // The click keeps its own screenshot.
+  assert.match(steps[1].text, /Screenshot URL/);
+  assert.doesNotMatch(steps[1].text, /Screenshot unavailable/);
+  assert.match(steps[3].text, /shoes/);
+  assert.match(steps[4].text, /\/search\?q=shoes/);
 }));
 
 // The floating panel's journeys, as on Android, run in a journey tab. The next
