@@ -33,9 +33,9 @@ A journey captures a problem that takes several actions to reproduce: ordered cl
 
 Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access you granted when you activated anmerko there. In the sidebar, the journey opens in the sidebar. With the floating panel, and always on Android, it opens in a journey tab; choose **Start journey** there and anmerko returns to the website tab and minimizes the panel until recording ends. Each journey tab starts one journey.
 
-Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. The strip moves to the top while an on-screen keyboard is open or when the field you're typing in would sit under it. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar. With the floating panel, switching to the journey tab also stops recording.
+Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. The strip moves to the top while an on-screen keyboard is open or the field you're typing in would sit under it, unless that field is at the top. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar. With the floating panel, switching to the journey tab also stops recording.
 
-**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. It skips password inputs, including ones a show-password control switches to plain text during the journey, and fields whose name, ID, autocomplete, label, or placeholder marks them as payment, banking, one-time code, or other secret fields. Other fields are recorded even when they hold private data. Each value keeps up to 2,000 characters and a journey up to 16 KB of entered text; shortened values are marked truncated. Screenshots, full URLs, and click labels can still show values either way; review everything before sharing.
+**Include entered values** is off each time you open a journey. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. It skips password inputs, including ones a show-password control switches to plain text during the journey, and fields whose name, ID, autocomplete, label, or placeholder marks them as payment, banking, one-time code, or other secret fields; other fields are recorded even when they hold private data. Each value keeps up to 2,000 characters and a journey up to 16 KB of entered text; shortened values are marked truncated. Screenshots, full URLs, and click labels can still show values either way; review everything before sharing.
 
 ### When recording ends
 
@@ -51,7 +51,7 @@ Steps recorded before the stop are kept, and review explains why recording ended
 
 ## Review a journey
 
-Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. If recording lost anything, such as part of an entered value or a page's screenshot, **Limitations** says what. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none.
+Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none. **Limitations**, when shown, notes losses such as shortened entered values or a page anmerko could no longer access.
 
 - **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step.
 - **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider. **View full-size screenshot** opens it at actual size; scroll or use the arrow keys to move around, choose **Fit to window** to see all of it, and **Close** or Esc to return.
@@ -60,7 +60,7 @@ Enter an **Expected result** and an **Actual result**, up to 4,000 characters ea
 
 To save, enter both results, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.
 
-Unsaved reviews are deleted after 30 minutes without changes, and when the browser closes or anmerko updates. Every change restarts the 30 minutes. Two minutes before the deadline, the review shows a warning with **Go to Save**, and anmerko's toolbar button shows **!** on the recorded tab. Saving keeps the journey; for a reopened journey, only unsaved changes are deleted and the saved copy stays.
+Unsaved reviews are deleted after 30 minutes without changes, and when the browser closes or anmerko updates. Two minutes before the deadline, the review shows a warning with **Go to Save**, and anmerko's toolbar button shows **!** on the recorded tab. Saving keeps the journey; for a reopened journey, only unsaved changes are deleted and the saved copy stays.
 
 After saving, choose **Copy Prompt**, **Download Markdown + Images**, or **Record another journey** (**Done** in a journey tab).
 
