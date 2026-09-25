@@ -426,37 +426,37 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     return state;
   };
 
-  const write = (state: JourneySession): Promise<void> => {
+  const write = (state: JourneySession): Promise<void> => enqueue(async () => {
+    // Its draft was checked when it was stored, so skip serializing every
+    // screenshot again just to measure and validate it.
+    if (storedAs(state, committed)) return;
     const inputBytes = serializedBytes(state);
     if (inputBytes !== undefined && inputBytes > SESSION_STATE_MAX_BYTES) {
-      return Promise.reject(new JourneySessionStorageError('session-too-large'));
+      throw new JourneySessionStorageError('session-too-large');
     }
     const snapshot = validateJourneySession(state);
-    if (!snapshot) return Promise.reject(new JourneySessionStorageError('invalid-session'));
+    if (!snapshot) throw new JourneySessionStorageError('invalid-session');
     if (snapshot.phase !== 'idle') {
       const aggregateBytes = aggregateStorageBytes(snapshot, Number.MAX_SAFE_INTEGER);
       if (aggregateBytes === undefined || aggregateBytes > JOURNEY_LIMITS.maxSessionBytes) {
-        return Promise.reject(new JourneySessionStorageError('session-too-large'));
+        throw new JourneySessionStorageError('session-too-large');
       }
     }
-    return enqueue(async () => {
-      if (failed && snapshot.phase !== 'idle') {
-        throw new JourneySessionStorageError('storage-unavailable');
+    if (failed && snapshot.phase !== 'idle') {
+      throw new JourneySessionStorageError('storage-unavailable');
+    }
+    if (snapshot.phase === 'idle') {
+      committed = undefined;
+      if (!await clearRawOrTombstone()) {
+        failed = true;
+        throw new JourneySessionStorageError('cleanup-failed');
       }
-      if (snapshot.phase === 'idle') {
-        committed = undefined;
-        if (!await clearRawOrTombstone()) {
-          failed = true;
-          throw new JourneySessionStorageError('cleanup-failed');
-        }
-        failed = false;
-        return;
-      }
-      if (storedAs(state, committed)) return;
-      await persist(snapshot);
-      committed = state;
-    });
-  };
+      failed = false;
+      return;
+    }
+    await persist(snapshot);
+    committed = state;
+  });
 
   return { read, write };
 }

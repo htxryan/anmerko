@@ -304,9 +304,18 @@ test('a save over its committed review and a republished committed state write n
   const reviewWrites = storage.setCount;
   expect(reviewWrites).toBe(3);
 
-  // The saving phase shares the review's draft; a failed save republishes the review itself.
-  await store.write({ ...owner, phase: 'saving' });
-  await store.write(review);
+  // The saving phase shares the review's draft; a failed save republishes the
+  // review itself. Neither serializes the screenshots again to measure them.
+  const stringify = JSON.stringify;
+  let serialized = 0;
+  JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => { serialized += 1; return stringify(...args); }) as typeof JSON.stringify;
+  try {
+    await store.write({ ...owner, phase: 'saving' });
+    await store.write(review);
+  } finally {
+    JSON.stringify = stringify;
+  }
+  expect(serialized).toBe(0);
   expect(storage.setCount).toBe(reviewWrites);
   // A restart during the save resumes the committed review.
   const restarted = createJourneySessionStore(storage);
