@@ -18,7 +18,10 @@ type BridgeHarness = {
   listenerCount(): number;
 };
 type BridgeWindow = typeof globalThis & {
-  anmerkoJourneyPageBridge: { bindJourneyPage(onDispose?: () => void): () => void };
+  anmerkoJourneyPageBridge: {
+    bindJourneyPage(onDispose?: () => void): () => void;
+    watchJourneyPageRecording(listener: (recording: boolean) => void): () => void;
+  };
   bridgeHarness: BridgeHarness;
   disposeJourneyPage: () => void;
   normalActions: number;
@@ -364,6 +367,63 @@ test('starts only after a valid command, forwards one trusted click, updates sta
   await page.getByRole('button', { name: 'Normal action' }).click();
   expect(await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages)).toHaveLength(1);
   expect(await page.evaluate(() => (globalThis as BridgeWindow).normalActions)).toBe(3);
+});
+
+test('the strip follows the visual viewport above an on-screen keyboard, reports recording, and cleans up', async ({ page }) => {
+  await page.evaluate(() => {
+    const viewing = globalThis as BridgeWindow;
+    viewing.disposeJourneyPage();
+    const fake = Object.assign(new EventTarget(), {
+      width: innerWidth, height: innerHeight, offsetLeft: 0, offsetTop: 0, scale: 1,
+    });
+    const signals: AbortSignal[] = [];
+    const add = fake.addEventListener.bind(fake);
+    fake.addEventListener = ((type: string, listener: EventListener, options?: AddEventListenerOptions) => {
+      if (options?.signal) signals.push(options.signal);
+      add(type, listener, options);
+    }) as typeof fake.addEventListener;
+    Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+    const recordingEvents: boolean[] = [];
+    Object.assign(window as any, { anmerkoVisualViewportFake: fake, anmerkoStripSignals: signals, anmerkoRecordingEvents: recordingEvents });
+    viewing.anmerkoJourneyPageBridge.watchJourneyPageRecording(recording => recordingEvents.push(recording));
+    viewing.disposeJourneyPage = viewing.anmerkoJourneyPageBridge.bindJourneyPage();
+  });
+  const identity = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt: new Date().toISOString() })).toMatchObject({ ok: true });
+  expect(await page.evaluate(() => (window as any).anmerkoRecordingEvents)).toEqual([true]);
+  const viewportHeight = await page.evaluate(() => innerHeight);
+  const resting = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
+  expect(resting.y + resting.height).toBeLessThanOrEqual(viewportHeight - 12);
+  // The floating panel reserves the bottom 72px while recording (panel.css); the strip fits inside it.
+  expect((await page.locator('anmerko-journey-strip').boundingBox())!.y).toBeGreaterThanOrEqual(viewportHeight - 72);
+
+  // A 300px keyboard covers the bottom of the layout viewport.
+  await page.evaluate(() => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.height = innerHeight - 300;
+    fake.dispatchEvent(new Event('resize'));
+  });
+  const raised = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
+  expect(raised.y + raised.height).toBeLessThanOrEqual(viewportHeight - 300 - 12);
+  expect(raised.y).toBeGreaterThan(0);
+
+  // Scrolling the visual viewport while the keyboard is open keeps it on the visible bottom edge.
+  await page.evaluate(() => {
+    const fake = (window as any).anmerkoVisualViewportFake;
+    fake.offsetTop = 100;
+    fake.dispatchEvent(new Event('scroll'));
+  });
+  const panned = (await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.strip()))!.buttonRect;
+  expect(panned.y + panned.height).toBeLessThanOrEqual(viewportHeight - 200 - 12);
+  expect(panned.y + panned.height).toBeGreaterThan(viewportHeight - 200 - 40);
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_STOP', sessionId: 'session-1', epoch: 1 })).toMatchObject({ ok: true });
+  await expect(page.locator('anmerko-journey-strip')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).anmerkoRecordingEvents)).toEqual([true, false]);
+  const signals = await page.evaluate(() => ((window as any).anmerkoStripSignals as AbortSignal[]).map(signal => signal.aborted));
+  expect(signals.length).toBeGreaterThan(0);
+  expect(signals.every(Boolean)).toBe(true);
 });
 
 test('entered values collect only with an explicit flag and merge before the click', async ({ page }) => {

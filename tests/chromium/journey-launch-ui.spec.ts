@@ -18,17 +18,25 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
   import { mount } from './src/content';
   import styles from './src/panel.css';
   const setup = window.panelSetup || {};
+  let recordingListener = null;
+  window.setJourneyRecording = value => recordingListener?.(value);
   window.controller = mount({
     store: { read: async () => undefined, readAll: async () => ({}), write: async () => {}, remove: async () => {}, subscribe: () => () => {} },
     attachStyles: shadow => { const style = document.createElement('style'); style.textContent = styles; shadow.append(style); },
     storageError: 'Storage unavailable', settingsLabel: 'Settings', capture: () => new Promise(() => {}),
     ...(setup.journeys ? { openJourney: async () => {} } : {}),
+    ...(setup.recording ? { watchJourneyRecording: listener => { recordingListener = listener; return () => { recordingListener = null; }; } } : {}),
+    // A native sidebar mounts the journey view inside the panel.
+    ...(setup.inPanel ? { journeys: {
+      read: async () => ({ phase: 'idle', epoch: 0 }), subscribe: () => () => {}, list: async () => [],
+      start: async () => {}, stop: async () => {}, discard: async () => {},
+    } } : {}),
     ...(setup.native ? { presentation: { native: true, dockViaToolbar: false, sync: async () => {}, changeLayout: async () => {},
       locate: async () => null, hierarchy: async () => null, startCapture: async () => {}, captureError() {}, connect() {} } } : {}),
   });
 ` }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
 
-async function mountPanel(page: Page, setup: { journeys?: boolean; native?: boolean }) {
+async function mountPanel(page: Page, setup: { journeys?: boolean; native?: boolean; recording?: boolean; inPanel?: boolean }) {
   await page.goto('http://127.0.0.1:4173');
   await page.evaluate(value => { (window as any).panelSetup = value; }, setup);
   await page.addScriptTag({ content: panelBundle });
@@ -119,4 +127,55 @@ test('comment options close and disable during captures, drafts, and disconnecti
   await expect(toggle).toBeDisabled();
   await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
   await expect(toggle).toBeEnabled();
+});
+
+// The recording strip occupies the bottom-left 72px band of the visible
+// viewport (asserted in journey-page-bridge.spec.ts); panel controls stay above it.
+const STRIP_BAND = 72;
+
+test('a floating panel steps aside while its page records a journey and returns afterwards', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mountPanel(page, { journeys: true, recording: true });
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const resume = page.getByRole('button', { name: 'Show anmerko comments' });
+  await expect(panel).toBeVisible();
+  await page.evaluate(() => (window as any).setJourneyRecording(true));
+  await expect(panel).toBeHidden();
+  await expect(resume).toBeVisible();
+  const quick = (await page.getByRole('group', { name: 'Quick Comment Actions' }).boundingBox())!;
+  expect(quick.y + quick.height).toBeLessThanOrEqual(844 - STRIP_BAND);
+  await page.evaluate(() => (window as any).setJourneyRecording(false));
+  await expect(panel).toBeVisible();
+  await expect(resume).toBeHidden();
+
+  // Reopened during a recording, the panel keeps Copy Prompt clear of the strip.
+  await page.evaluate(() => (window as any).setJourneyRecording(true));
+  await resume.click();
+  await expect(panel).toBeVisible();
+  const copy = (await panel.getByRole('button', { name: 'Copy Prompt' }).boundingBox())!;
+  expect(copy.y + copy.height).toBeLessThanOrEqual(844 - STRIP_BAND);
+  const sheet = (await panel.boundingBox())!;
+  expect(sheet.y).toBeGreaterThanOrEqual(0);
+  // The reader chose to reopen it, so the end of the journey leaves it open.
+  await page.evaluate(() => (window as any).setJourneyRecording(false));
+  await expect(panel).toBeVisible();
+  expect((await panel.boundingBox())!.y + (await panel.boundingBox())!.height).toBeGreaterThan(844 - STRIP_BAND);
+});
+
+test('a desktop floating panel also clears the recording strip', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 720 });
+  await mountPanel(page, { journeys: true, recording: true });
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await page.evaluate(() => (window as any).setJourneyRecording(true));
+  await page.getByRole('button', { name: 'Show anmerko comments' }).click();
+  const box = (await panel.boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(720 - STRIP_BAND);
+});
+
+test('a native panel ignores page recording', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, recording: true });
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await page.evaluate(() => (window as any).setJourneyRecording(true));
+  await expect(panel).toBeVisible();
+  expect(await page.locator('anmerko-overlay .app').evaluate(element => element.classList.contains('journey-recording'))).toBe(false);
 });

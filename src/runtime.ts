@@ -71,5 +71,7 @@ export interface Runtime {
   presentation?: Presentation;
   journeys?: JourneyClient;
   openJourney?: () => Promise<void>;
+  // Reports when this page records a journey, so a floating panel can step aside.
+  watchJourneyRecording?: (listener: (recording: boolean) => void) => () => void;
   onDispose?: () => void;
 }

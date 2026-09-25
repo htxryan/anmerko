@@ -1107,7 +1107,27 @@ export function mount(runtime: Runtime): Controller {
     startGlobalComment();
   });
   $('.minimize').addEventListener('click', () => { void minimize(); });
-  $('.resume').addEventListener('click', () => { if (returnToDock && !mobile) void changeLayout('dock'); else setMinimized(false); });
+  // A floating panel would cover the page being recorded, and the recording
+  // strip already offers Stop, so the panel steps aside until the journey ends.
+  let minimizedForJourney = false;
+  const unwatchJourney = runtime.watchJourneyRecording?.(recording => {
+    if (!alive || native) return;
+    app.classList.toggle('journey-recording', recording);
+    if (recording) {
+      if (presentation === 'overlay' && !$('.panel').hidden && !draft && !captureBusy && !picking && !minimizing) {
+        minimizedForJourney = true;
+        returnToDock = false;
+        setMinimized(true);
+      }
+    } else if (minimizedForJourney) {
+      minimizedForJourney = false;
+      if (presentation === 'overlay' && !$('.resume').hidden) setMinimized(false);
+    }
+  });
+  $('.resume').addEventListener('click', () => {
+    minimizedForJourney = false;
+    if (returnToDock && !mobile) void changeLayout('dock'); else setMinimized(false);
+  });
   $('.dock').addEventListener('click', () => { if (!mobile) void changeLayout(native ? 'overlay' : 'dock'); });
   $('.settings-button').addEventListener('click', () => {
     setSettings(!settings);
@@ -1273,6 +1293,7 @@ export function mount(runtime: Runtime): Controller {
     captureAbort?.abort();
     abort.abort();
     unsubscribe();
+    unwatchJourney?.();
     clearInterval(navigation);
     cancelAnimationFrame(frame);
     noteViews.forEach(dispose => dispose());

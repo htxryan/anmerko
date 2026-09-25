@@ -44,7 +44,10 @@ type PreparedCapture = {
 type JourneyStrip = {
   host: HTMLElement;
   setCount(count: number): void;
+  remove(): void;
 };
+
+type RecordingSignal = { recording: boolean; listeners: Set<(recording: boolean) => void> };
 
 type Message = Record<string, unknown> & { type?: unknown };
 
@@ -52,6 +55,33 @@ const GENERIC_ERROR = 'Journey command unavailable.';
 const CAPTURE_HIDDEN_ATTRIBUTE = 'data-anmerko-capture-hidden';
 const UI_HOST_SELECTOR = 'anmerko-overlay, anmerko-image, anmerko-journey-strip';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+// Gap between the recording strip and the visible bottom edge.
+const STRIP_BOTTOM = 12;
+
+// The observer and content scripts can each bundle this module, so the signal
+// lives on the content-script global. Page scripts cannot reach that world.
+function recordingSignal(): RecordingSignal {
+  const global = globalThis as typeof globalThis & { __anmerkoJourneyRecording?: RecordingSignal };
+  global.__anmerkoJourneyRecording ??= { recording: false, listeners: new Set() };
+  return global.__anmerkoJourneyRecording;
+}
+
+function setPageRecording(recording: boolean): void {
+  const signal = recordingSignal();
+  if (signal.recording === recording) return;
+  signal.recording = recording;
+  for (const listener of signal.listeners) {
+    try { listener(recording); } catch { /* One panel's failure must not block the recorder. */ }
+  }
+}
+
+// Lets the floating panel make room for the recording strip on this page.
+export function watchJourneyPageRecording(listener: (recording: boolean) => void): () => void {
+  const signal = recordingSignal();
+  signal.listeners.add(listener);
+  if (signal.recording) listener(true);
+  return () => { signal.listeners.delete(listener); };
+}
 
 function success<T>(value: T) {
   return { ok: true as const, value };
@@ -86,7 +116,6 @@ function mountJourneyStrip(
   const host = document.createElement('anmerko-journey-strip');
   host.style.cssText = [
     'position:fixed!important',
-    'bottom:12px!important',
     'left:12px!important',
     'z-index:2147483647!important',
     'display:block!important',
@@ -134,10 +163,26 @@ function mountJourneyStrip(
       button.disabled = false;
     }
   });
+  // An on-screen keyboard shrinks only the visual viewport; follow its bottom
+  // edge so Stop stays above the keyboard.
+  const listeners = new AbortController();
+  const place = () => {
+    const visual = window.visualViewport;
+    const covered = visual ? Math.max(0, Math.round(innerHeight - (visual.offsetTop + visual.height))) : 0;
+    host.style.setProperty('bottom', `calc(${STRIP_BOTTOM + covered}px + env(safe-area-inset-bottom, 0px))`, 'important');
+  };
+  window.visualViewport?.addEventListener('resize', place, { passive: true, signal: listeners.signal });
+  window.visualViewport?.addEventListener('scroll', place, { passive: true, signal: listeners.signal });
+  window.addEventListener('resize', place, { passive: true, signal: listeners.signal });
+  place();
   (document.documentElement ?? document.body).append(host);
   return {
     host,
     setCount,
+    remove() {
+      listeners.abort();
+      host.remove();
+    },
   };
 }
 
@@ -262,8 +307,9 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
     active?.disposeRecorder();
     active?.disposeFields();
     if (active) disconnectEventPort(active);
-    active?.strip.host.remove();
+    active?.strip.remove();
     restoreUi();
+    if (active) setPageRecording(false);
   };
 
   const viewportChanged = () => { recordViewportChange(); };
@@ -343,10 +389,11 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
       nextActive.disposeRecorder = () => recorder.dispose();
       nextActive.flushRecorder = () => recorder.flushFieldCommits();
       recording = nextActive;
+      setPageRecording(true);
       return success(identity());
     } catch {
       if (active) disconnectEventPort(active);
-      strip?.host.remove();
+      strip?.remove();
       return failure();
     }
   };

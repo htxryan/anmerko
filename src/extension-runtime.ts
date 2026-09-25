@@ -8,6 +8,7 @@ import type { Store } from './runtime';
 import { journeysEnabled } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 import { journeySurfaceStyles } from './journey-styles';
+import { watchJourneyPageRecording } from './journey-page-bridge';
 
 function draftTargetIdentity(value: unknown): DraftTargetIdentity | undefined {
   if (!value || typeof value !== 'object' || Object.keys(value).length !== 5) return;
@@ -213,6 +214,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   return {
     store: extensionStore(), presentation, onDispose,
     ...(journeysEnabled && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
+    ...(journeysEnabled && !native ? { watchJourneyRecording: watchJourneyPageRecording } : {}),
     ...(journeysEnabled && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
