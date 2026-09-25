@@ -1,5 +1,5 @@
 import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
-import type { CaptureFailure } from './journey-limits';
+import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
 import { downloadFile, feedbackArchive } from './export';
 import { journeyDraftToManifest, journeyPromptSection } from './journey-export';
 import { privateImage } from './screenshot';
@@ -42,6 +42,23 @@ const failures: Record<CaptureFailure, string> = {
   'storage-limit': 'the journey reached its storage limit',
   stopped: 'recording stopped before capture completed',
   'capture-error': 'the screenshot could not be captured',
+};
+
+const KEPT = 'Steps recorded before then are kept.';
+// Review explains every stop in plain language. A journey is bound to its
+// starting origin, so copy spells out what counts as leaving it.
+const stopNotices: Record<StopReason, string> = {
+  user: 'You stopped the recording.',
+  'duration-limit': `Recording stopped at the ${JOURNEY_LIMITS.maxDurationMs / 60_000}-minute limit. ${KEPT}`,
+  'step-limit': `Recording stopped at the ${JOURNEY_LIMITS.maxSteps}-step limit. ${KEPT}`,
+  'image-budget': `Recording stopped because the journey's screenshots reached their storage limit. ${KEPT}`,
+  'session-storage-limit': 'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.',
+  'left-site': `Recording ended because the page left the website you started on. A different domain, subdomain, or port, or a switch between http and https, counts as leaving. ${KEPT} To record the other website, save or discard this review first, then open anmerko from the toolbar there.`,
+  'focus-lost': `Recording ended because the recorded tab lost focus: another tab, window, or app became active. ${KEPT}`,
+  'tab-lost': `Recording ended because the recorded tab was closed, replaced, or moved to another window. ${KEPT}`,
+  'protected-page': `Recording ended because the tab opened a page anmerko cannot record, such as a browser page or a non-web address. ${KEPT}`,
+  'capture-failed': `Recording ended because anmerko lost track of the page after it changed and could not keep recording reliably. ${KEPT}`,
+  'page-access-lost': `Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. ${KEPT} The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.`,
 };
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] {
@@ -893,7 +910,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     view.append(node('p', 'anmerko', 'journey-brand'));
     if (state.phase === 'idle') {
       view.append(node('h1', 'Record a journey'));
-      view.append(node('p', 'Record clicks and screenshots on the site you start from. Stop whenever you are ready to review.', 'journey-help'));
+      view.append(node('p', 'Record clicks and screenshots on the website you start from. Stop whenever you are ready to review.', 'journey-help'));
       view.append(node('p', 'Screenshots and full URLs can contain personal information, even when entered values are off. Review and remove sensitive details before sharing.', 'journey-notice'));
       if (client.supportsEnteredValues) {
         const label = node('label', undefined, 'journey-option');
@@ -905,7 +922,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         label.append(input, node('span', 'Include entered values'));
         view.append(label);
       } else view.append(node('p', 'Entered values: Off', 'journey-help'));
-      view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded.', 'journey-help'));
+      view.append(node('p', 'Up to 5 minutes or 30 steps. Only the original website tab is recorded; a different domain, subdomain, or port, or a switch between http and https, ends recording.', 'journey-help'));
       const buttons = node('div', undefined, 'journey-actions');
       buttons.append(action('Start journey', () => client.start(includeEnteredValues), true));
       if (busy) buttons.append(action('Cancel start', () => client.stop(), false, true));
@@ -925,14 +942,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     } else if (state.phase === 'reviewing') {
       view.append(node('h1', 'Review journey'));
       view.append(node('p', `${state.draft.steps.length} retained steps · Entered values: ${state.draft.includeEnteredValues ? 'On' : 'Off'}`, 'journey-help'));
-      if (state.draft.stopReason === 'session-storage-limit') {
-        const notice = node('p', 'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.', 'journey-error');
-        notice.setAttribute('role', 'alert');
-        view.append(notice);
-      } else if (state.draft.stopReason === 'left-site') {
-        // Recording covers one site: say so instead of silently ending.
-        const notice = node('p', 'Recording ended because the page left the site you started on. Steps recorded there are kept; start a new journey from the toolbar to record somewhere else.', 'journey-help');
-        notice.setAttribute('role', 'status');
+      const stopNotice = state.draft.stopReason ? stopNotices[state.draft.stopReason] : undefined;
+      if (stopNotice) {
+        // A storage failure can still lose the draft, so it interrupts.
+        const storage = state.draft.stopReason === 'session-storage-limit';
+        const notice = node('p', stopNotice, `${storage ? 'journey-error' : 'journey-help'} journey-stop-reason`);
+        notice.setAttribute('role', storage ? 'alert' : 'status');
         view.append(notice);
       }
       view.append(renderSummaries(state.draft));

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
 import { readFile } from 'node:fs/promises';
+import { STOP_REASONS } from '../../src/journey-limits';
 
 const bundle = () => buildSync({ stdin: { contents: `
   import { mountJourneyUI } from './src/journey-ui';
@@ -308,10 +309,39 @@ test('step removal confirms inline and preserves sequence gaps', async ({ page }
   await expect(page.getByRole('heading', { name: /Step 2 / })).toHaveCount(0);
 });
 
-test('review explains a stop that left the starting site', async ({ page }) => {
+test('review explains a stop that left the starting origin and how to record elsewhere', async ({ page }) => {
   await openReview(page);
   await page.evaluate('journeyReviewHarness.setStopReason("left-site")');
-  await expect(page.getByText('Recording ended because the page left the site you started on. Steps recorded there are kept; start a new journey from the toolbar to record somewhere else.', { exact: true })).toBeVisible();
+  // The toolbar reopens this review while it is pending, so it must be resolved first.
+  await expect(page.getByRole('status').filter({ hasText: 'left the website' })).toHaveText(
+    'Recording ended because the page left the website you started on. A different domain, subdomain, or port, or a switch between http and https, counts as leaving. Steps recorded before then are kept. To record the other website, save or discard this review first, then open anmerko from the toolbar there.',
+  );
+});
+
+test('review explains withdrawn page access after a page load', async ({ page }) => {
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setStopReason("page-access-lost")');
+  await expect(page.getByRole('status').filter({ hasText: 'withdrew' })).toHaveText(
+    "Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page. Firefox does this on every page load, even on the same website. Steps recorded before then are kept. The new page has no screenshot. To record more, save or discard this review first, then open anmerko from the toolbar on the current page and start a new journey.",
+  );
+});
+
+test('review explains every stop reason, announcing storage failure as an alert', async ({ page }) => {
+  await openReview(page);
+  const notices = new Set<string>();
+  let previous = '';
+  for (const reason of STOP_REASONS) {
+    await page.evaluate(`journeyReviewHarness.setStopReason(${JSON.stringify(reason)})`);
+    const notice = page.locator('.journey-stop-reason');
+    await expect(notice).toHaveCount(1);
+    // Each reason has its own explanation, rendered in place of the last one.
+    await expect(notice).not.toHaveText(previous);
+    await expect(notice).toHaveAttribute('role', reason === 'session-storage-limit' ? 'alert' : 'status');
+    previous = (await notice.textContent()) ?? '';
+    expect(previous, reason).toMatch(/^(Recording|Journey storage|You stopped)/);
+    notices.add(previous);
+  }
+  expect(notices.size).toBe(STOP_REASONS.length);
 });
 
 test('review shows a navigation destination alongside its source URL', async ({ page }) => {
