@@ -5,7 +5,7 @@ import type { DraftTargetIdentity, Presentation, Runtime } from './runtime';
 
 import { extensionApi } from './platform';
 import type { Store } from './runtime';
-import { journeysEnabled } from './journey-feature';
+import { currentPlatform, journeysAvailable } from './journey-feature';
 import { createJourneyClient } from './journey-client';
 import { journeySurfaceStyles } from './journey-styles';
 import { watchJourneyPageRecording } from './journey-page-bridge';
@@ -40,6 +40,10 @@ export function extensionStore(): Store {
 export function extensionRuntime(onDispose: () => void): Runtime {
   const api = extensionApi();
   const native = location.href === api.runtime.getURL('sidebar.html');
+  // The sidebar checks this browser itself. A page overlay trusts the
+  // background's verdict: it cannot see the journey APIs, and its page may be
+  // emulating another device.
+  const journeys = journeysAvailable(native ? { platform: currentPlatform(), api } : undefined);
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;
@@ -227,14 +231,14 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   };
   return {
     store: extensionStore(), presentation, onDispose,
-    ...(journeysEnabled && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
-    ...(journeysEnabled && !native ? { watchJourneyRecording: watchJourneyPageRecording } : {}),
-    ...(journeysEnabled && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
+    ...(journeys && !native ? { openJourney: () => journeyCommand('ANMERKO_JOURNEY_OPEN') } : {}),
+    ...(journeys && !native ? { watchJourneyRecording: watchJourneyPageRecording } : {}),
+    ...(journeys && native ? { journeys: createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })) } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',
     attachStyles(shadow) {
       const sheet = document.createElement('style');
-      sheet.textContent = styles + (journeysEnabled ? journeySurfaceStyles : '');
+      sheet.textContent = styles + (journeys ? journeySurfaceStyles : '');
       shadow.prepend(sheet);
     },
     async capture() {

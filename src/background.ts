@@ -1,4 +1,4 @@
-import { activateTab } from './activate';
+import { activateTab as injectPage } from './activate';
 import {
   COMPONENT_CONTEXT_KEY,
   COMPONENT_CONTEXT_MESSAGE_TYPE,
@@ -11,9 +11,9 @@ import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
 import { createCaptureService } from './capture-service';
 import { bindJourneyExtension } from './journey-extension';
-export { activateTab } from './activate';
+import { currentPlatform, iPhoneOrIPad, JOURNEYS_DECLINED_GLOBAL, journeysAvailable } from './journey-feature';
 
-declare const __ANMERKO_JOURNEYS__: boolean;
+declare const __TARGET_JOURNEYS__: boolean;
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
@@ -44,10 +44,35 @@ const screenshotService = createCaptureService(
     },
   },
 );
-// Read the build define here rather than journeysEnabled: esbuild folds it only
+// Journeys are the build target's capability and need this browser to support
+// them. Read the define here rather than targetJourneys: esbuild folds it only
 // within this module, which drops the journey runtime from Orion's bundle.
-const journeys = typeof __ANMERKO_JOURNEYS__ !== 'undefined' && __ANMERKO_JOURNEYS__
-  ? bindJourneyExtension(screenshotService) : undefined;
+// Decide synchronously: a woken worker delivers an alarm or navigation only to
+// listeners added in its first turn. Without journeys, comments work as before.
+const journeys = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__
+  && journeysAvailable({ api, platform: currentPlatform() }) ? bindJourneyExtension(screenshotService) : undefined;
+async function platformInfoReportsIPhoneOrIPad() {
+  try { return iPhoneOrIPad({ os: (await api.runtime.getPlatformInfo()).os }); }
+  catch { return false; }
+}
+// Page scripts cannot see the APIs checked above, and a page's user agent may
+// be emulated, so a page learns before its overlay mounts that this background
+// declined journeys. getPlatformInfo() answers too late for the listeners but
+// still keeps iPhone and iPad pages from offering journeys.
+const journeysDeclined = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__
+  ? journeys ? platformInfoReportsIPhoneOrIPad() : Promise.resolve(true) : Promise.resolve(false);
+
+export async function activateTab(tabId: number, mode?: string, state?: unknown, canDock?: boolean, notifySidebar?: boolean): Promise<void> {
+  if (await journeysDeclined) {
+    try {
+      await api.scripting.executeScript({
+        target: { tabId }, args: [JOURNEYS_DECLINED_GLOBAL],
+        func: (name: string) => { (globalThis as typeof globalThis & Record<string, unknown>)[name] = true; },
+      });
+    } catch { /* Injecting the overlay reports an inaccessible page. */ }
+  }
+  await injectPage(tabId, mode, state, canDock, notifySidebar);
+}
 type LayoutMode = 'dock' | 'overlay' | 'minimized' | 'closed';
 const layoutModes = new Set<LayoutMode>(['dock', 'overlay', 'minimized', 'closed']);
 

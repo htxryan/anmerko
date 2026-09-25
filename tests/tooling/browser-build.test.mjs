@@ -73,7 +73,7 @@ test('supported browser targets build clean resources and reject development hel
   const root = await mkdtemp(join(tmpdir(), 'anmerko-browser-build-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const file of ['src', 'public', 'package.json']) await cp(file, join(root, file), { recursive: true });
-  const build = args => exec(process.execPath, [resolve('scripts/extension/build.mjs'), ...args], { cwd: root });
+  const build = (args, env = process.env) => exec(process.execPath, [resolve('scripts/extension/build.mjs'), ...args], { cwd: root, env });
   await mkdir(join(root, 'dist'));
   await writeFile(join(root, 'dist/keep.txt'), 'existing Chrome build');
   await assert.rejects(build(['--target', 'opera']));
@@ -85,7 +85,8 @@ test('supported browser targets build clean resources and reject development hel
   ]) {
     const pack = () => exec(process.execPath, [resolve('scripts/extension/package.mjs'), ...args], { cwd: root });
     const target = browserTarget(args);
-    await build(args);
+    // Journeys are the target's capability: the retired switch changes nothing.
+    await build(args, { ...process.env, ANMERKO_JOURNEYS: target.journeys ? '0' : '1' });
     const manifest = JSON.parse(await readFile(join(root, outdir, 'manifest.json'), 'utf8'));
     assert.deepEqual(manifest, browserManifest(source, version, target));
     assert.deepEqual(manifest.permissions.filter(permission => journeyPermissions.includes(permission)),
@@ -97,6 +98,11 @@ test('supported browser targets build clean resources and reject development hel
     }
     for (const name of ['content.js', 'background.js', 'popup.js', 'sidebar.html', 'unavailable.html', 'icons']) {
       assert.ok((await readdir(join(root, outdir))).includes(name), `${target.name}: ${name}`);
+    }
+    // Every bundle reads the capability from the build: an unreplaced define
+    // would silently leave journeys out.
+    for (const name of ['content.js', 'background.js', 'popup.js', 'journey.js', 'journey-observer.js']) {
+      assert.doesNotMatch(await readFile(join(root, outdir, name), 'utf8'), /__TARGET_JOURNEYS__|ANMERKO_JOURNEYS/, `${target.name}: ${name}`);
     }
     await pack();
     const archive = join(root, `artifacts/anmerko-${version}${suffix}.zip`);

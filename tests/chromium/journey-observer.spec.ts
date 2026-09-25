@@ -21,7 +21,7 @@ function observerBundle(enabled: boolean) {
     bundle: true,
     write: false,
     format: 'iife',
-    define: { __ANMERKO_JOURNEYS__: String(enabled) },
+    define: { __TARGET_JOURNEYS__: String(enabled) },
   }).outputFiles[0].text;
 }
 

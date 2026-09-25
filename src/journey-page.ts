@@ -1,7 +1,8 @@
 import { createJourneyClient } from './journey-client';
-import { journeysEnabled } from './journey-feature';
+import { currentPlatform, journeysAvailable } from './journey-feature';
 import { journeySurfaceStyles } from './journey-styles';
 import { mountJourneyUI } from './journey-ui';
+import { extensionApi } from './platform';
 
 const root = document.querySelector<HTMLElement>('#journey');
 if (!root) throw new Error('Journey page root is missing.');
@@ -11,18 +12,23 @@ function launchIntent(hash: string): string | undefined {
   return match?.[1];
 }
 
-if (!journeysEnabled) {
+const style = document.createElement('style');
+style.textContent = journeySurfaceStyles;
+document.head.append(style);
+if (!journeysAvailable({ platform: currentPlatform(), api: extensionApi() })) {
   const section = document.createElement('section');
+  section.className = 'journey-view';
+  const brand = document.createElement('p');
+  brand.className = 'journey-brand';
+  brand.textContent = 'anmerko';
   const heading = document.createElement('h1');
   const explanation = document.createElement('p');
+  explanation.className = 'journey-help';
   heading.textContent = 'Journey recording unavailable';
-  explanation.textContent = 'This build does not include journey recording.';
-  section.append(heading, explanation);
+  explanation.textContent = 'Journeys are not available in this browser. They work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android, but not on iPhone or iPad. Comments still work on the website tab.';
+  section.append(brand, heading, explanation);
   root.append(section);
 } else {
-  const style = document.createElement('style');
-  style.textContent = journeySurfaceStyles;
-  document.head.append(style);
   const intent = launchIntent(location.hash);
   // Each launch link starts one journey: the background consumes it on the
   // first Start, even one that fails. A review tab opened from the toolbar has
