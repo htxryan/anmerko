@@ -34,9 +34,16 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
       journeyReviewPending: async () => !!window.reviewPending,
     } : {}),
     ...(setup.recording ? { watchJourneyRecording: listener => { recordingListener = listener; return () => { recordingListener = null; }; } } : {}),
-    // A native sidebar mounts the journey view inside the panel.
-    ...(setup.inPanel ? { journeys: {
-      read: async () => window.journeyState || { phase: 'idle', epoch: 0 },
+    // A native sidebar mounts the journey view inside the panel, and follows
+    // the phase alone beside it.
+    ...(setup.inPanel ? { journeyPhase: async () => {
+      window.phaseReads = (window.phaseReads || 0) + 1;
+      return (window.journeyState || { phase: 'idle' }).phase;
+    }, journeys: {
+      read: async () => {
+        window.sessionReads = (window.sessionReads || 0) + 1;
+        return window.journeyState || { phase: 'idle', epoch: 0 };
+      },
       subscribe: listener => {
         const listeners = window.journeyListeners ||= new Set();
         listeners.add(listener);
@@ -460,4 +467,31 @@ test('a native panel offers a pending review and opens the journey view for it',
   // The review closes elsewhere; the background's change notice clears the entry.
   await page.evaluate(() => { (window as any).journeyState = { phase: 'idle', epoch: 4 }; for (const listener of (window as any).journeyListeners) listener(); });
   await expect(panel.getByText('A recorded journey is waiting for review.', { exact: true })).toBeHidden();
+});
+
+test('a native panel follows journey changes by phase alone and reads the session only for the journey view', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, inPanel: true }, { journeyState: { phase: 'recording', epoch: 2 } });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const reads = () => page.evaluate(() => ({ phase: (window as any).phaseReads || 0, session: (window as any).sessionReads || 0 }));
+  const notify = (state: unknown) => page.evaluate(value => {
+    (window as any).journeyState = value;
+    for (const listener of (window as any).journeyListeners) listener();
+  }, state);
+  await expect.poll(async () => (await reads()).phase).toBeGreaterThan(0);
+  // Every recorded step notifies the panel; each costs one phase read, never
+  // the session and its screenshots.
+  const before = (await reads()).phase;
+  for (let step = 0; step < 10; step++) await notify({ phase: 'recording', epoch: 2 });
+  await notify({ phase: 'reviewing', epoch: 2 });
+  await expect(panel.getByText('A recorded journey is waiting for review.', { exact: true })).toBeVisible();
+  expect(await reads()).toEqual({ phase: before + 11, session: 0 });
+  // The journey view shows the session, so it reads it; closing the view stops that.
+  await panel.getByRole('button', { name: 'Review journey', exact: true }).click();
+  await expect.poll(async () => (await reads()).session).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Back to comments', exact: true }).click();
+  const closed = (await reads()).session;
+  for (let step = 0; step < 5; step++) await notify({ phase: 'reviewing', epoch: 2 });
+  await expect.poll(async () => (await reads()).phase).toBeGreaterThanOrEqual(before + 16);
+  expect((await reads()).session).toBe(closed);
 });

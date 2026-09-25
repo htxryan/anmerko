@@ -161,6 +161,55 @@ test('review edits refused by a save in progress say so, and real staleness stil
   });
 });
 
+test('the client reads screenshots only where they are shown: a journey view in review, and a mask about to replace one', async ({ page }) => {
+  await page.addScriptTag({ content: clientBundle });
+  const sent = await page.evaluate(async () => {
+    const { clientModule } = globalThis as HarnessWindow;
+    const runtime = (globalThis as any).chrome.runtime;
+    const reviewing = { phase: 'reviewing', epoch: 2, sessionId: 'S', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+      warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+      draft: { id: 'J1', revision: 3, images: { I1: { dataUrl: 'data:image/png;base64,AAAA' } }, steps: [] } };
+    const log: unknown[] = [];
+    let refuse = false;
+    runtime.sendMessage = async (message: { type: string; screenshots?: unknown }) => {
+      if (message.type === 'ANMERKO_JOURNEY_STATE') log.push({ type: message.type, ...'screenshots' in message ? { screenshots: message.screenshots } : {} });
+      else log.push({ type: message.type });
+      if (message.type === 'ANMERKO_JOURNEY_STATE') return { ok: true, value: reviewing };
+      return refuse ? { ok: false, error: 'Journey command unavailable.', code: 'stale-review' } : { ok: true };
+    };
+    const client = clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 }));
+    const run = async (action: () => Promise<unknown>) => { log.length = 0; await action(); return structuredClone(log); };
+    return {
+      read: await run(() => client.read()),
+      summary: await run(() => client.updateSummary('Expected', 'Actual')),
+      removeStep: await run(() => client.removeStep('S1')),
+      editValue: await run(() => client.editValue('S1', null)),
+      redactUrl: await run(() => client.redactUrl('S1', 'source')),
+      redactLabel: await run(() => client.redactLabel('S1')),
+      removeImage: await run(() => client.reviewImage('I1', { operation: 'remove' })),
+      maskImage: await run(() => client.reviewImage('I1', { operation: 'replace', maskedFrom: 'data:image/png;base64,AAAA',
+        image: { dataUrl: 'data:image/png;base64,BBBB' } })),
+      // A refused edit reads the review again to tell a save from another tab.
+      refused: await run(async () => {
+        refuse = true;
+        try { await client.removeStep('S1'); } catch { /* Refused as expected. */ } finally { refuse = false; }
+      }),
+    };
+  });
+  const state = (screenshots?: unknown) => ({ type: 'ANMERKO_JOURNEY_STATE', ...screenshots === undefined ? {} : { screenshots } });
+  expect(sent).toEqual({
+    read: [state('review')],
+    summary: [state(false), { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY' }],
+    removeStep: [state(false), { type: 'ANMERKO_JOURNEY_REMOVE_STEP' }],
+    editValue: [state(false), { type: 'ANMERKO_JOURNEY_EDIT_VALUE' }],
+    redactUrl: [state(false), { type: 'ANMERKO_JOURNEY_REDACT_URL' }],
+    redactLabel: [state(false), { type: 'ANMERKO_JOURNEY_REDACT_LABEL' }],
+    removeImage: [state(false), { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE' }],
+    maskImage: [state(), { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE' }],
+    refused: [state(false), { type: 'ANMERKO_JOURNEY_REMOVE_STEP' }, state(false)],
+  });
+});
+
 test('a summary write names its journey and is refused once another journey is under review', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   const outcomes = await page.evaluate(async () => {
@@ -215,7 +264,7 @@ test('binds fallback actions to one intent and authenticates change notification
   });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_START', intent: 'launch_nonce-1234567890', includeEnteredValues: true } },
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE' } },
+    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review' } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STOP', intent: 'launch_nonce-1234567890' } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_DISCARD' } },
   ]);
@@ -310,7 +359,7 @@ test('trusted page strictly parses launch intent and shares the journey UI only 
   await expect(page.getByRole('checkbox', { name: 'Include entered values' })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'Include entered values' })).not.toBeChecked();
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE' } },
+    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review' } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_LIST' } },
   ]);
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();

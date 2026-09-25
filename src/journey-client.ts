@@ -58,9 +58,10 @@ export function createJourneyClient(
   }
 
   // journeyId, when given, is the review the edit was made in; any other
-  // journey is refused as another tab's change, even while it saves.
-  async function reviewing(journeyId?: string): Promise<ReviewingSession> {
-    const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
+  // journey is refused as another tab's change, even while it saves. Only a
+  // screenshot edit reads the screenshots.
+  async function reviewing(journeyId?: string, screenshots = false): Promise<ReviewingSession> {
+    const current = await command('ANMERKO_JOURNEY_STATE', screenshots ? {} : { screenshots: false }) as JourneySession;
     if (journeyId !== undefined && current.phase !== 'idle' && current.journeyId !== journeyId) {
       throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
     }
@@ -78,7 +79,7 @@ export function createJourneyClient(
       await command(type, { epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision, ...extra });
     } catch (error) {
       if ((error as { code?: unknown }).code !== 'stale-review') throw error;
-      const latest = await command('ANMERKO_JOURNEY_STATE').catch(() => undefined) as JourneySession | undefined;
+      const latest = await command('ANMERKO_JOURNEY_STATE', { screenshots: false }).catch(() => undefined) as JourneySession | undefined;
       if (latest?.phase === 'saving' || (latest?.phase === 'saved' && latest.journeyId === current.journeyId)
         || (latest?.phase === 'reviewing' && latest.epoch === current.epoch && latest.journeyId === current.journeyId
           && latest.draft.revision === current.draft.revision)) throw savingError();
@@ -89,7 +90,9 @@ export function createJourneyClient(
   return {
     supportsEnteredValues: true,
     pageLoadsEndJourney: firefoxExtension(),
-    read: async () => command('ANMERKO_JOURNEY_STATE') as Promise<JourneySession>,
+    // A journey view shows screenshots only in review. While recording it
+    // shows the step count, so each recorded step reads no screenshots.
+    read: async () => command('ANMERKO_JOURNEY_STATE', { screenshots: 'review' }) as Promise<JourneySession>,
     updateSummary: async (expected: string, actual: string, journeyId?: string): Promise<void> => {
       await reviewEdit(await reviewing(journeyId), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
         updatedAt: new Date().toISOString(), expected, actual,
@@ -116,7 +119,7 @@ export function createJourneyClient(
       });
     },
     reviewImage: async (imageId: string, change: JourneyImageChange): Promise<void> => {
-      const current = await reviewing();
+      const current = await reviewing(undefined, change.operation === 'replace');
       // A mask drawn on older pixels must not overwrite a change another review tab made since.
       if (change.operation === 'replace' && current.draft.images[imageId]?.dataUrl !== change.maskedFrom) {
         throw Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });

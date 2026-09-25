@@ -3068,6 +3068,33 @@ test('a page panel learns only whether a review is pending, and any focused webs
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, otherPage)).toEqual({ ok: true, value: false });
 });
 
+test('a surface can read the session without its screenshots while recording, or at all', async ({ page }) => {
+  const read = async (screenshots?: unknown, sender: Sender = sidebar) => (await dispatch(page,
+    { type: 'ANMERKO_JOURNEY_STATE', ...screenshots === undefined ? {} : { screenshots } }, sender)).value;
+  const without = (state: any) => ({ ...state, draft: { ...state.draft, images: {} } });
+  expect(await read('review')).toEqual({ phase: 'idle', epoch: 0 });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  const recording = await read();
+  expect(recording.phase).toBe('recording');
+  expect((Object.values(recording.draft.images)[0] as any).dataUrl).toMatch(/^data:image\/png;base64,/);
+  // While recording a journey view shows only the step count, so every
+  // recorded step it follows costs no screenshots.
+  expect(await read('review')).toEqual(without(recording));
+  expect(await read('review', reviewPage)).toEqual(without(recording));
+  expect(await read(false)).toEqual(without(recording));
+  expect(JSON.stringify(await read('review'))).not.toContain('data:image');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  // Review shows the screenshots; an edit that only needs the review's
+  // identity can still leave them out.
+  const reviewing = await read();
+  expect(reviewing.phase).toBe('reviewing');
+  expect(await read('review')).toEqual(reviewing);
+  expect(await read(false)).toEqual(without(reviewing));
+  // Leaving them out of a reply never drops them from the journey.
+  expect(await read()).toEqual(reviewing);
+  expect(Object.keys(reviewing.draft.images)).toHaveLength(1);
+});
+
 test('a trusted journey surface can follow the phase alone, without the draft; pages cannot ask', async ({ page }) => {
   const phase = async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' })).value;
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' }, ownerPage)).toBeUndefined();

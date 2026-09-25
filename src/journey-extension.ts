@@ -1254,7 +1254,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   const trustedCommand = async (message: Message, surface: TrustedSurface): Promise<unknown> => {
     if (message.type === 'ANMERKO_JOURNEY_STATE') {
-      return controller.getState();
+      const state = controller.getState();
+      // Screenshots are most of a session, and every recorded step changes
+      // it. A surface can ask for them only in review, where it shows them,
+      // or not at all.
+      const screenshots = message.screenshots === false ? false
+        : message.screenshots !== 'review' || state.phase === 'reviewing' || state.phase === 'saving';
+      return screenshots || !('draft' in state) ? state : { ...state, draft: { ...state.draft, images: {} } };
     }
     // A surface that follows only the phase skips the draft and its screenshots.
     if (message.type === 'ANMERKO_JOURNEY_PHASE') {
