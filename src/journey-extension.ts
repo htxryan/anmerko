@@ -1,6 +1,7 @@
 import {
   createJourneyController,
   JourneyControllerError,
+  journeyStartable,
   type JourneyController,
   type JourneyControllerAdapter,
   type JourneyPageIdentity,
@@ -966,7 +967,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   const openLaunch = async (senderTabId: number, senderWindowId: number, senderUrl: string): Promise<void> => {
     const state = controller.getState();
-    if (state.phase !== 'idle') {
+    if (!journeyStartable(state)) {
       if (!('ownerTabId' in state) || state.ownerTabId !== senderTabId || state.ownerWindowId !== senderWindowId) {
         throw new JourneyCommandError('owner-unavailable');
       }
@@ -985,9 +986,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       } catch {
         throw new JourneyCommandError('owner-unavailable');
       }
-      if (!identity.visible || identity.url !== senderUrl || controller.getState().phase !== 'idle') {
+      if (!identity.visible || identity.url !== senderUrl || !journeyStartable(controller.getState())) {
         throw new JourneyCommandError('owner-unavailable');
       }
+      // The launch tab opens on Record, not on the finished journey's
+      // confirmation; the snapshot itself stays in Saved journeys.
+      if (controller.getState().phase === 'saved') await controller.discard();
       const id = crypto.randomUUID();
       intent = {
         ownerTabId: senderTabId, ownerWindowId: senderWindowId,
