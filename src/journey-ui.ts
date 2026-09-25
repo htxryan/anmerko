@@ -1113,7 +1113,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const image = draft.images[step.image.imageId];
       if (image) urlControl(image.captureUrl, 'capture', 'screenshot');
     }
-    if (step.kind === 'click' && !labelRedacted(step, draft)) {
+    // An editable target's label is only its generic kind, such as "text field".
+    if (step.kind === 'click' && !step.target.editable && !labelRedacted(step, draft)) {
       redactControl('label', `Redact click label for step ${step.seq}`, () => client.redactLabel(step.id));
     }
     return wrap.childElementCount > 0 ? wrap : null;
@@ -1222,7 +1223,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const snapshot = await client.openSnapshot(target.journeyId);
       const text = journeyPrompt(journeyDraftToManifest(snapshot.draft));
       await navigator.clipboard.writeText(text);
-      exportStatus = 'Journey prompt copied. Paste it into your agent chat and attach the screenshots from Download Markdown + Images, whose journeys.md has full step detail.';
+      exportStatus = 'Journey prompt copied. Paste it into your agent chat, then use Download Markdown + Images for the screenshots; its journeys.md has full step detail.';
       exportStatusFor = `${target.journeyId}@${target.revision}`;
       error = '';
     } catch {

@@ -3,11 +3,15 @@ import { buildSync } from 'esbuild';
 import {
   acceptInitialImage,
   createJourneySession,
+  redactJourneyUrl,
+  removeJourneyStep,
+  reopenJourneySnapshot,
   stopJourney,
   type DraftImageState,
   type JourneyDraftImage,
   type JourneyDraftStep,
   type JourneyDraftV1,
+  type JourneySession,
 } from '../../src/journey-core';
 
 const STARTED_AT = '2026-09-20T12:00:00.000Z';
@@ -342,6 +346,38 @@ test('list keeps a single-page journey single when review redacts one of its URL
   });
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true, value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false, ...LABELS }],
+  });
+});
+
+test('list keeps a journey spanning pages after review redacts its URLs and removes the click that navigated', async ({ page }) => {
+  await openStore(page);
+  const saved = withNavigation(baseDraft(), 'https://example.com/checkout?private-value-7z=2');
+  let session: JourneySession | undefined = reopenJourneySnapshot({ phase: 'idle', epoch: 0 }, {
+    sessionId: 'session-2', ownerTabId: 42, ownerWindowId: 7, nowMs: Date.parse(UPDATED_V2_AT),
+    draft: saved, images: structuredClone(saved.images),
+  });
+  const guards = () => {
+    if (session?.phase !== 'reviewing') throw new Error('expected a reopened review');
+    return { epoch: session.epoch, journeyId: session.journeyId, revision: session.draft.revision, updatedAt: UPDATED_V2_AT };
+  };
+  for (const [stepId, url] of [
+    ['step-1', 'source'], ['step-1', 'capture'], ['step-2', 'source'], ['step-2', 'capture'],
+    ['step-3', 'source'], ['step-3', 'destination'],
+  ] as const) session = redactJourneyUrl(session!, { ...guards(), stepId, url });
+  session = removeJourneyStep(session!, { ...guards(), stepId: 'step-2' });
+  if (session.phase !== 'reviewing') throw new Error('expected a reopened review');
+  expect(session.draft.steps.map(step => step.id)).toEqual(['step-1', 'step-3']);
+  expect(JSON.stringify(session.draft)).not.toContain('private-value-7z');
+
+  expect(await invoke(page, 'save', { input: snapshotInput(session.draft) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: session.draft.revision },
+  });
+  expect(await invoke(page, 'list', {})).toEqual({
+    ok: true,
+    value: [{
+      journeyId: 'journey-1', revision: session.draft.revision, updatedAt: UPDATED_V2_AT, stepCount: 2,
+      spansPages: true, expected: LABELS.expected,
+    }],
   });
 });
 

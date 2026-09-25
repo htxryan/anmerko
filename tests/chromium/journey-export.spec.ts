@@ -4,8 +4,10 @@ import {
   acceptJourneyEventBatch,
   commitJourneyNavigation,
   createJourneySession,
+  journeyPageCount,
   redactJourneyLabel,
   redactJourneyUrl,
+  removeJourneyStep,
   stopJourney,
   validateJourneyDraft,
   type JourneyDraftV1,
@@ -317,12 +319,14 @@ test('the copied prompt is self-contained apart from the screenshots', () => {
     + '- **Stopped because:** the reporter stopped recording (`user`)\n- **Entered values:** On\n');
   expect(prompt).toContain('## Expected\n\n```\nThe selected item remains in the cart.\n```');
   expect(prompt).toContain('## Actual\n\n```\nCheckout is empty after navigation.\n```');
-  // Step numbers match journeys.md; a shared screenshot keeps the click's name.
+  // Step numbers match journeys.md, and a gap in them is explained; a shared
+  // screenshot keeps the click's name.
   expect(prompt.slice(prompt.indexOf('## Steps\n\n') + 10).trimEnd().split('\n')).toEqual([
+    'Missing step numbers are steps removed during review.', '',
     `- **Step 1 · Initial capture** on \`${source}\` · screenshot \`journey-J1-step-01.png\``,
     `- **Step 2 · Click** \`Checkout\` (\`button\`) on \`${source}\` · screenshot \`journey-J1-step-02.png\` (parts masked during review)`,
     `- **Step 5 · Navigation** from \`${source}\` to \`${destination}\`, caused by step 2 · screenshot \`journey-J1-step-02.png\` (parts masked during review)`,
-    `- **Step 7 · Field change** \`Email\` (\`textbox\`) on \`${destination}\`, value [redacted] · no screenshot (\`superseded\`)`,
+    `- **Step 7 · Field change** \`Email\` (\`textbox\`) on \`${destination}\`, value [redacted] · no screenshot (superseded by a later action)`,
     '- **Step 9 · Click** `Continue` (edited during review) (`button`) on [redacted] · no screenshot (removed during review)',
   ]);
   // Redacted text is named by its marker only, whatever text a manifest carries.
@@ -549,6 +553,42 @@ test('page numbers from recording keep the prompt scope when review redacts URLs
     expect(data.toString('latin1')).not.toContain('private-token-9q');
   }
   expect(JSON.stringify(spanning.draft)).not.toContain('private-token-9q');
+});
+
+test('removing the click that caused a navigation keeps the destination page and the scope', () => {
+  let spanning = recorded('Search', 'https://shop.example/results?token=private-token-9q');
+  for (const stepId of ['step-initial', 'step-click', 'step-navigation', 'step-next']) spanning = redact(spanning, stepId, 'source');
+  spanning = redact(spanning, 'step-navigation', 'destination');
+  spanning = redact(spanning, 'step-initial', 'capture');
+  expect(scope(spanning.draft)).toBe('Spans pages');
+  const removed = removeJourneyStep(spanning, {
+    epoch: spanning.epoch, journeyId: spanning.journeyId, revision: spanning.draft.revision,
+    updatedAt: new Date(Date.parse(spanning.draft.updatedAt) + 1).toISOString(), stepId: 'step-click',
+  });
+  if (removed === spanning || removed.phase !== 'reviewing') throw new Error('could not remove the click');
+  // The navigation loses only its causal link; its destination is still page 2.
+  const navigation = removed.draft.steps.find(step => step.kind === 'navigation');
+  if (navigation?.kind !== 'navigation') throw new Error('expected the navigation step');
+  expect(navigation.navigation).toEqual({ toUrl: '[redacted]', toPage: 2 });
+  expect(removed.draft.steps.map(step => step.sourcePage)).toEqual([1, 1, 2]);
+  expect(scope(removed.draft)).toBe('Spans pages');
+  const prompt = journeyPrompt(journeyDraftToManifest(removed.draft));
+  expect(prompt).toContain('## Steps\n\nMissing step numbers are steps removed during review.\n\n- **Step 1 ');
+  expect(prompt).toContain('- **Step 3 · Navigation** from [redacted] to [redacted] · no screenshot (the destination did not become ready in time)\n');
+  expect(prompt).not.toContain('private-token-9q');
+});
+
+test('page counts use recorded numbers wherever a location has one', () => {
+  const start = 'https://shop.example/start';
+  // Numbered locations count by number, whatever their URLs show.
+  expect(journeyPageCount([{ page: 1, url: start }, { page: 1, url: '[redacted]' }])).toBe(1);
+  expect(journeyPageCount([{ page: 1, url: '[redacted]' }, { page: 2, url: '[redacted]' }])).toBe(2);
+  // An unnumbered location takes its visible URL's number, or else counts by
+  // URL text, all redacted URLs as one opaque page.
+  expect(journeyPageCount([{ page: 1, url: start }, { url: start }, { page: 1, url: '[redacted]' }])).toBe(1);
+  expect(journeyPageCount([{ page: 1, url: start }, { url: start }, { page: 2, url: '[redacted]' }])).toBe(2);
+  expect(journeyPageCount([{ url: start }, { url: '[redacted]' }, { url: '[redacted]' }])).toBe(2);
+  expect(journeyPageCount([{ url: '[redacted]' }, { url: '[redacted]' }])).toBe(1);
 });
 
 test('a redacted click label leaves the saved draft, the prompt, and journeys.md', () => {

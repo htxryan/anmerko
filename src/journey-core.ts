@@ -969,12 +969,14 @@ export function removeJourneyStep(state: JourneySession, input: JourneyRemoveSte
   for (const step of remaining) {
     if (step.image.status === 'retained') references.set(step.image.imageId, (references.get(step.image.imageId) ?? 0) + 1);
   }
-  // A removed click takes its causal link along, and a shared result image
-  // left with one step is no longer a shared click/navigation result.
+  // A removed click takes its causal link along, but not the destination's
+  // page number, and a shared result image left with one step is no longer a
+  // shared click/navigation result.
   const steps = remaining.map(step => {
     let next = step;
     if (next.kind === 'navigation' && next.navigation.causedByStepId === input.stepId) {
-      next = { ...next, navigation: { toUrl: next.navigation.toUrl } };
+      const { causedByStepId: _cause, ...navigation } = next.navigation;
+      next = { ...next, navigation };
     }
     if (next.image.status === 'retained' && next.image.sharedNavigationResult && references.get(next.image.imageId) === 1) {
       next = { ...next, image: { status: 'retained', imageId: next.image.imageId } };
@@ -1381,12 +1383,16 @@ function numberJourneyPages(steps: JourneyDraftStep[]): JourneyDraftStep[] {
   });
 }
 
-// Counts the pages a journey covers by their numbers. A journey without them
-// (stopped before pages were numbered) compares URL text instead, counting
-// every redacted URL as one opaque page so a hidden value never shows.
+// Counts the pages a journey covers by their numbers, which review keeps. A
+// location without one (a draft stopped before pages were numbered) takes the
+// number its visible URL has elsewhere, or else counts by URL text, every
+// redacted URL as one opaque page, so a hidden value never shows.
 export function journeyPageCount(locations: Array<{ page?: number; url: string }>): number {
-  const numbered = locations.every(location => location.page !== undefined);
-  return new Set(locations.map(location => numbered ? location.page : location.url)).size;
+  const numbers = new Map<string, number>();
+  for (const { page, url } of locations) {
+    if (page !== undefined && url !== JOURNEY_REDACTED_URL) numbers.set(url, page);
+  }
+  return new Set(locations.map(({ page, url }) => page ?? numbers.get(url) ?? url)).size;
 }
 
 export function stopJourney(state: JourneySession, input: { epoch: number; stoppedAt: string; reason: StopReason }): JourneySession {

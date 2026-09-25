@@ -14,7 +14,7 @@ import {
   type ReviewedText,
   type SafeTarget,
 } from './journey-core';
-import { JOURNEY_LIMITS, type StopReason } from './journey-limits';
+import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 
@@ -251,6 +251,21 @@ const STOP_DESCRIPTIONS: Record<StopReason, string> = {
   'page-access-lost': 'the browser withdrew page access when a page loaded',
 };
 
+// Why a step has no screenshot, in the review's words; journeys.md keeps the
+// code.
+const CAPTURE_DESCRIPTIONS: Record<CaptureFailure, string> = {
+  superseded: 'superseded by a later action',
+  'navigation-timeout': 'the destination did not become ready in time',
+  'capture-denied': 'screenshot permission was denied',
+  'protected-page': 'the browser protects this page',
+  'page-document-changed': 'the page changed during capture',
+  'viewport-changed': 'the viewport changed during capture',
+  'too-large': 'the image exceeded the size limit',
+  'storage-limit': 'the journey reached its storage limit',
+  stopped: 'recording stopped before capture completed',
+  'capture-error': 'the screenshot could not be captured',
+};
+
 // The prompt stays bounded however long a URL, label, or value is;
 // journeys.md keeps every one in full.
 const PROMPT_TEXT_CHARACTERS = 200;
@@ -282,7 +297,7 @@ function promptValue(value: ReviewedFieldValue): string {
 
 function promptImage(manifest: JourneyManifestV1, step: JourneyStep, names: Map<string, string>): string {
   if (step.image.status === 'removed') return 'no screenshot (removed during review)';
-  if (step.image.status === 'unavailable') return `no screenshot (${inlineCode(step.image.reason)})`;
+  if (step.image.status === 'unavailable') return `no screenshot (${CAPTURE_DESCRIPTIONS[step.image.reason]})`;
   const masked = manifest.images[step.image.imageId].redacted ? ' (parts masked during review)' : '';
   return `screenshot ${inlineCode(names.get(step.image.imageId)!)}${masked}`;
 }
@@ -329,6 +344,8 @@ export function journeyPrompt(manifest: JourneyManifestV1): string {
     '## Expected', '', literalBlock(reviewed.expected), '',
     '## Actual', '', literalBlock(reviewed.actual), '',
     '## Steps', '',
+    // Steps keep their recorded numbers, so a removed step leaves a gap.
+    ...(reviewed.steps.at(-1)!.seq !== reviewed.steps.length ? ['Missing step numbers are steps removed during review.', ''] : []),
     ...reviewed.steps.map(step => promptStep(reviewed, step, names)),
   ];
   return `${lines.join('\n')}\n`;

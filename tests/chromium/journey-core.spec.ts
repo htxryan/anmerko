@@ -892,6 +892,62 @@ test('stop numbers pages in the order the journey first reached them', () => {
   expect(validateJourneyDraft(redacted.draft).ok).toBe(true);
 });
 
+test('every review edit keeps the page numbers stop gave the draft', () => {
+  let session: JourneySession = acceptJourneyEventBatch(recordingSession(), clickBatch(1, 'capture-click'));
+  session = resolveJourneyCapture(session, {
+    epoch: 1, documentToken: 'document-1', captureId: 'capture-click', status: 'retained', imageId: 'image-click',
+    image: {
+      capturedAt: '2026-09-20T12:00:01.500Z', captureUrl: 'https://example.com/start',
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES, dataUrl: MINIMAL_PNG_DATA_URL,
+      viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+    },
+  });
+  session = acceptJourneyEventBatch(session, fieldBatch(2, 'capture-field', ['First']));
+  if (session.phase !== 'recording') throw new Error('expected recording state');
+  session = commitJourneyNavigation(session, {
+    epoch: 1, id: 'step-navigation', observedAt: '2026-09-20T12:00:03.000Z', elapsedMs: 3_000,
+    sourceUrl: 'https://example.com/start', toUrl: 'https://example.com/reset?token=private-token-9q',
+    causedByStepId: 'step-click-1', previousDocumentToken: session.documentToken, documentToken: 'document-2',
+    image: { status: 'unavailable', reason: 'navigation-timeout' },
+  });
+  session = stopJourney(session, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (session.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const pages = (state: JourneySession) => {
+    if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+    return state.draft.steps.map(step => [step.id, step.sourcePage, step.kind === 'navigation' ? step.navigation.toPage : null]);
+  };
+  const numbered = pages(session);
+  expect(numbered).toEqual([
+    ['step-initial', 1, null], ['step-click-1', 1, null], ['step-field-2', 1, null], ['step-navigation', 1, 2],
+  ]);
+  const edits: Array<(state: JourneySession) => JourneySession> = [
+    state => state.phase === 'reviewing' ? updateJourneySummary(state, { ...reviewGuards(state), expected: 'Kept.', actual: 'Gone.' }) : state,
+    state => state.phase === 'reviewing' ? editJourneyValue(state, {
+      ...reviewGuards(state), stepId: 'step-field-2', value: { kind: 'selection', values: ['Other'], multiple: true, truncated: false },
+    }) : state,
+    ...(['step-initial', 'step-click-1', 'step-field-2', 'step-navigation'] as const).map(stepId =>
+      (state: JourneySession) => state.phase === 'reviewing' ? redactJourneyUrl(state, { ...reviewGuards(state), stepId, url: 'source' }) : state),
+    state => state.phase === 'reviewing' ? redactJourneyUrl(state, { ...reviewGuards(state), stepId: 'step-navigation', url: 'destination' }) : state,
+    state => state.phase === 'reviewing' ? redactJourneyUrl(state, { ...reviewGuards(state), stepId: 'step-click-1', url: 'capture' }) : state,
+    state => state.phase === 'reviewing' ? redactJourneyLabel(state, { ...reviewGuards(state), stepId: 'step-click-1' }) : state,
+  ];
+  for (const edit of edits) {
+    const next = edit(session);
+    expect(next).not.toBe(session);
+    expect(pages(next)).toEqual(numbered);
+    session = next;
+  }
+  // Removing the click that caused the navigation drops only the causal link.
+  if (session.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const removed = removeJourneyStep(session, { ...reviewGuards(session), stepId: 'step-click-1' });
+  expect(removed).not.toBe(session);
+  expect(pages(removed)).toEqual(numbered.filter(([stepId]) => stepId !== 'step-click-1'));
+  if (removed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(removed.draft.steps.at(-1)).toMatchObject({ navigation: { toUrl: '[redacted]', toPage: 2 } });
+  expect(removed.draft.steps.at(-1)?.navigation).not.toHaveProperty('causedByStepId');
+  expect(validateJourneyDraft(removed.draft).ok).toBe(true);
+});
+
 test('click label redaction keeps only the marker and its flag, which travel with the click', () => {
   const recording = recordingSession();
   const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
