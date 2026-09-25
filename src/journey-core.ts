@@ -1318,7 +1318,7 @@ export function redactJourneyLabel(state: JourneySession, input: JourneyRedactLa
     revision: reviewing.draft.revision + 1, updatedAt: input.updatedAt,
   };
   if (validateJourneyDraft(draft).ok === false) return state;
-  return { ...reviewing, draft };
+  return editedJourneyReview(reviewing, draft);
 }
 
 export function commitJourneyNavigation(state: JourneySession, input: NavigationInput): JourneySession {

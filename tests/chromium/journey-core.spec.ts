@@ -964,6 +964,14 @@ test('click label redaction keeps only the marker and its flag, which travel wit
   expect(click.target.label).toBe('[redacted]');
   expect(redacted.draft.redactions).toEqual({ steps: { 'step-click-1': { label: true } } });
   expect(JSON.stringify(redacted.draft)).not.toContain('"Go"');
+  // Like every review edit, it restarts the idle window from its own time.
+  const editMs = Date.parse(reviewGuards(reviewing).updatedAt);
+  expect(Date.parse(redacted.warningAt)).toBeGreaterThan(Date.parse(reviewing.warningAt));
+  expect(Date.parse(redacted.expiresAt)).toBeGreaterThan(Date.parse(reviewing.expiresAt));
+  expect(redacted).toMatchObject({
+    warningAt: new Date(editMs + JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs).toISOString(),
+    expiresAt: new Date(editMs + JOURNEY_LIMITS.maxReviewIdleMs).toISOString(),
+  });
   // Guards apply as for every review edit.
   expect(redactJourneyLabel(reviewing, { ...reviewGuards(reviewing), revision: 99, stepId: 'step-click-1' })).toBe(reviewing);
   expect(redactJourneyLabel(reviewing, { ...reviewGuards(reviewing), stepId: 'step-initial' })).toBe(reviewing);
