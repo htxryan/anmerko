@@ -7,6 +7,9 @@
   display: grid;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   gap: 16px;
+  /* Rows keep their content height and the dialog scrolls. Auto rows would
+     shrink the clipped stage when space runs out, overlapping the fields. */
+  grid-auto-rows: max-content;
   max-height: 100%;
   max-width: 720px;
   margin: auto;

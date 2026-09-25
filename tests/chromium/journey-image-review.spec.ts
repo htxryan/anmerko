@@ -411,3 +411,31 @@ test('narrow layout keeps all controls touch-sized while only the drawing surfac
   expect(await dialog.evaluate(element => getComputedStyle(element).touchAction)).not.toBe('none');
   expect(await page.locator('#review-root').innerHTML()).not.toContain('data:image');
 });
+
+// A tall phone capture fills most of the stage height; the region fields must
+// still follow it rather than slide under it.
+for (const viewport of [{ width: 320, height: 700 }, { width: 360, height: 800 }, { width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+  test(`the stage never overlaps the region fields at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await loadEditor(page, viewport);
+    await begin(page, 390, 844);
+    const dialog = page.getByRole('dialog', { name: 'Mask screenshot' });
+    const layout = await dialog.evaluate(element => {
+      const box = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+      const stage = box('.journey-image-review__stage');
+      const legend = box('.journey-image-review__fields legend');
+      const fields = [...element.querySelectorAll('.journey-image-review__field input')].map(input => input.getBoundingClientRect());
+      return { stageBottom: stage.bottom, legendTop: legend.top, fieldTops: fields.map(field => field.top), stageRatio: stage.width / stage.height };
+    });
+    expect(layout.legendTop).toBeGreaterThanOrEqual(layout.stageBottom);
+    for (const top of layout.fieldTops) expect(top).toBeGreaterThan(layout.stageBottom);
+    expect(Math.abs(layout.stageRatio - 390 / 844)).toBeLessThan(0.01);
+    // Every control can be scrolled fully into view inside the dialog.
+    for (const control of await dialog.locator('button,input').all()) {
+      await control.scrollIntoViewIfNeeded();
+      const box = (await control.boundingBox())!;
+      // Allow subpixel rounding at the scroll edge.
+      expect(box.y).toBeGreaterThanOrEqual(-1);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
+    }
+  });
+}
