@@ -65,7 +65,7 @@ script=$(find /home -maxdepth 5 -path '*/scripts/cloud/setup.sh' -print -quit)
 [ -n "$script" ] && bash "$script" >/tmp/anmerko-cloud-setup.log 2>&1 || true
 ```
 
-Cold provisioning takes about three minutes, within the five-minute setup-script limit, and the full matrix about ten more. Cloud VMs are Firecracker microVMs without `/dev/kvm`, so the Android emulator cannot run there. Validate Firefox for Android installation in an emulator on a KVM-capable host or on a device (`npm run firefox:android`).
+Cold provisioning takes about three minutes, within the five-minute setup-script limit, and the full matrix about ten more. Cloud VMs are Firecracker microVMs without `/dev/kvm`, so the Android emulator cannot run there. The **Firefox Android emulator** CI job runs `npm run test:android` instead; on a KVM-capable host or device, run it locally or use `npm run firefox:android`.
 
 ## Website and documentation
 

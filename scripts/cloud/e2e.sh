@@ -65,7 +65,7 @@ if wants android; then
   # Firefox for Android installs this same package; Mozilla's linter checks
   # its gecko_android manifest. Touch and Edge Android flows run above.
   step 'Firefox for Android package (Mozilla lint)' 10m npm run package:firefox
-  results+=('SKIP  Android emulator: cloud VMs are Firecracker microVMs without /dev/kvm')
+  results+=('SKIP  Android emulator: no /dev/kvm here; CI runs npm run test:android (Firefox Android emulator)')
 fi
 
 echo
