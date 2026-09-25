@@ -11,6 +11,7 @@ import {
   removeJourneyStep,
   reopenJourneySnapshot,
   resolveJourneyCapture,
+  resumeSavingReview,
   reviewSaveGating,
   stopJourney,
   supersedeJourneyImagesAfter,
@@ -25,6 +26,7 @@ import {
   type Point,
   type RecordingJourneySession,
   type ReviewingJourneySession,
+  type SavingJourneySession,
   type Viewport,
 } from './journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch } from './journey-events';
@@ -331,7 +333,7 @@ export function createJourneyController(
     const abort = new AbortController();
     navigationAbort = abort;
     void completeNavigation({
-      generation, captureId, toUrl, observedMs: actionWindowStartMs(previous),
+      generation, captureId, toUrl, windowStartMs: captureWindowStartMs(previous, receiptMs),
       handshake: handshake ? { ...handshake } : undefined,
       handshakeReady: !handshake,
       signal: abort.signal,
@@ -342,19 +344,19 @@ export function createJourneyController(
     generation: number;
     captureId: string;
     toUrl: string;
-    observedMs: number;
+    windowStartMs: number;
     handshake?: PendingDocumentHandshake;
     handshakeReady: boolean;
     signal: AbortSignal;
   }): Promise<void> {
     const settledMs = now();
-    const minimum = delay(Math.max(0, input.observedMs + POST_ACTION_DELAY_MS - settledMs), input.signal);
-    // Screenshots stay bound to the action window, but a new document gets a
-    // full window to connect even when no recent action caused it (a reload
-    // or back/forward long after the last click would otherwise time out now).
+    const minimum = delay(Math.max(0, input.windowStartMs + POST_ACTION_DELAY_MS - settledMs), input.signal);
+    // The screenshot stays bound to its capture window, but a new document
+    // always gets a full window to connect, even one that began late in the
+    // window of the action that caused it.
     const windowEndMs = input.handshake
-      ? Math.max(input.observedMs, settledMs) + NAVIGATION_WINDOW_MS
-      : input.observedMs + NAVIGATION_WINDOW_MS;
+      ? Math.max(input.windowStartMs, settledMs) + NAVIGATION_WINDOW_MS
+      : input.windowStartMs + NAVIGATION_WINDOW_MS;
     const timeout = delay(Math.max(0, windowEndMs - settledMs), input.signal).then(() => 'timeout' as const);
     const work = performNavigation(input, minimum).then(() => 'complete' as const, error => {
       if (isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
@@ -378,7 +380,7 @@ export function createJourneyController(
     generation: number;
     captureId: string;
     toUrl: string;
-    observedMs: number;
+    windowStartMs: number;
     handshake?: PendingDocumentHandshake;
     handshakeReady: boolean;
   }, minimum: Promise<void>): Promise<void> {
@@ -434,7 +436,7 @@ export function createJourneyController(
 
     await minimum;
     if (!isCurrentNavigation(input.generation, input.captureId, input.toUrl) || state.phase !== 'recording') return;
-    if (now() >= input.observedMs + NAVIGATION_WINDOW_MS) {
+    if (now() >= input.windowStartMs + NAVIGATION_WINDOW_MS) {
       settleCapture(input.captureId, 'navigation-timeout');
       return;
     }
@@ -454,8 +456,8 @@ export function createJourneyController(
       return;
     }
     const capturedMs = Date.parse(image.capturedAt);
-    if (!Number.isFinite(capturedMs) || capturedMs < input.observedMs + POST_ACTION_DELAY_MS
-      || capturedMs >= input.observedMs + NAVIGATION_WINDOW_MS
+    if (!Number.isFinite(capturedMs) || capturedMs < input.windowStartMs + POST_ACTION_DELAY_MS
+      || capturedMs >= input.windowStartMs + NAVIGATION_WINDOW_MS
       || capturedMs >= Date.parse(current.deadlineAt)) {
       settleCapture(input.captureId, 'navigation-timeout');
       return;
@@ -642,7 +644,10 @@ export function createJourneyController(
   async function removeStep(input: JourneyRemoveStepInput): Promise<void> {
     const previous = currentReview(state, input);
     const next = removeJourneyStep(previous, input);
-    if (next !== previous) publish(next);
+    // The review guards passed, so an unchanged draft means the removal
+    // itself was refused; say so instead of leaving the step in silently.
+    if (next === previous) throw new Error('The step could not be removed.');
+    publish(next);
   }
 
   async function editValue(input: JourneyEditValueInput): Promise<void> {
@@ -710,12 +715,25 @@ export function createJourneyController(
     }
     if (acknowledged !== true) throw new Error('Journey saving needs a review acknowledgement.');
     if (!adapter.saveSnapshot) throw new Error('Journey saving is unavailable.');
-    const saved = await adapter.saveSnapshot({ draft: previous.draft, images: previous.draft.images });
-    const next: JourneySession = {
-      phase: 'saved', epoch: previous.epoch + 1,
-      journeyId: saved.journeyId, revision: saved.revision,
+    // Every review edit requires the reviewing phase, so while the snapshot
+    // is written an edit from any review surface is refused as stale instead
+    // of landing in the draft and being published over by the saved state.
+    const saving: SavingJourneySession = {
+      phase: 'saving', sessionId: previous.sessionId, journeyId: previous.journeyId, epoch: previous.epoch,
+      ownerTabId: previous.ownerTabId, ownerWindowId: previous.ownerWindowId, draft: previous.draft,
     };
-    publish(next);
+    publish(saving);
+    let saved: { journeyId: string; revision: number };
+    try {
+      saved = await adapter.saveSnapshot({ draft: previous.draft, images: previous.draft.images });
+    } catch (error) {
+      if (state === saving) publish(previous);
+      throw error;
+    }
+    // A discard during the write already ended the review; the snapshot stays saved.
+    if (state === saving) {
+      publish({ phase: 'saved', epoch: previous.epoch + 1, journeyId: saved.journeyId, revision: saved.revision });
+    }
     return saved;
   }
 
@@ -784,12 +802,19 @@ function sameOrigin(first: string, second: string | undefined): boolean {
   }
 }
 
-function actionWindowStartMs(state: RecordingJourneySession): number {
-  const steps = state.draft.steps;
-  let index = steps.length - 1;
-  while (index >= 0 && steps[index].kind === 'navigation') index -= 1;
-  const anchor = index >= 0 ? steps[index].observedAt : state.draft.startedAt;
-  return Date.parse(anchor);
+// Each action opens a capture window: its screenshot, and that of any
+// navigation it causes, is taken at least 500 ms after it and within five
+// seconds of it, so redirects share the action's window instead of
+// restarting it. A navigation observed after the window closed had no recent
+// action (an idle reload, back/forward, or a timer): it opens its own window
+// from the moment it was observed, and its redirects share that one.
+function captureWindowStartMs(state: RecordingJourneySession, receiptMs: number): number {
+  let startMs = Date.parse(state.draft.startedAt);
+  for (const step of state.draft.steps) {
+    const observedMs = Date.parse(step.observedAt);
+    if (step.kind !== 'navigation' || observedMs >= startMs + NAVIGATION_WINDOW_MS) startMs = observedMs;
+  }
+  return receiptMs >= startMs + NAVIGATION_WINDOW_MS ? receiptMs : startMs;
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -855,9 +880,12 @@ function captureFailure(reason: CaptureFailure): Error & { reason: CaptureFailur
 
 function prepareRestoredState(restoredState: JourneySession, nowMs: number): JourneySession {
   if (restoredState.phase === 'starting') return failInitialImage(restoredState);
-  if (restoredState.phase === 'reviewing' && nowMs >= Date.parse(restoredState.expiresAt)) {
-    return { phase: 'idle', epoch: restoredState.epoch + 1 };
+  // No save survives in this controller, so an interrupted save returns to review.
+  const restored = restoredState.phase === 'saving' ? resumeSavingReview(restoredState) : restoredState;
+  if (restored.phase === 'reviewing' && nowMs >= Date.parse(restored.expiresAt)) {
+    return { phase: 'idle', epoch: restored.epoch + 1 };
   }
+  if (restored !== restoredState) return restored;
   if (restoredState.phase !== 'recording') return restoredState;
   if (nowMs >= Date.parse(restoredState.deadlineAt)) {
     return stopJourney(restoredState, {

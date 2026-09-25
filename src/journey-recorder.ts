@@ -140,6 +140,19 @@ function visibleScroll(): { x: number; y: number } {
   return { x: scrollX + (visual?.offsetLeft ?? 0), y: scrollY + (visual?.offsetTop ?? 0) };
 }
 
+// Mouse coordinates are relative to the layout viewport, but the recorded
+// viewport is the visible one: pinch zoom, or a soft keyboard raised by the
+// last field, shrinks and pans it. A layout-relative point below a panned
+// visible viewport failed validation and the background dropped the whole
+// click batch, so measure from the visible corner, matching the screenshot.
+// A point that still falls outside (edge rounding) is omitted, not fatal.
+function visiblePoint(event: MouseEvent, viewport: { width: number; height: number }): { x: number; y: number } | undefined {
+  const visual = window.visualViewport;
+  const x = event.clientX - (visual?.offsetLeft ?? 0);
+  const y = event.clientY - (visual?.offsetTop ?? 0);
+  return x >= 0 && y >= 0 && x <= viewport.width && y <= viewport.height ? { x, y } : undefined;
+}
+
 function ignored(event: MouseEvent, target: Element, custom?: JourneyRecorderOptions['ignore']): boolean {
   if (event.composedPath().some(candidate => candidate instanceof Element && UI_HOSTS.has(candidate.localName))) return true;
   try { return custom?.(target, event) ?? false; } catch { return true; }
@@ -198,6 +211,7 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
     const role = roleFor(target);
     const viewport = visibleViewport();
     const scroll = visibleScroll();
+    const point = event.detail === 0 ? undefined : visiblePoint(event, viewport);
     const input: JourneyClickEvent = {
       kind: 'click',
       id: createUuid(),
@@ -212,7 +226,7 @@ export function attachJourneyRecorder(options: JourneyRecorderOptions): JourneyR
         editable: !!editableAncestor(target),
         viewport,
         scroll,
-        ...(event.detail === 0 ? {} : { point: { x: event.clientX, y: event.clientY } }),
+        ...(point ? { point } : {}),
       },
       image: { status: 'pending', captureId: createUuid() },
     };

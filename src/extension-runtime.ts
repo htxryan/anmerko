@@ -48,6 +48,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let sidebarClosing = false;
   let sidebarNeedsReconnect = false;
   let sidebarPort: chrome.runtime.Port | undefined;
+  let sidebarHandedOff: ((version: number) => void) | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
     return api.tabs.sendMessage(targetTab, { type, ...extra });
@@ -70,8 +71,9 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     async changeLayout(mode, state, mobile) {
       if (native && ['overlay', 'minimized', 'closed'].includes(mode)) {
         if (sidebarClosing || !sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
+        const version = sidebarRequestVersion;
         sidebarPort.postMessage({
-          type: 'ANMERKO_SIDEBAR_LAYOUT', version: sidebarRequestVersion,
+          type: 'ANMERKO_SIDEBAR_LAYOUT', version,
           mode, state: state.url ? state : undefined,
         });
         closingLayoutVersion = sidebarRequestVersion;
@@ -80,7 +82,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         sidebarNeedsReconnect = true;
         ++connectionVersion;
         // Firefox requires close() in the original click, before any await/message hop.
-        void closeDock(windowId || 0).catch(() => {});
+        const closed = () => sidebarHandedOff?.(version);
+        void closeDock(windowId || 0).then(closed, closed);
         return;
       }
       const request = api.runtime.sendMessage({ type: 'ANMERKO_LAYOUT', mode, state: state.url ? state : undefined, tabId: targetTab, windowId, mobile });
@@ -96,7 +99,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
         if (signal.aborted || sender.id !== api.runtime.id) return;
         if (native) {
           if (message?.type === 'ANMERKO_CONNECT_SIDEBAR' && !sender.tab && sender.url?.startsWith(api.runtime.getURL('')) && message.windowId === windowId) void connect();
-          if (message?.type === 'ANMERKO_VIEW_CHANGED' && sender.tab?.id === targetTab) controller.applyState(message.state);
+          // A handed-off document waits for its fresh owner's snapshot instead.
+          if (message?.type === 'ANMERKO_VIEW_CHANGED' && sender.tab?.id === targetTab && !sidebarNeedsReconnect) controller.applyState(message.state);
           if (message?.type === 'ANMERKO_CAPTURE_ERROR' && sender.tab?.id === targetTab) controller.status(message.error, true);
           return;
         }
@@ -129,6 +133,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
             closingLayoutVersion = undefined;
             sidebarRequestVersion = undefined;
             sidebarClosing = false;
+            // The background restored the page, so this document no longer owns it.
+            controller.connectionFailed();
             if (result.code === 'layout-failed' && result.error === 'Could not change layout.') controller.status(result.error, true);
             return;
           }
@@ -170,11 +176,19 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
       }
+      // Chrome can show a closed sidebar's document again. Once a closing layout
+      // hands the page its view, that document keeps the connection prompt until
+      // a fresh owner answers, so a stale panel never offers a refused Float.
+      sidebarHandedOff = version => {
+        if (!signal.aborted && closingLayoutVersion === version) controller.connectionFailed();
+      };
       const reopen = (explicit = false) => {
         if (signal.aborted || (!explicit && ((!sidebarClosing && !sidebarNeedsReconnect) || document.hidden))) return;
+        // A closing layout retired its request. A live owner keeps serving
+        // layouts until its replacement posts, as with any other reconnect.
+        if (sidebarClosing) sidebarRequestVersion = undefined;
         sidebarClosing = false;
         closingLayoutVersion = undefined;
-        sidebarRequestVersion = undefined;
         sidebarReopenVersion = undefined;
         void connect();
       };

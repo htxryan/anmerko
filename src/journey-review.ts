@@ -1,4 +1,5 @@
 import {
+  pruneJourneyRedactions,
   validateJourneyDraft,
   type JourneyDraftImage,
   type JourneyDraftStep,
@@ -111,7 +112,8 @@ export function applyJourneyImageReview(
   const images = input.operation === 'remove'
     ? Object.fromEntries(Object.entries(currentDraft.value.images).filter(([imageId]) => imageId !== input.imageId))
     : { ...currentDraft.value.images, [input.imageId]: replacementImage(currentImage, input.image) };
-  const draft = {
+  // A removed screenshot takes its redacted capture URL, and that flag, along.
+  const draft = pruneJourneyRedactions({
     ...currentDraft.value,
     revision: currentDraft.value.revision + 1,
     updatedAt: input.updatedAt,
@@ -119,7 +121,7 @@ export function applyJourneyImageReview(
       ? removedReferences(currentDraft.value.steps, input.imageId)
       : currentDraft.value.steps,
     images,
-  };
+  });
   const validatedDraft = validateJourneyDraft(draft);
   if (!validatedDraft.ok) return failure('image review candidate is invalid');
 

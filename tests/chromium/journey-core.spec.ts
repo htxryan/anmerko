@@ -550,6 +550,79 @@ test('review step removal preserves order with stable gaps and prunes images', (
   expect(refused.draft.steps).toHaveLength(1);
 });
 
+test('removing a step drops its redaction flags and keeps the flags of remaining steps', () => {
+  const recording = recordingSession();
+  const withClick = acceptJourneyEventBatch(recording, clickBatch(1, 'capture-click'));
+  if (withClick.phase !== 'recording') throw new Error('expected recording state');
+  const resolved = resolveJourneyCapture(withClick, {
+    epoch: 1, documentToken: 'document-1', captureId: 'capture-click', status: 'retained', imageId: 'image-click',
+    image: {
+      capturedAt: '2026-09-20T12:00:01.500Z', captureUrl: 'https://example.com/start',
+      width: 1, height: 1, byteLength: MINIMAL_PNG_BYTES, dataUrl: MINIMAL_PNG_DATA_URL,
+      viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 },
+    },
+  });
+  const reviewing = stopJourney(resolved, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (reviewing.phase !== 'reviewing') throw new Error('expected reviewing state');
+  let state: JourneySession = reviewing;
+  for (const [stepId, url] of [
+    ['step-click-1', 'source'], ['step-click-1', 'capture'], ['step-initial', 'source'],
+  ] as const) {
+    if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+    const next = redactJourneyUrl(state, { ...reviewGuards(state), stepId, url });
+    expect(next).not.toBe(state);
+    state = next;
+  }
+  if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(state.draft.redactions).toEqual({ steps: {
+    'step-click-1': { sourceUrl: true, captureUrl: true }, 'step-initial': { sourceUrl: true },
+  } });
+
+  const removed = removeJourneyStep(state, { ...reviewGuards(state), stepId: 'step-click-1' });
+  expect(removed).not.toBe(state);
+  if (removed.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(removed.draft.steps.map(step => step.id)).toEqual(['step-initial']);
+  expect(Object.keys(removed.draft.images)).toEqual(['image-initial']);
+  expect(removed.draft.redactions).toEqual({ steps: { 'step-initial': { sourceUrl: true } } });
+  expect(validateJourneyDraft(removed.draft).ok).toBe(true);
+
+  // With the last flagged step gone, the draft carries no redaction map at all.
+  const onlyRemoved = redactJourneyUrl(reviewing, { ...reviewGuards(reviewing), stepId: 'step-click-1', url: 'source' });
+  if (onlyRemoved.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const cleared = removeJourneyStep(onlyRemoved, { ...reviewGuards(onlyRemoved), stepId: 'step-click-1' });
+  if (cleared.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(cleared.draft.steps).toHaveLength(1);
+  expect(cleared.draft).not.toHaveProperty('redactions');
+});
+
+test('draft validation checks screenshot bytes even when the capture URL was redacted', () => {
+  const reviewing = reviewingSession();
+  const redacted = redactJourneyUrl(reviewing, { ...reviewGuards(reviewing), stepId: 'step-initial', url: 'capture' });
+  if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(redacted.draft.images['image-initial'].captureUrl).toBe('[redacted]');
+  expect(validateJourneyDraft(redacted.draft).ok).toBe(true);
+
+  const mismatched = structuredClone(redacted.draft);
+  mismatched.images['image-initial'].dataUrl = fixturePngDataUrl(MINIMAL_PNG_BYTES + 3);
+  expect(validateJourneyDraft(mismatched)).toEqual({
+    ok: false, errors: ['journey.images.image-initial.dataUrl does not match byteLength'],
+  });
+  const foreign = structuredClone(redacted.draft);
+  foreign.images['image-initial'].dataUrl = 'data:image/jpeg;base64,AAAA';
+  expect(validateJourneyDraft(foreign)).toEqual({
+    ok: false, errors: ['journey.images.image-initial.dataUrl must be a PNG data URL'],
+  });
+  const malformed = structuredClone(redacted.draft) as unknown as { images: Record<string, Record<string, unknown>> };
+  malformed.images['image-initial'].dataUrl = 42;
+  malformed.images['image-initial'].redacted = 'yes';
+  expect(validateJourneyDraft(malformed)).toEqual({
+    ok: false, errors: [
+      'journey.images.image-initial.dataUrl metadata is invalid',
+      'journey.images.image-initial.redacted must be a boolean',
+    ],
+  });
+});
+
 test('save gating requires summaries, a retained step, and a valid draft', () => {
   const reviewing = reviewingSession();
   expect(reviewSaveGating(reviewing)).toEqual({ ready: false, reasons: ['summaries-required'] });

@@ -1035,6 +1035,76 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
   expect(await dataUrlPixels(page, snapshot.images[imageId].dataUrl)).toEqual(patternedPixels([rect]));
 });
 
+test('a review edit racing a save is refused as stale and the snapshot is exactly the saved review', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date().toISOString(),
+  });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state),
+    expected: 'The receipt lists the order.', actual: 'The receipt is blank.',
+  })).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+
+  // A second review tab edits with the revision it last read while this tab saves.
+  const late = guards(state);
+  const [saved, ...refused] = await page.evaluate(({ edits, reviewSender }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    return Promise.all([
+      harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewSender),
+      ...edits.map(edit => harness.dispatch(edit, reviewSender)),
+    ]);
+  }, { reviewSender: reviewPage, edits: [
+    { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...late, expected: 'Edited during save.', actual: 'Edited during save.' },
+    { type: 'ANMERKO_JOURNEY_REDACT_URL', ...late, stepId: state.draft.steps[1].id, url: 'source' },
+    { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...late, stepId: state.draft.steps[1].id },
+  ] });
+  expect(saved).toEqual({ ok: true, value: { journeyId: state.journeyId, revision: state.draft.revision } });
+  expect(refused).toEqual([staleReview, staleReview, staleReview]);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toEqual({
+    phase: 'saved', epoch: state.epoch + 1, journeyId: state.journeyId, revision: state.draft.revision,
+  });
+  const snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: state.journeyId })).value;
+  expect(snapshot.draft).toMatchObject({ revision: state.draft.revision, expected: 'The receipt lists the order.' });
+  expect(snapshot.draft.steps.map((step: any) => [step.id, step.sourceUrl]))
+    .toEqual(state.draft.steps.map((step: any) => [step.id, step.sourceUrl]));
+});
+
+test('removing a screenshot or step whose URLs were redacted succeeds through the command channel', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date().toISOString(),
+  });
+  const click = state.draft.steps[1];
+  for (const url of ['capture', 'source']) {
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REDACT_URL', ...guards(state), stepId: click.id, url }))
+      .toEqual({ ok: true });
+    state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  }
+  expect(state.draft.redactions).toEqual({ steps: { [click.id]: { captureUrl: true, sourceUrl: true } } });
+
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'remove',
+    epoch: state.epoch, journeyId: state.journeyId, revision: state.draft.revision, imageId: click.image.imageId,
+  })).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.steps[1].image).toEqual({ status: 'removed' });
+  expect(state.draft.redactions).toEqual({ steps: { [click.id]: { sourceUrl: true } } });
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards(state), stepId: click.id }))
+    .toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.steps.map((step: any) => step.kind)).toEqual(['initial']);
+  expect(state.draft).not.toHaveProperty('redactions');
+
+  // The last step cannot be removed, and the refusal is reported rather than ignored.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards(state), stepId: state.draft.steps[0].id }))
+    .toEqual(unavailable);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.revision).toBe(state.draft.revision);
+});
+
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands
@@ -1576,16 +1646,38 @@ test('stops waiting for a new document observer as soon as page access is withdr
   expect(Date.now() - started).toBeLessThan(3_000);
 });
 
-test('recovery names withdrawn page access when the owner tab URL is hidden after a wake', async ({ page }) => {
+for (const platform of [
+  { name: 'Chromium', firefox: false, reason: 'left-site' },
+  { name: 'Firefox', firefox: true, reason: 'page-access-lost' },
+]) {
+  test(`recovery names a hidden owner tab URL after a wake as ${platform.reason} on ${platform.name}`, async ({ page }) => {
+    await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+    await page.evaluate(firefox => {
+      const harness = (globalThis as HarnessWindow).harness;
+      // Only Firefox has runtime.getBrowserInfo; its grant ends with every document.
+      if (firefox) (globalThis as any).chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+      delete (harness.tabs[1] as { url?: string }).url;
+      harness.reboot();
+    }, platform.firefox);
+    await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+    expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+      .toMatchObject({ phase: 'reviewing', draft: { stopReason: platform.reason } });
+  });
+}
+
+test('a queued cross-origin commit explains a hidden owner URL after a wake as left-site in Firefox too', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
+    (globalThis as any).chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
     delete (harness.tabs[1] as { url?: string }).url;
     harness.reboot();
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url: 'https://other.test/away', documentLifecycle: 'active' });
   });
   await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
-  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
-    .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'page-access-lost' } });
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped).toMatchObject({ phase: 'reviewing', draft: { stopReason: 'left-site' } });
+  expect(stopped.draft.steps.map((step: any) => step.kind)).toEqual(['initial']);
 });
 
 test('routes matching event ports and stop commands without exposing state or raw replies to pages', async ({ page }) => {

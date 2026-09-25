@@ -5,8 +5,10 @@ import {
   createJourneySession,
   stopJourney,
   type JourneyDraftImage,
+  type JourneyDraftV1,
   type JourneySession,
   type RecordingJourneySession,
+  type ReviewingJourneySession,
 } from '../../src/journey-core';
 import {
   createJourneyController,
@@ -264,6 +266,114 @@ test('late start and capture promises cannot mutate discarded or replacement sta
   await Promise.resolve();
   await Promise.resolve();
   expect(controller.getState()).toEqual(replacement);
+});
+
+async function summarizedReview(harness: ReturnType<typeof fixture>) {
+  const active = restoredWithPending();
+  const review = stopJourney(active, {
+    epoch: active.epoch, stoppedAt: new Date(START_MS + 1_000).toISOString(), reason: 'user',
+  }) as ReviewingJourneySession;
+  harness.nowMs = START_MS + 2_000;
+  const reviewing = createJourneyController(harness.adapter, review);
+  await reviewing.updateSummary({
+    ...reviewGuards(review, harness.nowMs), expected: 'The order confirms.', actual: 'The order vanished.',
+  });
+  return reviewing;
+}
+
+function reviewGuards(state: JourneySession, nowMs: number) {
+  if (state.phase !== 'reviewing') throw new Error(`Expected review, received ${state.phase}`);
+  return { epoch: state.epoch, journeyId: state.journeyId, revision: state.draft.revision, updatedAt: new Date(nowMs).toISOString() };
+}
+
+test('a review edit arriving while a save is written is refused as stale instead of lost', async () => {
+  const write = deferred<{ journeyId: string; revision: number }>();
+  const written: JourneyDraftV1[] = [];
+  const harness = fixture();
+  harness.adapter.saveSnapshot = input => { written.push(structuredClone(input.draft)); return write.promise; };
+  const controller = await summarizedReview(harness);
+  const reviewed = controller.getState();
+  if (reviewed.phase !== 'reviewing') throw new Error('Expected a summarized review');
+  const guards = reviewGuards(reviewed, harness.nowMs);
+
+  const saving = controller.save(true);
+  expect(controller.getState()).toMatchObject({ phase: 'saving', epoch: reviewed.epoch, draft: reviewed.draft });
+  // Another review tab still holds the pre-save revision.
+  const edits = [
+    controller.updateSummary({ ...guards, expected: 'Lost?', actual: 'Lost?' }),
+    controller.removeStep({ ...guards, stepId: 'step-pending-1' }),
+    controller.editValue({ ...guards, stepId: 'step-pending-1', value: { kind: 'checked', checked: true } }),
+    controller.redactUrl({ ...guards, stepId: 'step-initial', url: 'source' }),
+    controller.reviewImage({ operation: 'remove', epoch: guards.epoch, journeyId: guards.journeyId, revision: guards.revision, imageId: 'image-initial' }),
+  ];
+  for (const edit of edits) await expect(edit).rejects.toMatchObject({ code: 'stale-review' });
+  expect(controller.getState()).toMatchObject({ phase: 'saving', draft: reviewed.draft });
+
+  write.resolve({ journeyId: reviewed.journeyId, revision: reviewed.draft.revision });
+  await expect(saving).resolves.toEqual({ journeyId: reviewed.journeyId, revision: reviewed.draft.revision });
+  expect(written).toEqual([reviewed.draft]);
+  expect(controller.getState()).toEqual({
+    phase: 'saved', epoch: reviewed.epoch + 1, journeyId: reviewed.journeyId, revision: reviewed.draft.revision,
+  });
+  expect(harness.calls.changed.slice(-2).map(state => state.phase)).toEqual(['saving', 'saved']);
+});
+
+test('a failed save returns to the unchanged review, where edits apply again', async () => {
+  const harness = fixture();
+  harness.adapter.saveSnapshot = async () => { throw new Error('quota exceeded'); };
+  const controller = await summarizedReview(harness);
+  const reviewed = controller.getState();
+
+  await expect(controller.save(true)).rejects.toThrow('quota exceeded');
+  expect(controller.getState()).toBe(reviewed);
+  await controller.updateSummary({ ...reviewGuards(reviewed, harness.nowMs), expected: 'Kept.', actual: 'Edited after the failed save.' });
+  expect(controller.getState()).toMatchObject({ phase: 'reviewing', draft: { actual: 'Edited after the failed save.' } });
+});
+
+test('a discard during the save write keeps the discard and still reports the stored snapshot', async () => {
+  const write = deferred<{ journeyId: string; revision: number }>();
+  const harness = fixture();
+  harness.adapter.saveSnapshot = () => write.promise;
+  const controller = await summarizedReview(harness);
+  const reviewed = controller.getState();
+  if (reviewed.phase !== 'reviewing') throw new Error('Expected a summarized review');
+
+  const saving = controller.save(true);
+  await controller.discard();
+  write.resolve({ journeyId: reviewed.journeyId, revision: reviewed.draft.revision });
+  await expect(saving).resolves.toEqual({ journeyId: reviewed.journeyId, revision: reviewed.draft.revision });
+  expect(controller.getState()).toEqual({ phase: 'idle', epoch: reviewed.epoch + 1 });
+});
+
+test('a restored saving session resumes review instead of waiting on a save that no longer runs', async () => {
+  const harness = fixture();
+  const controller = await summarizedReview(harness);
+  const reviewed = controller.getState();
+  if (reviewed.phase !== 'reviewing') throw new Error('Expected a summarized review');
+  const { warningAt: _warningAt, expiresAt: _expiresAt, ...owner } = reviewed;
+  const interrupted: JourneySession = { ...owner, phase: 'saving' };
+
+  const resumed = createJourneyController(fixture().adapter, interrupted).getState();
+  expect(resumed).toMatchObject({ phase: 'reviewing', epoch: reviewed.epoch, draft: reviewed.draft });
+  const expired = fixture();
+  expired.nowMs = Date.parse(reviewed.draft.updatedAt) + JOURNEY_LIMITS.maxReviewIdleMs;
+  expect(createJourneyController(expired.adapter, interrupted).getState()).toEqual({ phase: 'idle', epoch: reviewed.epoch + 1 });
+});
+
+test('a step removal the draft refuses is reported instead of silently ignored', async () => {
+  const harness = fixture();
+  const controller = await summarizedReview(harness);
+  let reviewed = controller.getState();
+  for (const stepId of ['step-pending-1', 'step-pending-2']) {
+    await controller.removeStep({ ...reviewGuards(reviewed, harness.nowMs), stepId });
+    reviewed = controller.getState();
+  }
+  if (reviewed.phase !== 'reviewing') throw new Error('Expected review');
+  expect(reviewed.draft.steps.map(step => step.id)).toEqual(['step-initial']);
+
+  await expect(controller.removeStep({ ...reviewGuards(reviewed, harness.nowMs), stepId: 'step-initial' }))
+    .rejects.toThrow('The step could not be removed.');
+  expect(controller.getState()).toBe(reviewed);
 });
 
 function deferred<T>() {

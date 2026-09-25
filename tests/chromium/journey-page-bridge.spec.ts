@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
+import { validateJourneyEventBatch } from '../../src/journey-events';
 
 type MessageSender = { id?: string; url?: string; tab?: { id: number } };
 type BridgeHarness = {
@@ -396,6 +397,48 @@ test('entered values collect only with an explicit flag and merge before the cli
   expect(portMessages).toHaveLength(2);
   expect(portMessages[1].batch.events.map((event: any) => event.kind)).toEqual(['field-change', 'click']);
   expect(portMessages[1].batch.events[0].enteredValue).toEqual({ kind: 'text', value: 'blue', truncated: false });
+});
+
+test('a tap right after an excluded password edit keeps a valid click while the keyboard pans the viewport', async ({ page }) => {
+  await page.evaluate(() => {
+    document.body.innerHTML = '<input type="password" name="password" aria-label="Password">'
+      + '<button type="button" style="position:absolute;left:40px;top:600px">Sign in</button>';
+    document.querySelector('button')!.addEventListener('click', () => history.pushState(null, '', '#signed-in'));
+  });
+  const identity = (await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PAGE_START', sessionId: 'session-1', epoch: 1,
+    documentToken: identity.documentToken, expectedUrl: identity.url, startedAt: new Date().toISOString(),
+    includeEnteredValues: true })).toMatchObject({ ok: true });
+
+  await page.getByLabel('Password').fill('correct horse');
+  // Editing the field raised the soft keyboard: the visible viewport is the
+  // top 400 px of the layout viewport, panned down 300 px to keep the field
+  // and the button in view.
+  await page.evaluate(() => {
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: { width: 1280, height: 400, offsetLeft: 0, offsetTop: 300, scale: 1,
+        addEventListener() {}, removeEventListener() {} },
+    });
+  });
+  const button = await page.getByRole('button', { name: 'Sign in' }).boundingBox();
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/#signed-in$/);
+
+  const portMessages = await page.evaluate(() => (globalThis as BridgeWindow).bridgeHarness.portMessages);
+  expect(portMessages).toHaveLength(1);
+  const batch = portMessages[0].batch;
+  expect(batch.events.map((event: any) => event.kind)).toEqual(['click']);
+  expect(JSON.stringify(batch)).not.toContain('correct horse');
+  expect(batch.events[0].target).toMatchObject({
+    label: 'Sign in', viewport: { width: 1280, height: 400 }, scroll: { x: 0, y: 300 },
+  });
+  // The point is measured from the visible viewport's corner, like the screenshot.
+  const { point } = batch.events[0].target;
+  expect(Math.abs(point.x - (button!.x + button!.width / 2))).toBeLessThanOrEqual(1);
+  expect(Math.abs(point.y - (button!.y + button!.height / 2 - 300))).toBeLessThanOrEqual(1);
+  // The background drops a whole batch whose click point lies outside its viewport.
+  expect(validateJourneyEventBatch(batch)).toMatchObject({ ok: true });
 });
 
 test('retries one failed post, reconnects on a later batch, and disposes the active port', async ({ page }) => {

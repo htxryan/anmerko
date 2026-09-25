@@ -9,7 +9,7 @@ const event = () => {
   return { addListener(value: Listener) { listeners.add(value); }, removeListener(value: Listener) { listeners.delete(value); },
     emit(...args: any[]) { listeners.forEach(listener => listener(...args)); } };
 };
-const updated = event(), panelOpened = event();
+const updated = event(), panelOpened = event(), runtimeMessages = event();
 const ports: {
   onMessage: ReturnType<typeof event>;
   onDisconnect: ReturnType<typeof event>;
@@ -34,7 +34,7 @@ Object.assign(globalThis, { chrome: {
   runtime: {
     id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`,
     getManifest: () => ({ sidebar_action: {}, side_panel: { default_path: 'sidebar.html' } }),
-    onMessage: event(),
+    onMessage: runtimeMessages,
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
       const port: (typeof ports)[number] = { onMessage: event(), onDisconnect: event(), closed: false };
@@ -78,6 +78,9 @@ Object.assign(globalThis, { nativeHarness: {
     port.serverDisconnect?.emit();
   },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
+  broadcast(overrides: Partial<ViewState> = {}) {
+    runtimeMessages.emit({ type: 'ANMERKO_VIEW_CHANGED', state: { ...state, ...overrides } }, { id: 'test-extension', tab: { id: activeTabId } }, () => {});
+  },
   reopened(version?: number) { ports.at(-1)!.onMessage.emit({ type: 'ANMERKO_SIDEBAR_REOPENED', version }); },
   reconnect() { updated.emit(1, { status: 'complete' }); },
   reopen(windowId = 1, path = '/sidebar.html') { panelOpened.emit({ windowId, path }); },

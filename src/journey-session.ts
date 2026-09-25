@@ -1,9 +1,9 @@
 import {
+  resumeSavingReview,
   stopJourney,
   validateJourneyDraft,
   type JourneyDraftV1,
   type JourneySession,
-  type ReviewingJourneySession,
 } from './journey-core';
 import { JOURNEY_LIMITS } from './journey-limits';
 
@@ -241,16 +241,6 @@ function boundedIsoAfter(baseMs: number, deltaMs: number): string {
   return new Date(Math.min(MAX_DATE_MS, baseMs + deltaMs)).toISOString();
 }
 
-function reviewFromSaving(state: Extract<JourneySession, { phase: 'saving' }>): ReviewingJourneySession {
-  const base = Date.parse(state.draft.updatedAt);
-  return {
-    ...state,
-    phase: 'reviewing',
-    warningAt: boundedIsoAfter(base, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs),
-    expiresAt: boundedIsoAfter(base, JOURNEY_LIMITS.maxReviewIdleMs),
-  };
-}
-
 function controlFor(state: Exclude<JourneySession, { phase: 'idle' }>, generation: number): CommittedControl {
   const lifecycleAt = state.phase === 'recording' ? state.deadlineAt
     : state.phase === 'reviewing' ? state.expiresAt
@@ -403,7 +393,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     }
 
     if (state.phase === 'saving') {
-      const review = reviewFromSaving(state);
+      const review = resumeSavingReview(state);
       if (now >= Date.parse(review.expiresAt)) return purgedIdle(state.epoch + 1);
       const validReview = validateJourneySession(review);
       if (!validReview || validReview.phase !== 'reviewing') return purgedIdle(state.epoch + 1);

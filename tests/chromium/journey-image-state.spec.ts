@@ -3,6 +3,8 @@ import {
   JOURNEY_LIMITS,
 } from '../../src/journey-limits';
 import {
+  redactJourneyUrl,
+  removeJourneyStep,
   validateJourneyDraft,
   type JourneyDraftImage,
   type JourneyDraftStep,
@@ -163,6 +165,52 @@ test('removal deletes image payload and marks every shared reference removed', (
   ]);
   expect(JSON.stringify(result.value)).not.toContain(originalPixels);
   expect(validateJourneyDraft(result.value.draft).ok).toBe(true);
+});
+
+test('removing a screenshot whose capture URL was redacted drops only that redaction flag', () => {
+  let state: JourneySession = reviewingSession();
+  for (const [stepId, url] of [['step-click', 'capture'], ['step-navigation', 'source']] as const) {
+    if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+    const next = redactJourneyUrl(state, {
+      epoch: 3, journeyId: 'journey-1', revision: state.draft.revision, updatedAt: '2026-09-20T12:05:30.000Z', stepId, url,
+    });
+    expect(next).not.toBe(state);
+    state = next;
+  }
+  if (state.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(state.draft.images['image-shared'].captureUrl).toBe('[redacted]');
+
+  const result = applyJourneyImageReview(state, {
+    operation: 'remove', epoch: 3, journeyId: 'journey-1', revision: state.draft.revision,
+    imageId: 'image-shared', updatedAt,
+  });
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  expect(result.value.draft.steps.map(step => step.image)).toEqual([{ status: 'removed' }, { status: 'removed' }]);
+  expect(result.value.draft.images).toEqual({});
+  expect(result.value.draft.redactions).toEqual({ steps: { 'step-navigation': { sourceUrl: true } } });
+  expect(validateJourneyDraft(result.value.draft).ok).toBe(true);
+});
+
+test('removing either step of a shared click and navigation result keeps the other step valid', () => {
+  const guards = { epoch: 3, journeyId: 'journey-1', revision: 0, updatedAt };
+  const withoutClick = removeJourneyStep(reviewingSession(), { ...guards, stepId: 'step-click' });
+  if (withoutClick.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(withoutClick.draft.revision).toBe(1);
+  expect(withoutClick.draft.steps).toEqual([expect.objectContaining({
+    id: 'step-navigation',
+    navigation: { toUrl: 'https://example.com/next?item=1#done' },
+    image: { status: 'retained', imageId: 'image-shared' },
+  })]);
+  expect(Object.keys(withoutClick.draft.images)).toEqual(['image-shared']);
+  expect(validateJourneyDraft(withoutClick.draft).ok).toBe(true);
+
+  const withoutNavigation = removeJourneyStep(reviewingSession(), { ...guards, stepId: 'step-navigation' });
+  if (withoutNavigation.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(withoutNavigation.draft.steps).toEqual([expect.objectContaining({
+    id: 'step-click', image: { status: 'retained', imageId: 'image-shared' },
+  })]);
+  expect(validateJourneyDraft(withoutNavigation.draft).ok).toBe(true);
 });
 
 test('stale identity, non-review phases, missing images, unsafe revisions, and expiry are rejected without mutation', () => {
