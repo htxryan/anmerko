@@ -37,6 +37,8 @@ Object.assign(globalThis, { chrome: {
   runtime: {
     id: 'test-extension', getURL: (path: string) => `${location.origin}/${path}`,
     getManifest: () => ({ sidebar_action: {}, side_panel: { default_path: 'sidebar.html' } }),
+    // The sidebar recognises Firefox by its runtime, as it docks from the toolbar there.
+    getBrowserInfo: async () => ({ name: 'Firefox' }),
     onMessage: runtimeMessages,
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
