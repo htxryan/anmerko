@@ -619,6 +619,19 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
   await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
   await dockClick('.journey-container .journey-primary');
   await driver.wait(async () => /Recording journey/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+  // The polite live region empties a few seconds after it announces, so record
+  // each announcement from before the reload instead of reading it afterwards.
+  await docked(`
+    const announced = [];
+    let last = root.querySelector('.journey-live [aria-live="polite"]')?.textContent ?? '';
+    window.anmerkoPoliteAnnouncements = announced;
+    new MutationObserver(() => {
+      const text = root.querySelector('.journey-live [aria-live="polite"]')?.textContent ?? '';
+      if (text === last) return;
+      last = text;
+      if (text) announced.push(text);
+    }).observe(root, { childList: true, characterData: true, subtree: true });
+  `);
   // Firefox ties activeTab to the document: the reload keeps the origin but withdraws access.
   await driver.navigate().refresh();
   await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'the reload ends recording in review');
@@ -627,14 +640,14 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
     const notice = container.querySelector('.journey-stop-reason');
     return {
       notice: notice?.textContent, styled: notice?.classList.contains('journey-notice'),
-      announced: container.querySelector('.journey-live [aria-live="polite"]')?.textContent,
+      announced: [...window.anmerkoPoliteAnnouncements],
       steps: [...container.querySelectorAll('.journey-steps > li')].map(step => ({
         heading: step.querySelector('h2')?.textContent, text: step.innerText,
       })),
     };
   `);
   assert.equal(review.styled, true);
-  assert.equal(review.announced, review.notice, 'the stop reason is announced once through the persistent live region');
+  assert.deepEqual(review.announced, [review.notice], 'the stop reason is announced once through the polite live region');
   assert.match(review.notice, /^Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page\. Firefox does this on every page load/);
   assert.deepEqual(review.steps.map(step => step.heading), ['Step 1 · Initial view', 'Step 2 · Navigation']);
   assert.match(review.steps[1].text, new RegExp(`Destination URL\\s+${origin.replace(/[.]/g, '\\.')}/`));
