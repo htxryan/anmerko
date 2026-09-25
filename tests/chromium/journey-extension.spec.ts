@@ -975,6 +975,66 @@ test('masked and removed screenshots persist through save, reopen, and export', 
   expect(archive.pixels).toEqual(patternedPixels([first, second]));
 });
 
+test('a save and a screenshot review never overlap, so a racing save cannot drop a mask', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const imageId = state.draft.steps[0].image.imageId;
+  const original = state.draft.images[imageId].dataUrl;
+  const rect = { x: 0, y: 0, width: 3, height: 2 };
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+  });
+  const race = (first: unknown, second: unknown, sender: Sender) => page.evaluate(({ first, second, sender }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    return Promise.all([harness.dispatch(first, sender), harness.dispatch(second, sender)]);
+  }, { first, second, sender });
+  const save = { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true };
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state), updatedAt: new Date().toISOString(),
+    expected: 'Card details stay private.', actual: 'The card number was visible.',
+  })).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+
+  // A save already in flight turns away a screenshot change instead of saving over it.
+  const [saved, refusedMask] = await race(save, {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId,
+    dataUrl: await maskedPng(page, original, rect),
+  }, sidebar);
+  expect(saved).toMatchObject({ ok: true });
+  expect(refusedMask).toEqual(staleReview);
+  let snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
+  expect(snapshot.images[imageId].redacted).toBeUndefined();
+  expect(await dataUrlPixels(page, snapshot.images[imageId].dataUrl)).toEqual(patternedPixels([]));
+
+  await page.evaluate(() => {
+    (globalThis as HarnessWindow).harness.tabs[80] = {
+      id: 80, windowId: 7, active: true, url: 'chrome-extension://test-extension/journey.html',
+    };
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REOPEN', journeyId: saved.value.journeyId }, reviewPage))
+    .toMatchObject({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
+
+  // A screenshot change in flight turns away the save until its pixels land.
+  const [masked, refusedSave] = await race({
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId,
+    dataUrl: await maskedPng(page, state.draft.images[imageId].dataUrl, rect),
+  }, save, reviewPage);
+  expect(masked).toEqual({ ok: true });
+  expect(refusedSave).toEqual(staleReview);
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
+  expect(state.phase).toBe('reviewing');
+  expect(state.draft.images[imageId].redacted).toBe(true);
+  snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
+  expect(snapshot.draft.revision).toBe(saved.value.revision);
+  expect(snapshot.images[imageId].redacted).toBeUndefined();
+
+  const resaved = await dispatch(page, save, reviewPage);
+  expect(resaved.value.revision).toBeGreaterThan(saved.value.revision);
+  snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
+  expect(snapshot.images[imageId].redacted).toBe(true);
+  expect(await dataUrlPixels(page, snapshot.images[imageId].dataUrl)).toEqual(patternedPixels([rect]));
+});
+
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands

@@ -166,6 +166,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let latestCaptureId: string | undefined;
   let activeNormalizations = 0;
   let queuedNormalizations = 0;
+  // A save and a screenshot review never overlap: the save would otherwise
+  // store the pixels a mask is about to cover and then report success.
+  let imageReviewsInFlight = 0;
+  let savesInFlight = 0;
   let normalizationTurn: Promise<void> = Promise.resolve();
   let releaseNormalizationTurn: () => void = () => {};
   type PendingWakeEvent = {
@@ -1061,26 +1065,32 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || (message.operation !== 'remove' && (message.operation !== 'replace' || typeof message.dataUrl !== 'string'))) {
         throw new Error(GENERIC_ERROR);
       }
+      if (savesInFlight > 0) throw new JourneyCommandError('stale-review');
       const guard = { epoch: message.epoch, journeyId: message.journeyId, revision: message.revision, imageId: message.imageId };
-      if (message.operation === 'remove') {
-        await withPersistedState(controller.reviewImage({ operation: 'remove', ...guard }));
-        return;
-      }
-      const stillCurrent = () => {
-        const current = controller.getState();
-        return current.phase === 'reviewing' && current.epoch === guard.epoch
-          && current.journeyId === guard.journeyId && current.draft.revision === guard.revision;
-      };
-      // Fail fast before decoding; the controller re-checks the guards when it applies the image.
-      if (!stillCurrent()) throw new JourneyCommandError('stale-review');
-      let image: NormalizedJourneyPng;
-      try { image = await reviewedReplacement(message.dataUrl as string, stillCurrent); }
-      catch (error) {
+      imageReviewsInFlight += 1;
+      try {
+        if (message.operation === 'remove') {
+          await withPersistedState(controller.reviewImage({ operation: 'remove', ...guard }));
+          return;
+        }
+        const stillCurrent = () => {
+          const current = controller.getState();
+          return current.phase === 'reviewing' && current.epoch === guard.epoch
+            && current.journeyId === guard.journeyId && current.draft.revision === guard.revision;
+        };
+        // Fail fast before decoding; the controller re-checks the guards when it applies the image.
         if (!stillCurrent()) throw new JourneyCommandError('stale-review');
-        throw error;
+        let image: NormalizedJourneyPng;
+        try { image = await reviewedReplacement(message.dataUrl as string, stillCurrent); }
+        catch (error) {
+          if (!stillCurrent()) throw new JourneyCommandError('stale-review');
+          throw error;
+        }
+        await withPersistedState(controller.reviewImage({ operation: 'replace', ...guard, image }));
+        return;
+      } finally {
+        imageReviewsInFlight -= 1;
       }
-      await withPersistedState(controller.reviewImage({ operation: 'replace', ...guard, image }));
-      return;
     }
     if (message.type === 'ANMERKO_JOURNEY_LIST') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
@@ -1135,10 +1145,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
     if (message.type === 'ANMERKO_JOURNEY_SAVE') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+      // Another review surface is still masking or removing a screenshot.
+      if (imageReviewsInFlight > 0) throw new JourneyCommandError('stale-review');
       let saved: { journeyId: string; revision: number } | undefined;
-      await withPersistedState(controller.save(message.acknowledged).then(result => {
-        saved = result;
-      }));
+      savesInFlight += 1;
+      try {
+        await withPersistedState(controller.save(message.acknowledged).then(result => {
+          saved = result;
+        }));
+      } finally {
+        savesInFlight -= 1;
+      }
       return saved;
     }
     throw new Error(GENERIC_ERROR);
