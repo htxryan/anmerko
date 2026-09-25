@@ -5,7 +5,7 @@ description: Fix page access, missing comments, and save or export problems.
 
 ## anmerko will not open
 
-Use Chrome, Edge, or Firefox on desktop, or Edge or Firefox for Android, on an HTTP(S) website. Settings, extension stores, and built-in PDF viewers are protected. After updating or reloading anmerko, refresh the website and activate it from your browser's Extensions menu.
+Use Chrome, Edge, or Firefox on desktop, or Edge or Firefox for Android, on an HTTP(S) website. Settings, extension stores, and built-in PDF viewers are protected. After updating or reloading anmerko, refresh the website and activate it from your browser's Extensions menu. If Chrome or Edge turned anmerko off after an update, open the browser's Extensions page and accept the new permission to turn it back on.
 
 ## Comments are missing
 

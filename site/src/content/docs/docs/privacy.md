@@ -11,7 +11,7 @@ anmerko stores comments, page titles/full URLs, selected element context and sel
 
 Element capture excludes form values and editable text. Other captured text and URLs may still be private; screenshots include all visible pixels within the crop, including form contents. Review exports before sharing.
 
-A journey records only after you choose **Start journey**, only in that tab, and only until it stops. It records clicks with target context, same-origin page URLs, a screenshot per step, your expected and actual results, and — only when you turn on **Include entered values** for that journey — finished field changes, never keystrokes. Password, payment, one-time code, and suspected secret fields are always skipped. Screenshots and full URLs can still show visible values, so before saving you can mask or remove any screenshot, redact any URL, and edit or clear any entered value. Masks flatten pixels irreversibly; redacted and edited text leaves the journey entirely.
+A journey records only after you choose **Start journey**, only in that tab, and only until it stops. It records clicks with target context, same-origin page URLs, a screenshot per step, your expected and actual results, and — only when you turn on **Include entered values** for that journey — finished field changes, never keystrokes. Password inputs are always skipped, as are fields whose autocomplete, name, or ID marks them as payment, one-time code, or other secret fields; other fields are recorded even when they hold private data. Screenshots and full URLs can still show visible values, so before saving you can mask or remove any screenshot, redact any URL, and edit or clear any entered value. Masks flatten pixels irreversibly; redacted and edited text leaves the journey entirely.
 
 An unsaved journey is held in the browser's session storage. It is cleared when you discard it, when the browser closes, or 30 minutes after its review opens. Saved journeys stay in the browser profile until you delete them or remove the extension; deleting a journey removes its steps and screenshots.
 
@@ -53,4 +53,4 @@ Selection reaches the top document and open shadow roots, not iframes, closed sh
 
 Help pages and the demo load from Cloudflare. These pages add no analytics, tracking scripts, cookies, or forms; the extension sends them no feedback.
 
-The demo keeps comments/settings in memory, isolated from extension data. Close/reopen retains them; reload/navigation clears them. Copying requires your action. Screenshots and component-context capture require the extension.
+The demo keeps comments/settings in memory, isolated from extension data. Close/reopen retains them; reload/navigation clears them. Copying requires your action. Screenshots, journeys, and component-context capture require the extension.

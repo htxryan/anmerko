@@ -35,7 +35,7 @@ Choose **Record journey** from **More Comment Options** on a website. No permiss
 
 Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar.
 
-**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. It always skips password, payment, one-time code, and other secret fields. Screenshots and full URLs can still show values either way; review everything before sharing.
+**Include entered values** is off each time you open a journey, even if the last one used it. When on, anmerko records a field's value once you finish changing it — never keystrokes — for text boxes, menus, checkboxes, and radio buttons. Password inputs are always skipped, as are fields whose autocomplete, name, or ID marks them as payment, one-time code, or other secret fields. Other fields are recorded even when they hold private data, and screenshots and full URLs can still show values either way; review everything before sharing.
 
 ### When recording ends
 
@@ -47,20 +47,20 @@ A journey records one tab on the website address where it started: the same doma
 - Going to a different domain, subdomain, or port, or switching between `http` and `https`, ends the journey. The click that left is recorded; the new page is not.
 - Switching to another tab, window, or app, closing the tab, or opening a browser page also ends it.
 
-Steps recorded before the stop are kept, and review explains why recording ended. Review appears in the sidebar or journey tab where you started; clicking anmerko in the toolbar also opens it. Save or discard the review before you record again, then activate anmerko from the toolbar on the page you want to record.
+Steps recorded before the stop are kept, and review explains why recording ended. Review appears in the sidebar or journey tab where you started; clicking anmerko in the toolbar opens it in a journey tab. Save or discard the review before you record again, then activate anmerko from the toolbar on the page you want to record.
 
 ## Review a journey
 
 Enter an **Expected result** and an **Actual result**, up to 4,000 characters each. Each step shows its action, time since the start, full URLs, and its screenshot or why it has none.
 
-- **Remove step** asks for confirmation. Other steps keep their numbers, and the last step cannot be removed.
+- **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step.
 - **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider.
 - **Redact** replaces a source, destination, or screenshot URL with `[redacted]`, and a note names what was redacted.
 - **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
 
-To save, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.
+To save, enter both results, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.
 
-A review lasts 30 minutes from when it opens; anmerko then discards unsaved changes, and a reopened journey keeps its saved copy. Two minutes before, the anmerko toolbar button shows **!**. Closing the browser also discards unsaved journeys.
+A review lasts 30 minutes from when it opens; anmerko then discards unsaved changes, and a reopened journey keeps its saved copy. Two minutes before, anmerko's toolbar button shows **!** on the recorded tab. Closing the browser also discards unsaved journeys.
 
 After saving, choose **Copy Prompt**, **Download Markdown + Images**, or **Record another journey** (**Done** in a journey tab).
 
