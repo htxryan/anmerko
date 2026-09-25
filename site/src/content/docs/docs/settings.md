@@ -7,7 +7,7 @@ Open the gear button in the panel header. Saved settings apply across tabs in th
 
 ## Appearance
 
-Choose **Light** (default) or **Dark** for anmerko's panels.
+Choose **Light** (default) or **Dark** for anmerko's panels and journey tabs.
 
 ![Current anmerko settings beside Salad Recipe Finder](/screenshots/05-settings.png)
 

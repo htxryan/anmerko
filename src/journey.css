@@ -35,7 +35,8 @@
 .journey-textarea:disabled { opacity:.55; }
 .journey-count { font-size:12px; margin-top:4px!important; }
 .journey-step-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-.journey-danger { color:#fff; background:var(--danger,#b1443f); border:1px solid var(--danger,#b1443f); }
+/* The panel's destructive fill: white text stays above 6:1 in both themes. */
+.journey-danger { color:#fff; background:#b42318; border:1px solid #b42318; }
 .journey-save { margin:24px 0; padding-top:16px; border-top:1px solid var(--border,#dce1ec); }
 .journey-reasons { margin:0 0 12px; padding-left:20px; color:var(--danger,#b1443f); }
 .journey-entered-value { margin-top:12px; padding:12px; border:1px solid var(--border,#dce1ec); border-radius:8px; overflow-wrap:anywhere; }
@@ -63,7 +64,10 @@
 .journey-status { margin-top:12px!important; color:var(--success,#2f6b4f); }
 @media(max-width:420px) { .journey-view { padding:16px; } .journey-view h1 { font-size:22px; } }
 @media(max-width:260px) { .journey-view { padding:16px 12px; } .journey-view button { padding-inline:12px; } }
-/* The journey tab: Firefox for Android lays the page out taller than its
-   visible area under the dynamic toolbar, so the last control needs room. */
-.journey-page { margin:0; background:var(--surface,#fff); }
+/* The journey tab has no panel around it, so it carries the panel's colors
+   (panel.css .app) and follows the same Appearance setting: light unless Dark
+   is chosen. Firefox for Android lays the page out taller than its visible
+   area under the dynamic toolbar, so the last control needs room. */
+.journey-page { margin:0; background:var(--surface); color-scheme:light; --text:#202b41; --muted:#647188; --surface:#ffffff; --border:#dce1ec; --accent:#345ee9; --primary:#345ee9; --accent-soft:#eef2ff; --badge:#edf0f6; --danger:#b1443f; --danger-bg:#fff2f0; --success:#557760; }
+.journey-page[data-theme="dark"] { color-scheme:dark; --text:#e6eaf3; --muted:#acb8ce; --surface:#1c2535; --border:#354156; --accent:#a6baff; --primary:#4266d9; --accent-soft:#243759; --badge:#2b374b; --danger:#ffaaa5; --danger-bg:#442c32; --success:#a6dbb9; }
 .journey-page .journey-view { padding-bottom:max(env(safe-area-inset-bottom, 0px), 96px); }
