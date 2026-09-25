@@ -360,6 +360,14 @@ const bundle = () => buildSync({ stdin: { contents: `
       state = { phase: 'saved', epoch: state.epoch + 1, journeyId: state.draft.id, revision: state.draft.revision + 1 };
       changed();
     },
+    removeImage: imageId => {
+      const draft = state.draft;
+      const images = { ...draft.images };
+      delete images[imageId];
+      state = { ...state, draft: { ...draft, images, revision: draft.revision + 1,
+        steps: draft.steps.map(step => step.image.status === 'retained' && step.image.imageId === imageId ? { ...step, image: { status: 'removed' } } : step) } };
+      changed();
+    },
     setIdle: () => {
       summaryError = null; removeError = null; saveError = null;
       openSnapshotError = null; reopenError = null; stayInReview = false;
@@ -491,6 +499,8 @@ test('screenshot masking opens from the keyboard, applies through the client, an
   const mask = page.getByRole('button', { name: 'Mask screenshot for step 1', exact: true });
   await expect(mask).toHaveAccessibleDescription(IMAGE_HELP);
   await page.getByLabel('Actual result').focus();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'View full-size screenshot for step 1', exact: true })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(mask).toBeFocused();
 
@@ -1833,6 +1843,74 @@ test('the only remaining step explains why it cannot be removed', async ({ page 
   await expect(page.getByRole('heading', { name: /^Step 2 / })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^Remove step/ })).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('a landscape capture in a narrow column opens at full size in a private, keyboard-operable dialog', async ({ page }) => {
+  for (const width of [360, 390, 1280]) {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto('http://127.0.0.1:4173');
+    await page.setContent('<!doctype html><html><body></body></html>');
+    await page.evaluate(() => {
+      (window as any).objectUrls = 0;
+      const create = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (object: Blob | MediaSource) => { (window as any).objectUrls += 1; return create(object); };
+    });
+    await page.addScriptTag({ content: bundle() });
+    await page.evaluate('journeyReviewHarness.setReviewingWithSizedImages()');
+    const inline = (await page.locator('.journey-image').nth(1).boundingBox())!;
+    const open = page.getByRole('button', { name: 'View full-size screenshot for step 2', exact: true });
+    await open.click();
+    const dialog = page.getByRole('dialog', { name: 'Screenshot for step 2' });
+    await expect(dialog).toBeVisible();
+    const scroller = dialog.getByRole('group', { name: 'Screenshot for step 2, 1280 by 720 pixels' });
+    await expect(scroller).toBeFocused();
+    const image = dialog.locator('anmerko-image');
+    const full = (await image.boundingBox())!;
+    expect(full.width, `${width}px`).toBe(1280);
+    expect(full.height, `${width}px`).toBe(720);
+    expect(full.width, `${width}px`).toBeGreaterThan(inline.width);
+    // The dialog fills the screen without widening the page.
+    const box = (await dialog.boundingBox())!;
+    expect(box.width, `${width}px`).toBe(await page.evaluate(() => document.documentElement.clientWidth));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    if (width < 1280) {
+      await page.keyboard.press('ArrowRight');
+      await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+    }
+    const fit = dialog.getByRole('button', { name: 'Fit to window', exact: true });
+    await fit.click();
+    const fitted = (await image.boundingBox())!;
+    expect(fitted.width, `${width}px`).toBeLessThanOrEqual(width);
+    await expect(dialog.getByRole('button', { name: 'Actual size', exact: true })).toBeFocused();
+    // Tab stays inside the dialog.
+    for (let index = 0; index < 4; index += 1) {
+      await page.keyboard.press('Tab');
+      expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
+    }
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(open).toBeFocused();
+    // No page-readable image or URL: pixels stay in closed shadow roots.
+    expect(await page.evaluate(() => [document.querySelectorAll('img').length, (window as any).objectUrls])).toEqual([0, 0]);
+  }
+});
+
+test('the full-size view closes when another surface removes its screenshot and Close returns focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await openReview(page);
+  await page.evaluate('journeyReviewHarness.setReviewingWithSizedImages()');
+  const open = page.getByRole('button', { name: 'View full-size screenshot for step 1', exact: true });
+  await open.click();
+  const dialog = page.getByRole('dialog', { name: 'Screenshot for step 1' });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(open).toBeFocused();
+  await open.click();
+  await expect(dialog).toBeVisible();
+  await page.evaluate("journeyReviewHarness.removeImage('I1')");
+  await expect(dialog).toHaveCount(0);
+  await expect(stepItem(page, 1).getByText('Screenshot unavailable: removed during review.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^Step 1 / })).toBeFocused();
 });
 
 test('a portrait screenshot that already fits whole offers no Enlarge', async ({ page }) => {

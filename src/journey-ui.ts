@@ -3,7 +3,7 @@ import type { NormalizedJourneyPng } from './journey-image';
 import { JOURNEY_LIMITS, type CaptureFailure, type StopReason } from './journey-limits';
 import { downloadFile, feedbackArchive } from './export';
 import { journeyDraftToManifest, journeyPromptSection } from './journey-export';
-import { reviewJourneyImage } from './journey-image-review';
+import { reviewJourneyImage, viewJourneyImage } from './journey-image-review';
 import { privateImage } from './screenshot';
 
 // maskedFrom is the screenshot the mask was drawn on, so a replacement never
@@ -176,9 +176,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   // error text that each launch re-render rebuilds beside Start.
   const startAlert = node('p');
   startAlert.setAttribute('role', 'alert');
-  // The mask dialog lives beside the view so review re-renders never remove it.
+  // The mask and full-size dialogs live beside the view so review re-renders never remove them.
   const imageDialog = node('div', undefined, 'journey-image-dialog');
-  root.append(view, live, imageDialog);
+  const viewerDialog = node('div', undefined, 'journey-image-dialog');
+  root.append(view, live, imageDialog, viewerDialog);
   let state: JourneySession = { phase: 'idle', epoch: 0 };
   let busy = false;
   let alive = true;
@@ -233,6 +234,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let exportStatus = '';
   let exportStatusFor: string | null = null;
   let imageEditor: { journeyId: string; imageId: string; abort: AbortController } | null = null;
+  let imageViewer: { journeyId: string; imageId: string; dataUrl: string; returnTo: string[]; abort: AbortController } | null = null;
   let imageBusy: string | null = null;
   let confirmingImageRemove: string | null = null;
   // Focus targets, in order, for a change that removes or disables the
@@ -336,6 +338,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         && step.image.imageId === imageId) === true;
       const editor = imageEditor;
       if (editor && (reviewDraft?.id !== editor.journeyId || !retained(editor.imageId))) editor.abort.abort();
+      // The full-size view closes once its pixels are no longer the retained screenshot.
+      const viewer = imageViewer;
+      if (viewer && (reviewDraft?.id !== viewer.journeyId || !retained(viewer.imageId)
+        || reviewDraft?.images[viewer.imageId]?.dataUrl !== viewer.dataUrl)) {
+        // Its opener may be re-rendered away; focus follows once the view settles.
+        pendingFocus = viewer.returnTo;
+        viewer.abort.abort();
+      }
       if (next.phase !== 'idle') {
         confirmingDelete = null;
         deletingJourney = null;
@@ -741,10 +751,25 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       : { operation: 'remove' }, returnTo, subject);
   }
 
+  // The full-size view is modal; it closes itself if another surface changes
+  // or removes the screenshot, and focus returns to the control that opened it.
+  async function openImageViewer(step: { id: string; seq: number }, imageId: string, image: JourneyDraftImage & { dataUrl: string }): Promise<void> {
+    if (imageViewer || imageEditor || state.phase !== 'reviewing') return;
+    const abort = new AbortController();
+    const returnTo = [`view-image-${step.id}`, `step-${step.id}`];
+    imageViewer = { journeyId: state.draft.id, imageId, dataUrl: image.dataUrl, returnTo, abort };
+    await viewJourneyImage(viewerDialog, {
+      dataUrl: image.dataUrl, width: image.width, height: image.height, label: `Screenshot for step ${step.seq}`,
+    }, abort.signal);
+    if (imageViewer?.abort === abort) imageViewer = null;
+    if (alive && focusLost()) focusControl(...returnTo);
+  }
+
   // The preview keeps the capture's aspect ratio and fits a bounded height, so
   // reviewers always see the whole image they will share. Tall captures can
-  // switch to the full column width to read small text.
-  function renderPreview(step: { id: string; seq: number }, image: JourneyDraftImage & { dataUrl: string }): HTMLElement[] {
+  // switch to the full column width, and any capture opens at full size, to
+  // read small text in a narrow sidebar or on a phone.
+  function renderPreview(step: { id: string; seq: number }, imageId: string, image: JourneyDraftImage & { dataUrl: string }): HTMLElement[] {
     const preview = privateImage(image.dataUrl, `Screenshot for step ${step.seq}`);
     preview.className = 'journey-image';
     const width = image.width > 0 ? image.width : 16;
@@ -754,17 +779,25 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     preview.style.width = enlarged
       ? `min(100%, ${width}px)`
       : `min(100%, ${Math.round(IMAGE_FIT_HEIGHT * width / height * 100) / 100}px)`;
+    const controls = node('div', undefined, 'journey-image-controls');
     // A capture that already fits at full size has nothing to enlarge.
-    if (height <= width || height <= IMAGE_FIT_HEIGHT) return [preview];
-    const size = node('button', `${enlarged ? 'Fit' : 'Enlarge'} screenshot for step ${step.seq}`, 'journey-secondary journey-image-size');
-    size.type = 'button';
-    size.setAttribute('data-focus-id', `size-image-${step.id}`);
-    size.addEventListener('click', () => {
-      if (enlargedImages.has(step.id)) enlargedImages.delete(step.id);
-      else enlargedImages.add(step.id);
-      render();
-    });
-    return [preview, size];
+    if (height > width && height > IMAGE_FIT_HEIGHT) {
+      const size = node('button', `${enlarged ? 'Fit' : 'Enlarge'} screenshot for step ${step.seq}`, 'journey-secondary');
+      size.type = 'button';
+      size.setAttribute('data-focus-id', `size-image-${step.id}`);
+      size.addEventListener('click', () => {
+        if (enlargedImages.has(step.id)) enlargedImages.delete(step.id);
+        else enlargedImages.add(step.id);
+        render();
+      });
+      controls.append(size);
+    }
+    const full = node('button', `View full-size screenshot for step ${step.seq}`, 'journey-secondary');
+    full.type = 'button';
+    full.setAttribute('data-focus-id', `view-image-${step.id}`);
+    full.addEventListener('click', () => { void openImageViewer(step, imageId, image); });
+    controls.append(full);
+    return [preview, controls];
   }
 
   function renderImageReview(
@@ -1526,7 +1559,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (image) {
         item.append(...renderUrl(step, 'Screenshot URL', image.captureUrl, 'capture'));
         item.append(node('p', `Captured ${image.capturedAt}`, 'journey-time'));
-        if (image.dataUrl) item.append(...renderPreview(step, image as JourneyDraftImage & { dataUrl: string }));
+        if (image.dataUrl) item.append(...renderPreview(step, step.image.imageId, image as JourneyDraftImage & { dataUrl: string }));
         item.append(renderImageReview(step, step.image.imageId, image, sharedSteps.get(step.image.imageId) ?? []));
       }
     } else {
@@ -1712,6 +1745,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     if (pressTimer !== undefined) clearTimeout(pressTimer);
     imageEditor?.abort.abort();
+    imageViewer?.abort.abort();
     document.removeEventListener('visibilitychange', reactivated);
     window.removeEventListener('focus', refocused);
     root.removeEventListener('pointerdown', pressStarted, true);
@@ -1721,6 +1755,6 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     window.removeEventListener('keyup', pressReleased, true);
     window.removeEventListener('pointercancel', endPress, true);
     window.removeEventListener('blur', endPress);
-    unsubscribe(); view.remove(); live.remove(); imageDialog.remove();
+    unsubscribe(); view.remove(); live.remove(); imageDialog.remove(); viewerDialog.remove();
   };
 }

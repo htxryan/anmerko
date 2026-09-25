@@ -26,7 +26,7 @@
 .journey-url { font:12px/1.5 ui-monospace,monospace; white-space:pre-wrap; word-break:break-word; }
 /* Width and aspect ratio are set per capture, so the whole screenshot shows. */
 .journey-image { display:block; max-width:100%; margin-top:8px; overflow:hidden; background:var(--badge,#edf0f6); border:1px solid var(--border,#dce1ec); border-radius:8px; }
-.journey-image-size { margin-top:8px; }
+.journey-image-controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
 .journey-error { margin-top:16px!important; color:var(--danger,#b1443f); }
 .journey-summary { margin:20px 0; }
 .journey-field { margin:0 0 16px; }
