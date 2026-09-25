@@ -595,6 +595,34 @@ test('removing a step drops its redaction flags and keeps the flags of remaining
   expect(cleared.draft).not.toHaveProperty('redactions');
 });
 
+test('draft validation checks screenshot bytes even when the capture URL was redacted', () => {
+  const reviewing = reviewingSession();
+  const redacted = redactJourneyUrl(reviewing, { ...reviewGuards(reviewing), stepId: 'step-initial', url: 'capture' });
+  if (redacted.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(redacted.draft.images['image-initial'].captureUrl).toBe('[redacted]');
+  expect(validateJourneyDraft(redacted.draft).ok).toBe(true);
+
+  const mismatched = structuredClone(redacted.draft);
+  mismatched.images['image-initial'].dataUrl = fixturePngDataUrl(MINIMAL_PNG_BYTES + 3);
+  expect(validateJourneyDraft(mismatched)).toEqual({
+    ok: false, errors: ['journey.images.image-initial.dataUrl does not match byteLength'],
+  });
+  const foreign = structuredClone(redacted.draft);
+  foreign.images['image-initial'].dataUrl = 'data:image/jpeg;base64,AAAA';
+  expect(validateJourneyDraft(foreign)).toEqual({
+    ok: false, errors: ['journey.images.image-initial.dataUrl must be a PNG data URL'],
+  });
+  const malformed = structuredClone(redacted.draft) as unknown as { images: Record<string, Record<string, unknown>> };
+  malformed.images['image-initial'].dataUrl = 42;
+  malformed.images['image-initial'].redacted = 'yes';
+  expect(validateJourneyDraft(malformed)).toEqual({
+    ok: false, errors: [
+      'journey.images.image-initial.dataUrl metadata is invalid',
+      'journey.images.image-initial.redacted must be a boolean',
+    ],
+  });
+});
+
 test('save gating requires summaries, a retained step, and a valid draft', () => {
   const reviewing = reviewingSession();
   expect(reviewSaveGating(reviewing)).toEqual({ ready: false, reasons: ['summaries-required'] });

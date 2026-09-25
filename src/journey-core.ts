@@ -481,11 +481,13 @@ function validateImage(value: unknown, path: string, errors: string[], reviewed:
   if (reviewed) {
     validateReviewedText(value.captureUrl, `${path}.captureUrl`, errors, true);
     if (typeof value.redacted !== 'boolean') errors.push(`${path}.redacted must be a boolean`);
-  } else if (value.captureUrl === JOURNEY_REDACTED_URL) {
-    // Redacted during review; the redactions map records the marker.
   } else {
-    const sanitized = validateUrl(value.captureUrl, `${path}.captureUrl`, errors);
-    if (sanitized !== undefined) value.captureUrl = sanitized;
+    // A capture URL redacted during review keeps only the marker; the
+    // redactions map records it. The pixels are checked either way.
+    if (value.captureUrl !== JOURNEY_REDACTED_URL) {
+      const sanitized = validateUrl(value.captureUrl, `${path}.captureUrl`, errors);
+      if (sanitized !== undefined) value.captureUrl = sanitized;
+    }
     if (value.dataUrl !== undefined) {
       if (typeof value.dataUrl !== 'string' || typeof value.byteLength !== 'number'
         || typeof value.width !== 'number' || typeof value.height !== 'number') errors.push(`${path}.dataUrl metadata is invalid`);
