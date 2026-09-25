@@ -59,7 +59,7 @@ test('rejects marker, instance and ancestry accessors without invoking them', as
     const instance = (element as any).__vueParentComponent;
     Object.defineProperty(instance, 'parent', { configurable: true, get() { throw new Error('parent secret'); } });
   });
-  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.not.toThrow('parent secret');
 });
 
@@ -83,7 +83,7 @@ test('fails closed for a cycle, unmounted instance, and unusable direct name', a
   await page.locator('#vue-options-button').evaluate(element => {
     Object.defineProperty((element as any).__vueParentComponent, 'isUnmounted', { configurable: true, value: 'false' });
   });
-  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   await page.locator('#vue-options-button').evaluate(element => {
     Object.defineProperty((element as any).__vueParentComponent, 'isUnmounted', { configurable: true, value: true });
   });
@@ -93,7 +93,7 @@ test('fails closed for a cycle, unmounted instance, and unusable direct name', a
     Object.defineProperty(instance, 'isUnmounted', { configurable: true, value: false });
     Object.defineProperty(instance, 'parent', { configurable: true, value: instance });
   });
-  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('accepts the canonical tag-name grammar', async ({ page }) => {
@@ -132,7 +132,7 @@ test('enforces the clock during final serialization', async ({ page }) => {
       return serialized;
     } });
   });
-  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('bounds raw names, ancestry, and final UTF-8 serialization', async ({ page }) => {
@@ -181,5 +181,5 @@ test('keeps the nearest eight names and rejects more than 64 instance links', as
       configurable: true, value: (window as any).__makeVueChain(65),
     });
   });
-  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(vueComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });

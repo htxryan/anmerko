@@ -169,6 +169,8 @@ export function reactComponentContextProbe(target: ComponentContextProbeTarget):
     checkClock();
     return serialized;
   } catch {
-    throw new Error(failureToken);
+    // Chrome reports a thrown injected function as a null result, which
+    // reads as "no component". Return the token so failure stays explicit.
+    return failureToken;
   }
 }

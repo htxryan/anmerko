@@ -5,10 +5,12 @@ import { expect, type BrowserContext, type Page } from '@playwright/test';
 export async function sidebar(context: BrowserContext, page: Page) {
   const cdp = await context.newCDPSession(page);
   let targetId = '';
+  // Hosted macOS runners can take several seconds to open and connect a native panel.
+  const opening = { timeout: 15_000 };
   await expect.poll(async () => {
     targetId = (await cdp.send('Target.getTargets')).targetInfos.find(t => t.url.endsWith('/sidebar.html'))?.targetId || '';
     return targetId;
-  }).not.toBe('');
+  }, opening).not.toBe('');
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: false });
   let id = 0;
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -44,6 +46,6 @@ export async function sidebar(context: BrowserContext, page: Page) {
     const closesTarget = selector === '.dock' || selector === '.minimize';
     return evaluate(`const button = root.querySelector(${JSON.stringify(selector)}); if (!button) throw new Error('Sidebar button missing'); ${closesTarget ? 'setTimeout(() => button.click(), 0)' : 'button.click()'};`);
   }
-  await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden")).toBe(true);
+  await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden"), opening).toBe(true);
   return { evaluate, command, click, value: (selector: string) => evaluate(`return root.querySelector(${JSON.stringify(selector)})?.value`), close: () => cdp.send('Target.closeTarget', { targetId }) };
 }

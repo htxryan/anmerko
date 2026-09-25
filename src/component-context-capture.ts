@@ -1,4 +1,5 @@
 import { normalizeComponentContext, type ComponentContextV1 } from './component-context';
+import { COMPONENT_CONTEXT_DEADLINE_MS } from './component-context-bridge';
 import type { Runtime } from './runtime';
 
 /** One disposable lookup owned by an unsaved editor target. */
@@ -18,7 +19,7 @@ export function componentContextCapture() {
         clearTimeout(timer);
         if (stop === cancel) stop = undefined;
       };
-      const timer = setTimeout(cancel, 750);
+      const timer = setTimeout(cancel, COMPONENT_CONTEXT_DEADLINE_MS);
       stop = cancel;
       let root: Node = element.getRootNode();
       while (root instanceof ShadowRoot) {

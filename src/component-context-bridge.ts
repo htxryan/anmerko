@@ -7,7 +7,9 @@ import {
 import { selectComponentContext } from './component-context-dispatch';
 
 export const COMPONENT_CONTEXT_MESSAGE_TYPE = 'ANMERKO_COMPONENT_CONTEXT';
-export const COMPONENT_CONTEXT_DEADLINE_MS = 750;
+// Hints apply asynchronously, so a slow lookup only delays one. The first
+// lookup on a busy machine can take about a second to reach the worker.
+export const COMPONENT_CONTEXT_DEADLINE_MS = 2_000;
 export const COMPONENT_CONTEXT_PROBE_FAILURE = 'ANMERKO_COMPONENT_CONTEXT_PROBE_FAILED';
 export const COMPONENT_CONTEXT_MAX_SELECTOR_SEGMENTS = 8;
 export const COMPONENT_CONTEXT_MAX_SELECTOR_SEGMENT_LENGTH = 1_024;
@@ -52,6 +54,10 @@ const REQUEST_KEYS = ['type', 'version', 'selectorPath', 'expectedTag', 'markerN
 const MARKER_PATTERN = /^data-anmerko-context-[a-f0-9]{32}$/;
 const TAG_PATTERN = /^[a-z][a-z0-9._:-]{0,127}$/;
 const TIMED_OUT = Symbol('timed-out');
+const PROBE_FAILED = Symbol('probe-failed');
+// A probe stops at its cooperative clock cap. Compiling it on a fresh page or
+// an OS pause can cross that cap once, so failed probes rerun within the deadline.
+const PROBE_RETRIES = 2;
 const EXPECTED_FRAMEWORKS = ['react', 'vue', 'angular', 'preact'] as const;
 
 function dataProperties(value: object, expectedKeys: readonly string[]): Record<string, unknown> | undefined {
@@ -164,15 +170,15 @@ export function createComponentContextBroker(options: ComponentContextBrokerOpti
       const epoch = disabledEpoch;
       const deadline = Date.now() + deadlineMs;
       let pendingBoundary: Promise<unknown> | undefined;
-      const wait = async (factory: () => Promise<unknown>): Promise<unknown | typeof TIMED_OUT> => {
+      const wait = async (factory: () => Promise<unknown>): Promise<unknown> => {
         const remaining = deadline - Date.now();
         if (remaining <= 0) return TIMED_OUT;
         const current = Promise.resolve().then(factory);
         pendingBoundary = current;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const result = await Promise.race([
-          current.then(value => ({ value }), () => ({ value: TIMED_OUT })),
-          new Promise<{ value: typeof TIMED_OUT }>(resolve => { timer = setTimeout(() => resolve({ value: TIMED_OUT }), remaining); }),
+          current.then(value => ({ value }), () => ({ value: PROBE_FAILED })),
+          new Promise<{ value: unknown }>(resolve => { timer = setTimeout(() => resolve({ value: TIMED_OUT }), remaining); }),
         ]);
         if (timer) clearTimeout(timer);
         if (result.value !== TIMED_OUT && pendingBoundary === current) pendingBoundary = undefined;
@@ -189,8 +195,12 @@ export function createComponentContextBroker(options: ComponentContextBrokerOpti
         const { type: _type, version: _version, ...probeTarget } = normalized;
         for (let index = 0; index < options.probes.length; index++) {
           if (!await enabled()) return null;
-          const returned = await wait(() => options.runProbe(options.probes[index], probeTarget, execution));
-          if (returned === TIMED_OUT) return null;
+          const probe = () => options.runProbe(options.probes[index], probeTarget, execution);
+          let returned = await wait(probe);
+          for (let retry = 0; retry < PROBE_RETRIES && returned === PROBE_FAILED && await enabled(); retry++) {
+            returned = await wait(probe);
+          }
+          if (returned === TIMED_OUT || returned === PROBE_FAILED) return null;
           const outcome = classifyComponentContextProbeResult(returned);
           if (outcome.kind === 'indeterminate' || (outcome.kind === 'valid' && outcome.value.framework !== EXPECTED_FRAMEWORKS[index])) return null;
           outcomes.push(outcome);
@@ -220,7 +230,7 @@ export function createExtensionComponentContextProbeRunner(api: typeof chrome): 
       if (results.length !== 1 || results[0].frameId !== 0) throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE);
       // Firefox reports a thrown injected value on the result object. Never
       // inspect or forward that page-controlled value.
-      if ('error' in results[0]) throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE);
+      if ('error' in results[0] || results[0].result === COMPONENT_CONTEXT_PROBE_FAILURE) throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE);
       if (execution.documentId && results[0].documentId && results[0].documentId !== execution.documentId) {
         throw new Error(COMPONENT_CONTEXT_PROBE_FAILURE);
       }
