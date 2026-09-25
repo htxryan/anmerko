@@ -1,8 +1,11 @@
+import type { JourneySession } from './journey-core';
 import { stripUrlCredentials, type JourneyEventBatchV1 } from './journey-events';
 import { isJourneyBackgroundSender, JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { attachJourneyRecorder } from './journey-recorder';
 import { attachJourneyFields, type JourneyFieldCommit } from './journey-fields';
+import { journeysAvailable } from './journey-feature';
 import { extensionApi } from './platform';
+import type { Runtime } from './runtime';
 import { createUuid } from './uuid';
 
 type PageIdentity = {
@@ -49,14 +52,22 @@ type JourneyStrip = {
 
 type RecordingSignal = { recording: boolean; listeners: Set<(recording: boolean) => void> };
 
+type JourneyPageGlobal = typeof globalThis & { __anmerkoJourneyPage?: () => void };
+
 type Message = Record<string, unknown> & { type?: unknown };
 
 const GENERIC_ERROR = 'Journey command unavailable.';
 const CAPTURE_HIDDEN_ATTRIBUTE = 'data-anmerko-capture-hidden';
 const UI_HOST_SELECTOR = 'anmerko-overlay, anmerko-image, anmerko-journey-strip';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
-// Gap between the recording strip and the visible bottom edge.
-const STRIP_BOTTOM = 12;
+// Gap between the recording strip and the visible edge it sits on.
+const STRIP_GAP = 12;
+// Height assumed for the strip before it has laid out.
+const STRIP_HEIGHT = 58;
+// A visual viewport this much shorter than the layout viewport has an
+// on-screen keyboard over it; browser toolbars take less.
+const KEYBOARD_SHRINK = 120;
+const NON_TEXT_INPUT = /^(?:button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/;
 
 // The observer and content scripts can each bundle this module, so the signal
 // lives on the content-script global. Page scripts cannot reach that world.
@@ -83,6 +94,40 @@ export function watchJourneyPageRecording(listener: (recording: boolean) => void
   return () => { signal.listeners.delete(listener); };
 }
 
+// Failures keep the background's code, so a panel can say what to do.
+async function journeyCommand(type: string): Promise<unknown> {
+  let result;
+  try { result = await extensionApi().runtime.sendMessage({ type }); }
+  catch { throw Object.assign(new Error('Could not reach anmerko.'), { code: 'unreachable' }); }
+  if (!result?.ok) {
+    throw Object.assign(new Error(result?.error || 'Could not update the journey.'),
+      typeof result?.code === 'string' ? { code: result.code } : {});
+  }
+  return result.value;
+}
+
+const JOURNEY_PHASES = new Set<unknown>(['idle', 'starting', 'recording', 'reviewing', 'saving', 'saved'] satisfies Array<JourneySession['phase']>);
+
+// The floating panel's journey commands.
+export function pageJourneyCommands(): Pick<Runtime, 'openJourney' | 'journeyReviewPending' | 'watchJourneyRecording'> {
+  return {
+    openJourney: async () => { await journeyCommand('ANMERKO_JOURNEY_OPEN'); },
+    journeyReviewPending: async () => await journeyCommand('ANMERKO_JOURNEY_PENDING') === true,
+    watchJourneyRecording: watchJourneyPageRecording,
+  };
+}
+
+// The native side panel's journey commands beside its journey client.
+export function sidePanelJourneyCommands(): Pick<Runtime, 'journeyPhase'> {
+  return {
+    journeyPhase: async () => {
+      const phase = await journeyCommand('ANMERKO_JOURNEY_PHASE');
+      if (!JOURNEY_PHASES.has(phase)) throw new Error(GENERIC_ERROR);
+      return phase as JourneySession['phase'];
+    },
+  };
+}
+
 function success<T>(value: T) {
   return { ok: true as const, value };
 }
@@ -103,6 +148,15 @@ function validStartedAt(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
+// The focused element that takes typing, looking into open shadow roots.
+function focusedEditable(): Element | undefined {
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  if (!active) return;
+  if (active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable)) return active;
+  if (active instanceof HTMLInputElement && !NON_TEXT_INPUT.test(active.type)) return active;
+}
+
 function nextPaint(): Promise<void> {
   return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
@@ -120,24 +174,30 @@ function mountJourneyStrip(
     'z-index:2147483647!important',
     'display:block!important',
     'width:max-content!important',
+    'max-width:calc(100% - 24px)!important',
     'height:auto!important',
   ].join(';');
   const root = host.attachShadow({ mode: 'closed' });
   const style = document.createElement('style');
   style.textContent = `
-    .strip { align-items:center; background:#171717; border:1px solid #525252; border-radius:10px;
-      box-shadow:0 4px 18px rgba(0,0,0,.28); color:#fff; display:flex; font:600 13px/1.3 system-ui,sans-serif;
-      gap:10px; padding:6px 6px 6px 12px; }
+    .strip { background:#171717; border:1px solid #525252; border-radius:10px; box-shadow:0 4px 18px rgba(0,0,0,.28);
+      color:#fff; font:600 13px/1.3 system-ui,sans-serif; padding:6px 6px 6px 12px; }
+    .row { align-items:center; display:flex; flex-wrap:wrap; gap:6px 10px; }
     .recording::before { background:#ef4444; border-radius:50%; content:""; display:inline-block; height:8px;
       margin-right:7px; width:8px; }
     button { appearance:none; background:#fff; border:0; border-radius:7px; color:#171717; cursor:pointer;
       font:700 13px system-ui,sans-serif; min-height:44px; min-width:44px; padding:0 14px; }
     button:focus-visible { outline:3px solid #60a5fa; outline-offset:2px; }
     button:disabled { cursor:wait; opacity:.7; }
-    .error { color:#fecaca; font-weight:500; max-width:190px; }
+    .error { color:#fecaca; font-weight:500; margin:0; padding-right:6px; }
+    .error:not(:empty) { margin:4px 0 2px; }
   `;
   const container = document.createElement('div');
   container.className = 'strip';
+  container.setAttribute('role', 'group');
+  container.setAttribute('aria-label', 'anmerko journey recording');
+  const row = document.createElement('div');
+  row.className = 'row';
   const recording = document.createElement('span');
   recording.className = 'recording';
   recording.textContent = 'Recording';
@@ -147,35 +207,61 @@ function mountJourneyStrip(
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = 'Stop';
-  const error = document.createElement('span');
+  button.setAttribute('aria-label', 'Stop recording journey');
+  // Present while empty, so a failure is announced when its text arrives.
+  const error = document.createElement('p');
   error.className = 'error';
-  error.hidden = true;
+  error.setAttribute('role', 'alert');
   root.append(style, container);
-  container.append(recording, count, button, error);
-  button.addEventListener('click', async () => {
-    if (button.disabled) return;
-    button.disabled = true;
-    error.hidden = true;
-    const stopped = await stop(sessionId, epoch).catch(() => false);
-    if (!stopped && host.isConnected) {
-      error.textContent = 'Could not stop the journey. Try again.';
-      error.hidden = false;
-      button.disabled = false;
-    }
-  });
-  // An on-screen keyboard shrinks only the visual viewport; follow its bottom
-  // edge so Stop stays above the keyboard.
+  row.append(recording, count, button);
+  container.append(row, error);
   const listeners = new AbortController();
+  // An on-screen keyboard shrinks only the visual viewport, and the browser
+  // scrolls the field being typed into toward its bottom edge. The strip
+  // follows the visible bottom edge, and moves to the visible top while a
+  // keyboard is open or the field being typed into reaches the bottom edge,
+  // unless the field is up there.
   const place = () => {
     const visual = window.visualViewport;
-    const covered = visual ? Math.max(0, Math.round(innerHeight - (visual.offsetTop + visual.height))) : 0;
-    host.style.setProperty('bottom', `calc(${STRIP_BOTTOM + covered}px + env(safe-area-inset-bottom, 0px))`, 'important');
+    const top = visual?.offsetTop ?? 0;
+    const height = visual?.height ?? innerHeight;
+    const covered = Math.max(0, Math.round(innerHeight - (top + height)));
+    const size = host.getBoundingClientRect().height || STRIP_HEIGHT;
+    const field = focusedEditable();
+    let atTop = innerHeight - height * (visual?.scale ?? 1) > KEYBOARD_SHRINK;
+    if (field) {
+      const rect = field.getBoundingClientRect();
+      const covers = (from: number) => rect.bottom > from && rect.top < from + size;
+      const bottom = covers(top + height - STRIP_GAP - size);
+      if (bottom) atTop = true;
+      if (covers(top + STRIP_GAP) && !bottom) atTop = false;
+    }
+    host.style.setProperty('top', atTop ? `calc(${Math.round(top) + STRIP_GAP}px + env(safe-area-inset-top, 0px))` : 'auto', 'important');
+    host.style.setProperty('bottom', atTop ? 'auto' : `calc(${STRIP_GAP + covered}px + env(safe-area-inset-bottom, 0px))`, 'important');
   };
+  // Focus has not moved on yet while focusout dispatches.
+  const placeAfterFocus = () => { setTimeout(place, 0); };
   window.visualViewport?.addEventListener('resize', place, { passive: true, signal: listeners.signal });
   window.visualViewport?.addEventListener('scroll', place, { passive: true, signal: listeners.signal });
   window.addEventListener('resize', place, { passive: true, signal: listeners.signal });
+  window.addEventListener('scroll', place, { passive: true, signal: listeners.signal });
+  document.addEventListener('focusin', place, { capture: true, signal: listeners.signal });
+  document.addEventListener('focusout', placeAfterFocus, { capture: true, signal: listeners.signal });
+  button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    error.textContent = '';
+    place();
+    const stopped = await stop(sessionId, epoch).catch(() => false);
+    if (!stopped && host.isConnected) {
+      error.textContent = 'Could not stop the journey. Try again.';
+      button.disabled = false;
+      place();
+    }
+  }, { signal: listeners.signal });
   place();
   (document.documentElement ?? document.body).append(host);
+  place();
   return {
     host,
     setCount,
@@ -489,5 +575,19 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
   };
   api.runtime.onMessage.addListener(listener);
   window.addEventListener('pagehide', dispose, { once: true });
+  return dispose;
+}
+
+// Binds this document once. The content script and the injected observer
+// share the content-script global, so whichever runs first owns the binding.
+export function ensureJourneyPage(): (() => void) | undefined {
+  if (!journeysAvailable() || window.top !== window) return;
+  const global = globalThis as JourneyPageGlobal;
+  if (global.__anmerkoJourneyPage) return global.__anmerkoJourneyPage;
+  let dispose: () => void;
+  dispose = bindJourneyPage(() => {
+    if (global.__anmerkoJourneyPage === dispose) delete global.__anmerkoJourneyPage;
+  });
+  global.__anmerkoJourneyPage = dispose;
   return dispose;
 }

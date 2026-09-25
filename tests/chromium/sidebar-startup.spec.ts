@@ -2,12 +2,21 @@ import { test, expect } from '@playwright/test';
 import { buildSync } from 'esbuild';
 
 const bundle = buildSync({ entryPoints: ['tests/chromium/fixtures/sidebar-runtime-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+// Every docking build ships journeys, whose toolbar branch differs: bundles
+// without the define above cover only the branch that no docking build ships.
+const journeyBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/sidebar-runtime-harness.ts'], bundle: true, write: false, format: 'iife',
+  loader: { '.css': 'text' }, define: { __TARGET_JOURNEYS__: 'true' } }).outputFiles[0].text;
 const run = (page: import('@playwright/test').Page, expression: string) => page.evaluate(expression);
 
-test.beforeEach(async ({ page }) => {
+async function loadHarness(page: import('@playwright/test').Page, content: string, holdJourneyRestore = false) {
   await page.goto('http://127.0.0.1:4173');
-  await page.addScriptTag({ content: bundle });
+  if (holdJourneyRestore) await page.evaluate('globalThis.holdJourneyRestore = true');
+  await page.addScriptTag({ content });
   await page.waitForFunction('!!globalThis.sidebarHarness');
+}
+
+test.beforeEach(async ({ page }) => {
+  await loadHarness(page, bundle);
 });
 
 test('port-owned sidebar startup sends one state handoff even when its snapshot is delayed', async ({ page }) => {
@@ -121,6 +130,42 @@ test('background revalidates the port-owned tab and window before changing layou
   });
   expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_PRESENT' && message.mode === 'overlay')`)).toBe(false);
   expect(await run(page, `sidebarHarness.pageCommands.some(message => message.type === 'ANMERKO_SIDEBAR_CLOSED')`)).toBe(true);
+});
+
+test('a toolbar click on a protected page explains it without opening the side panel', async ({ page }) => {
+  for (const content of [bundle, journeyBundle]) {
+    await loadHarness(page, content);
+    for (const url of ['chrome://newtab/', 'about:blank', 'file:///tmp/page.html', 'chrome-extension://test-extension/sidebar.html']) {
+      expect(await run(page, `sidebarHarness.toolbarAction(${JSON.stringify(url)})`), url).toEqual([]);
+    }
+    await expect.poll(() => run(page, 'sidebarHarness.createdTabs.length')).toBe(4);
+    expect(await run(page, 'sidebarHarness.createdTabs')).toEqual(Array(4).fill('http://127.0.0.1:4173/extension/unavailable.html'));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(await run(page, `sidebarHarness.sequence.filter(item => item === 'dock')`)).toEqual([]);
+    // A web page still requests the side panel within the click.
+    expect(await run(page, 'sidebarHarness.toolbarAction()')).toEqual(['dock']);
+  }
+});
+
+test('with journeys, the toolbar requests the side panel in the click and notifies the sidebar only after classifying it', async ({ page }) => {
+  await loadHarness(page, journeyBundle, true);
+  await expect.poll(() => run(page, 'sidebarHarness.restorePending()')).toBe(true);
+  await run(page, 'sidebarHarness.start(1)');
+  await expect.poll(() => run(page, 'sidebarHarness.snapshotPending()')).toBe(true);
+  await run(page, 'sidebarHarness.releaseSnapshot()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(1);
+
+  // The dock request is made synchronously in the click, before the journey
+  // restore that decides whether the click is Stop has finished.
+  expect(await run(page, 'sidebarHarness.toolbarAction()')).toEqual(['dock']);
+  expect(await run(page, 'sidebarHarness.restorePending()')).toBe(true);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(await run(page, 'sidebarHarness.replies')).toHaveLength(1);
+  // Once the click is known not to be Stop, the reopened sidebar is notified.
+  await run(page, 'sidebarHarness.releaseRestore()');
+  await expect.poll(() => run(page, 'sidebarHarness.replies.length')).toBe(2);
+  expect(await run(page, 'sidebarHarness.replies.at(-1)')).toEqual({ type: 'ANMERKO_SIDEBAR_REOPENED', version: 1 });
+  expect(await run(page, 'sidebarHarness.sequence')).toEqual(['restore', 'dock']);
 });
 
 test('native controls wait for a page snapshot and disconnected settings cannot overwrite page state', async ({ page }) => {

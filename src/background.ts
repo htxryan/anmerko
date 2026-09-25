@@ -124,8 +124,9 @@ api.action.onClicked.addListener(tab => {
   if (journeys?.stopIfRecording()) return;
   if (journeys?.openReviewIfAvailable()) return;
   if (!tab.id) return;
+  const webPage = !!tab.url && /^https?:/.test(tab.url);
   const openRequestedPage = (preservedDock?: Promise<void>) => {
-    if (!tab.url || !/^https?:/.test(tab.url)) {
+    if (!webPage) {
       void api.tabs.create({ url: api.runtime.getURL('unavailable.html') });
       return;
     }
@@ -145,8 +146,9 @@ api.action.onClicked.addListener(tab => {
     return;
   }
   // Native sidebar APIs must be entered from the toolbar gesture. Start that
-  // request while lifecycle restoration decides whether this click is Stop.
-  const preservedDock = supportsDocking() ? openDock(tab.windowId) : undefined;
+  // request while lifecycle restoration decides whether this click is Stop,
+  // but only for a web page: a protected page gets its explanation alone.
+  const preservedDock = webPage && supportsDocking() ? openDock(tab.windowId) : undefined;
   // Toolbar Stop handles the click without awaiting the native dock request.
   // Observe its rejection while retaining the original promise so an idle
   // click can fall back to the overlay when docking fails.

@@ -1549,6 +1549,24 @@ test('allows a trusted explicit reset after session initialization fails without
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
 });
 
+test('Record journey from a page after journey storage fails opens the journey tab that resets it', async ({ page }) => {
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.failStorageGet = true;
+    harness.reboot();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, ownerPage)).toEqual({ ok: true, value: false });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.map(tab => tab.url)))
+    .toEqual(['chrome-extension://test-extension/journey.html']);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.failStorageGet = false; });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' }, reviewPage)).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value).toEqual({ phase: 'idle', epoch: 0 });
+});
+
 test('reconciles a restored review recorder and retries a transient page stop failure on reconnect', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
@@ -2564,9 +2582,18 @@ test('authorizes exact trusted journey surfaces and consumes a fallback launch o
   });
   expect(launch.created.url).toMatch(/^chrome-extension:\/\/test-extension\/journey\.html#launch=[A-Za-z0-9._~-]+$/);
   expect(launch.state).toBe(false);
-  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage))
-    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'busy' });
+  // Back on the website tab, Record journey again brings the pending launch
+  // tab forward instead of failing or opening a second one.
+  const pendingTabId = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+    harness.tabUpdates.length = 0;
+    return Object.values(harness.tabs).find(item => item.url === harness.createdTabs[0].url)!.id;
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.tabUpdates))
+    .toEqual([{ tabId: pendingTabId, details: { active: true } }]);
   const launchTab = await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
     const url = harness.createdTabs[0].url as string;
@@ -2770,7 +2797,7 @@ test('reopens a disconnected review in one reusable trusted fallback tab', async
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, {
     id: 'test-extension', url: 'https://other.test/', frameId: 0,
     tab: { id: 2, windowId: 7, active: false, url: 'https://other.test/' },
-  })).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'owner-unavailable' });
+  })).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'busy' });
   const opened = await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage);
   expect(opened).toEqual({ ok: true });
   expect(JSON.stringify(opened)).not.toContain('draft');
@@ -2782,6 +2809,276 @@ test('reopens a disconnected review in one reusable trusted fallback tab', async
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.control.openReviewIfAvailable())).toBe(true);
   await expect.poll(() => page.evaluate(() => (globalThis as HarnessWindow).harness.tabUpdates.length)).toBeGreaterThan(0);
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+});
+
+// Chromium hides the URL of the extension's own pages from tabs.get and
+// tabs.query without the tabs permission and reports them through
+// runtime.getContexts instead.
+async function hideExtensionTabUrls(page: Page) {
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const api = (globalThis as any).chrome;
+    const scrub = (tab: any) => {
+      if (!tab) return tab;
+      const copy = structuredClone(tab);
+      if (copy.url.startsWith('chrome-extension://')) delete copy.url;
+      return copy;
+    };
+    api.tabs.get = async (tabId: number) => scrub(harness.tabs[tabId]);
+    api.tabs.query = async (filter: { active?: boolean; windowId?: number } = {}) => Object.values(harness.tabs)
+      .filter(tab => (filter.active === undefined || tab.active === filter.active)
+        && (filter.windowId === undefined || tab.windowId === filter.windowId)).map(scrub);
+    api.runtime.getContexts = async (filter: { contextTypes?: string[]; tabIds?: number[] }) => Object.values(harness.tabs)
+      .filter(tab => tab.url.startsWith('chrome-extension://') && (!filter.tabIds || filter.tabIds.includes(tab.id)))
+      .map(tab => ({ contextType: 'TAB', contextId: `context-${tab.id}`, tabId: tab.id, windowId: tab.windowId, frameId: 0,
+        documentUrl: tab.url, incognito: false }));
+  });
+}
+
+// The floating panel's path: Record journey opens a launch tab, and its Start
+// records the website tab.
+async function recordFromLaunchTab(page: Page) {
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const launch = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const url = harness.createdTabs.at(-1)!.url as string;
+    const tab = structuredClone(Object.values(harness.tabs).find(item => item.url === url)!);
+    return { intent: url.slice(url.indexOf('#launch=') + 8), sender: { id: 'test-extension', url, frameId: 0, tab } };
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual({ ok: true });
+  const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(recording.phase).toBe('recording');
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabUpdates.length = 0;
+  });
+  return { launch, launchTabId: launch.sender.tab.id as number, recording };
+}
+
+const tabReviewRecord = (page: Page) => page.evaluate(() =>
+  (globalThis as HarnessWindow).harness.sessionStorage['anmerko:journey-tab-review:v1']);
+
+const tabActivations = (page: Page) => page.evaluate(() => (globalThis as HarnessWindow).harness.tabUpdates
+  .filter(update => update.details.active).map(update => update.tabId));
+
+test('a journey started from a launch tab brings that tab forward as its review whenever it ends, except on focus loss', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const stopFromStrip = async (recording: any) => {
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', sessionId: recording.sessionId, epoch: recording.epoch }, ownerPage))
+      .toEqual({ ok: true });
+  };
+  const leaveSite = async () => page.evaluate(() => (globalThis as HarnessWindow).harness.events.committed.emit({
+    tabId: 1, frameId: 0, url: 'https://other.test/next', documentLifecycle: 'active',
+  }));
+  const reachDeadline = async (recording: any) => page.evaluate(deadlineAt => {
+    (globalThis as any).realNow = Date.now;
+    Date.now = () => Date.parse(deadlineAt);
+    (globalThis as HarnessWindow).harness.events.alarm.emit({ name: 'anmerko-journey-recording-deadline' });
+  }, recording.deadlineAt);
+  const cases: Array<[string, (recording: any) => Promise<unknown>]> = [
+    ['user', stopFromStrip], ['left-site', leaveSite], ['duration-limit', reachDeadline],
+  ];
+  for (const [reason, stop] of cases) {
+    const { launchTabId, recording } = await recordFromLaunchTab(page);
+    await stop(recording);
+    await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason).toBe(reason);
+    // The launch tab is the review surface: it comes forward and no second tab opens.
+    await expect.poll(() => tabActivations(page), reason).toEqual([launchTabId]);
+    expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.length), reason)
+      .toBe(cases.findIndex(([name]) => name === reason) + 1);
+    // Which review belongs in a tab is remembered only while that review lasts.
+    expect(await tabReviewRecord(page), reason).toBe(recording.sessionId);
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+    expect(await tabReviewRecord(page), reason).toBeUndefined();
+    await page.evaluate(() => {
+      const harness = (globalThis as HarnessWindow).harness;
+      if ((globalThis as any).realNow) Date.now = (globalThis as any).realNow;
+      for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+      harness.tabs[1].url = 'https://private:secret@example.test/path?item=1#top';
+      harness.identity.url = harness.tabs[1].url;
+      harness.focusedWindowId = 7;
+    });
+  }
+
+  // A reader who switches to another website tab left deliberately: the
+  // review waits for them instead of pulling focus.
+  await recordFromLaunchTab(page);
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[1].active = false; harness.tabs[2].active = true;
+    harness.events.activated.emit({ tabId: 2, windowId: 7 });
+  });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason).toBe('focus-lost');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(await tabActivations(page)).toEqual([]);
+});
+
+test('switching to the journey tab stops the recording as the reader\'s own stop, not as lost focus', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const { launchTabId } = await recordFromLaunchTab(page);
+  await page.evaluate(tabId => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[1].active = false; harness.tabs[tabId].active = true;
+    harness.events.activated.emit({ tabId, windowId: 7 });
+  }, launchTabId);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason).toBe('user');
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+
+  // The same holds for a journey tab in another window, while another window
+  // or app taking focus is still focus-lost.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  await page.evaluate(tabId => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+    harness.tabs[tabId].windowId = 9;
+    harness.tabs[tabId].active = true;
+  }, launchTabId);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.focusedWindowId = 9;
+    harness.events.focused.emit(9);
+  });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason).toBe('user');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.focusedWindowId = 7; });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.events.focused.emit(-1));
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason).toBe('focus-lost');
+});
+
+test('Record journey during a review reuses the launch tab where Chromium hides extension tab URLs', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const { launchTabId } = await recordFromLaunchTab(page);
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[1].active = false; harness.tabs[2].active = true;
+    harness.events.activated.emit({ tabId: 2, windowId: 7 });
+  });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+    harness.tabUpdates.length = 0;
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  expect(await tabActivations(page)).toEqual([launchTabId]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+
+  // A background that restarted has forgotten which tab it opened, and still
+  // finds the journey tab instead of opening another.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+    harness.tabUpdates.length = 0;
+    harness.reboot();
+  });
+  await hideExtensionTabUrls(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  expect(await tabActivations(page)).toEqual([launchTabId]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+});
+
+test('a recording that outlives a background restart still brings its launch tab forward when it ends', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const { launchTabId, recording } = await recordFromLaunchTab(page);
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.reboot());
+  await hideExtensionTabUrls(page);
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', sessionId: recording.sessionId, epoch: recording.epoch }, ownerPage))
+    .toEqual({ ok: true });
+  await expect.poll(() => tabActivations(page)).toEqual([launchTabId]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+
+  // A record left behind by a review that ended is dropped on the next start.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.sessionStorage['anmerko:journey-tab-review:v1'] = 'session-ended';
+    harness.reboot();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect(await tabReviewRecord(page)).toBeUndefined();
+});
+
+test('a journey started in the native side panel reviews there without opening a journey tab', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', sessionId: recording.sessionId, epoch: recording.epoch }, ownerPage))
+    .toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toEqual([]);
+  expect(await tabActivations(page)).toEqual([]);
+});
+
+test('a second Record journey from another page replaces the pending launch tab', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const first = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    return Object.values(harness.tabs).find(item => item.url === harness.createdTabs[0].url)!.id;
+  });
+  // The reader reloads the website: its new document has a new identity.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+    harness.identity.documentToken = 'document-2';
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const facts = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    return { created: harness.createdTabs.map(tab => tab.url), removed: harness.removedTabs };
+  });
+  expect(facts.created).toHaveLength(2);
+  expect(facts.created[1]).not.toBe(facts.created[0]);
+  expect(facts.removed).toEqual([first]);
+  const launch = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const url = harness.createdTabs[1].url as string;
+    const tab = structuredClone(Object.values(harness.tabs).find(item => item.url === url)!);
+    return { intent: url.slice(url.indexOf('#launch=') + 8), sender: { id: 'test-extension', url, frameId: 0, tab } };
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+});
+
+test('a page panel learns only whether a review is pending, and any focused website tab can bring it forward', async ({ page }) => {
+  const otherPage = { id: 'test-extension', url: 'https://other.test/', frameId: 0,
+    tab: { id: 2, windowId: 7, active: true, url: 'https://other.test/' } };
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, ownerPage)).toEqual({ ok: true, value: false });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, { ...ownerPage, frameId: 3 })).toBeUndefined();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, ownerPage)).toEqual({ ok: true, value: false });
+  // Recording in another tab refuses a new journey there.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, otherPage))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'busy' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, otherPage)).toEqual({ ok: true, value: true });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 2;
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, otherPage)).toEqual({ ok: true });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.map(tab => tab.url)))
+    .toEqual(['chrome-extension://test-extension/journey.html']);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, otherPage)).toEqual({ ok: true, value: false });
+});
+
+test('a trusted journey surface can follow the phase alone, without the draft; pages cannot ask', async ({ page }) => {
+  const phase = async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' }, ownerPage)).toBeUndefined();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' }, { ...sidebar, id: 'other-extension' })).toBeUndefined();
+  expect(await phase()).toBe('idle');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PHASE' })).toEqual({ ok: true, value: 'recording' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await phase()).toBe('reviewing');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await phase()).toBe('idle');
 });
 
 test.describe('T07 slice 2 shared capture scheduling and bounded normalization', () => {
