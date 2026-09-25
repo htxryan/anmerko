@@ -105,7 +105,7 @@ test('the API check requires every extension API a recording uses', () => {
 type BackgroundLog = { kind: string; files?: string[]; args?: unknown[]; type?: string; url?: string };
 type BackgroundWindow = typeof globalThis & {
   backgroundModule: { activateTab(tabId: number): Promise<void> };
-  backgroundHarness: { log: BackgroundLog[]; listeners: Record<string, number>; click(tab: unknown): void };
+  backgroundHarness: { log: BackgroundLog[]; listeners: Record<string, number>; added: Record<string, number>; click(tab: unknown): void };
 };
 
 async function loadBackground(page: Page, options: { agent?: Agent; omit?: string[]; os?: string } = {}) {
@@ -115,8 +115,10 @@ async function loadBackground(page: Page, options: { agent?: Agent; omit?: strin
   if (options.agent) await emulate(page, options.agent);
   await page.evaluate(({ os }) => {
     const listeners: Record<string, Array<(...args: any[]) => void>> = {};
+    // The background prunes idle journey listeners after startup, so count registrations too.
+    const added: Record<string, number> = {};
     const event = (name: string) => ({
-      addListener(listener: (...args: any[]) => void) { (listeners[name] ??= []).push(listener); },
+      addListener(listener: (...args: any[]) => void) { (listeners[name] ??= []).push(listener); added[name] = (added[name] ?? 0) + 1; },
       removeListener(listener: (...args: any[]) => void) { listeners[name] = (listeners[name] ?? []).filter(item => item !== listener); },
     });
     const log: BackgroundLog[] = [];
@@ -157,6 +159,7 @@ async function loadBackground(page: Page, options: { agent?: Agent; omit?: strin
     (globalThis as any).backgroundHarness = {
       log,
       get listeners() { return Object.fromEntries(Object.entries(listeners).map(([name, list]) => [name, list.length])); },
+      get added() { return { ...added }; },
       click(clicked: unknown) { for (const listener of listeners['action.onClicked'] ?? []) listener(clicked); },
     };
   }, { os: options.os });
@@ -166,17 +169,19 @@ async function loadBackground(page: Page, options: { agent?: Agent; omit?: strin
 }
 
 const harness = (page: Page) => page.evaluate(() => {
-  const { log, listeners } = (globalThis as BackgroundWindow).backgroundHarness;
-  return { log: structuredClone(log), listeners };
+  const { log, listeners, added } = (globalThis as BackgroundWindow).backgroundHarness;
+  return { log: structuredClone(log), listeners, added };
 });
 const declinedMarker = { kind: 'func', files: undefined, args: ['__anmerkoJourneysDeclined'] };
 const overlay = [{ kind: 'files', files: ['content.js'], args: undefined }, { kind: 'message', type: 'ANMERKO_PRESENT' }];
 
 test('a supported browser binds journeys at startup and leaves pages unmarked', async ({ page }) => {
   const errors = await loadBackground(page, { agent: 'chromeMac', os: 'mac' });
-  const { listeners } = await harness(page);
-  // Comments add one runtime message listener; journeys add their own and their startup listeners.
-  expect(listeners).toMatchObject({
+  const { listeners, added } = await harness(page);
+  // Comments add one runtime message listener; journeys add their own and register their
+  // startup listeners synchronously, then drop the ones an idle journey does not need.
+  expect(listeners).toMatchObject({ 'runtime.onMessage': 2, 'alarms.onAlarm': 1 });
+  expect(added).toMatchObject({
     'runtime.onMessage': 2, 'alarms.onAlarm': 1, 'tabs.onRemoved': 1,
     'webNavigation.onCommitted': 1, 'webNavigation.onHistoryStateUpdated': 1, 'webNavigation.onReferenceFragmentUpdated': 1,
   });
@@ -194,10 +199,10 @@ const unavailable: Array<{ name: string; agent?: Agent; omit?: string[] }> = [
 for (const { name, agent, omit } of unavailable) {
   test(`a background ${name} binds no journey listeners and still serves comments`, async ({ page }) => {
     const errors = await loadBackground(page, { agent: agent ?? 'chromeMac', omit });
-    const { listeners } = await harness(page);
+    const { listeners, added } = await harness(page);
     expect(listeners['runtime.onMessage']).toBe(1);
     for (const journeyOnly of ['alarms.onAlarm', 'tabs.onRemoved', 'webNavigation.onCommitted', 'windows.onFocusChanged']) {
-      expect(listeners[journeyOnly] ?? 0, journeyOnly).toBe(0);
+      expect(added[journeyOnly] ?? 0, journeyOnly).toBe(0);
     }
     // The toolbar still opens the comment overlay, telling the page first that
     // journeys are off. Without scripting it reports an inaccessible page.
