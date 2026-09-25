@@ -173,7 +173,7 @@ export function journeyDraftToManifest(draft: JourneyDraftV1): JourneyManifestV1
       return {
         ...base, kind: 'navigation' as const,
         navigation: {
-          toUrl: reviewedText(step.navigation.toUrl, false, false),
+          toUrl: redactedUrl(step.navigation.toUrl),
           ...(step.navigation.causedByStepId ? { causedByStepId: step.navigation.causedByStepId } : {}),
         },
       };

@@ -282,6 +282,86 @@ test('prompt section summarizes journeys with spans-pages scope', () => {
   expect(() => journeyPromptSection([reviewedDraft() as unknown as JourneyManifestV1])).toThrow(TypeError);
 });
 
+const CART_URL = 'https://shop.example/cart';
+const RESET_URL = 'https://shop.example/reset?token=private-token-9q';
+
+function navigationDraft(toUrl: string): JourneyDraftV1 {
+  return {
+    schemaVersion: 1, status: 'draft', id: 'J2', revision: 2,
+    createdAt: '2026-09-20T12:00:00.000Z', updatedAt: '2026-09-20T12:00:04.000Z',
+    startedAt: '2026-09-20T12:00:00.000Z', stoppedAt: '2026-09-20T12:00:04.000Z',
+    includeEnteredValues: false, stopReason: 'user',
+    expected: 'The reset link opens.', actual: 'The reset link fails.',
+    steps: [
+      {
+        kind: 'initial', id: 'S1', seq: 1, observedAt: '2026-09-20T12:00:00.100Z', elapsedMs: 100,
+        sourceUrl: CART_URL, image: { status: 'retained', imageId: 'I1' },
+      },
+      {
+        kind: 'click', id: 'S2', seq: 2, observedAt: '2026-09-20T12:00:01.000Z', elapsedMs: 1_000,
+        sourceUrl: CART_URL,
+        target: {
+          tag: 'a', selectorPath: ['main', 'a'], label: 'Reset', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 }, point: { x: 10, y: 10 },
+        },
+        image: { status: 'unavailable', reason: 'superseded' },
+      },
+      {
+        kind: 'navigation', id: 'S3', seq: 3, observedAt: '2026-09-20T12:00:01.100Z', elapsedMs: 1_100,
+        sourceUrl: CART_URL, navigation: { toUrl, causedByStepId: 'S2' },
+        image: { status: 'unavailable', reason: 'navigation-timeout' },
+      },
+    ],
+    images: {
+      I1: {
+        capturedAt: '2026-09-20T12:00:00.100Z', captureUrl: CART_URL,
+        width: 1, height: 1, byteLength: 69,
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC',
+        viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 },
+      },
+    },
+    limitations: [],
+  };
+}
+
+test('destination redaction removes the navigation URL from the manifest and Markdown', () => {
+  // Redacting the next step's source URL alone leaves the destination visible.
+  const sourceOnly = navigationDraft(RESET_URL);
+  sourceOnly.steps.push({
+    kind: 'click', id: 'S4', seq: 4, observedAt: '2026-09-20T12:00:02.000Z', elapsedMs: 2_000,
+    sourceUrl: '[redacted]',
+    target: {
+      tag: 'button', selectorPath: ['button'], label: 'Save', editable: false,
+      viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 0 }, point: { x: 10, y: 10 },
+    },
+    image: { status: 'unavailable', reason: 'superseded' },
+  });
+  sourceOnly.redactions = { steps: { S4: { sourceUrl: true } } };
+  expect(formatJourneyMarkdown(journeyDraftToManifest(sourceOnly))).toContain('private-token-9q');
+
+  const redacted: JourneyDraftV1 = {
+    ...sourceOnly,
+    steps: sourceOnly.steps.map(step => step.kind === 'navigation'
+      ? { ...step, navigation: { ...step.navigation, toUrl: '[redacted]' } }
+      : step),
+    redactions: { steps: { S3: { toUrl: true }, S4: { sourceUrl: true } } },
+  };
+  const manifest = journeyDraftToManifest(redacted);
+  const navigation = manifest.steps[2];
+  if (navigation.kind !== 'navigation') throw new Error('missing navigation fixture');
+  expect(navigation.navigation).toEqual({ toUrl: reviewed('[redacted]', true, true), causedByStepId: 'S2' });
+  expect(navigation.sourceUrl).toEqual(reviewed(CART_URL));
+  expect(JSON.stringify(manifest)).not.toContain('private-token-9q');
+
+  const markdown = formatJourneyMarkdown(manifest);
+  expect(markdown).toContain('Destination URL:\n```\n[redacted]\n```\nDestination URL review: Edited: Yes · Redacted: Yes');
+  expect(markdown).not.toContain('private-token-9q');
+  const archived = new TextDecoder().decode(journeyArchiveFiles([redacted])[0].data);
+  expect(archived).toContain('Destination URL review: Edited: Yes · Redacted: Yes');
+  expect(archived).not.toContain('private-token-9q');
+  expect(journeyPromptSection([manifest])).not.toContain('private-token-9q');
+});
+
 test('archive files reference deterministic PNG identities', () => {
   const files = journeyArchiveFiles([reviewedDraft()]);
   expect(files.map(file => file.name)).toEqual(['journeys.md', 'journey-2-J1-image-2-I2.png']);

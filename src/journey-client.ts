@@ -1,5 +1,5 @@
 import { extensionApi } from './platform';
-import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
+import type { JourneyDraftImage, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import { isJourneyBackgroundSender } from './journey-messaging';
 import type { JourneyClient } from './journey-ui';
 
@@ -77,7 +77,7 @@ export function createJourneyClient(
         updatedAt: new Date().toISOString(), stepId, value,
       });
     },
-    redactUrl: async (stepId: string, url: 'source' | 'capture'): Promise<void> => {
+    redactUrl: async (stepId: string, url: JourneyUrlRedactionTarget): Promise<void> => {
       const current = await command('ANMERKO_JOURNEY_STATE') as JourneySession;
       if (current.phase !== 'reviewing') throw new Error(CLIENT_ERROR);
       await command('ANMERKO_JOURNEY_REDACT_URL', {

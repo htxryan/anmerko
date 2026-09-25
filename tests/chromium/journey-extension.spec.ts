@@ -1162,6 +1162,41 @@ test('keeps recording across same-site path changes and same-URL reloads', async
   expect(state.draft.steps.at(-1)).toMatchObject({ navigation: { toUrl: pathUrl } });
 });
 
+test('review redacts a navigation destination through the command channel', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const nextUrl = 'https://example.test/reset?token=private-token-9q';
+  await page.evaluate(url => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[1].url = url;
+    harness.identity = { ...harness.identity, documentToken: 'reset-document', url, generation: 0 };
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+  }, nextUrl);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.at(-1)?.navigation?.toUrl)
+    .toBe(nextUrl);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  let reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.phase).toBe('reviewing');
+  const navigation = reviewing.draft.steps.at(-1);
+  const guards = {
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    updatedAt: new Date().toISOString(),
+  };
+
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REDACT_URL', ...guards, stepId: navigation.id, url: 'location',
+  })).toEqual({ ok: false, error: 'Journey command unavailable.' });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REDACT_URL', ...guards, stepId: navigation.id, url: 'destination',
+  })).toEqual({ ok: true });
+  reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.draft.revision).toBe(guards.revision + 1);
+  expect(reviewing.draft.steps.at(-1)).toMatchObject({
+    id: navigation.id, sourceUrl: navigation.sourceUrl, navigation: { toUrl: '[redacted]' },
+  });
+  expect(reviewing.draft.redactions).toEqual({ steps: { [navigation.id]: { toUrl: true } } });
+  expect(JSON.stringify(reviewing.draft.steps)).not.toContain('private-token-9q');
+});
+
 test('routes matching event ports and stop commands without exposing state or raw replies to pages', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;

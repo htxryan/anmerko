@@ -1,4 +1,4 @@
-import type { JourneyDraftImage, JourneyDraftV1, JourneySession } from './journey-core';
+import type { JourneyDraftImage, JourneyDraftStep, JourneyDraftV1, JourneySession, JourneyUrlRedactionTarget } from './journey-core';
 import type { CaptureFailure } from './journey-limits';
 import { downloadFile, feedbackArchive } from './export';
 import { journeyDraftToManifest, journeyPromptSection } from './journey-export';
@@ -14,7 +14,7 @@ export interface JourneyClient {
   updateSummary(expected: string, actual: string): Promise<void>;
   removeStep(stepId: string): Promise<void>;
   editValue(stepId: string, value: unknown): Promise<void>;
-  redactUrl(stepId: string, url: 'source' | 'capture'): Promise<void>;
+  redactUrl(stepId: string, url: JourneyUrlRedactionTarget): Promise<void>;
   save(acknowledged: boolean): Promise<{ journeyId: string; revision: number }>;
   openSnapshot(journeyId: string): Promise<{ draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }>;
   reopen(journeyId: string): Promise<void>;
@@ -499,54 +499,36 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return section;
   }
 
-  function renderUrlRedact(step: { id: string; seq: number; sourceUrl: string; image: { status: string; imageId?: string } }, draft: JourneyDraftV1): HTMLElement {
+  function renderUrlRedact(step: JourneyDraftStep, draft: JourneyDraftV1): HTMLElement {
     const wrap = node('div', undefined, 'journey-url-actions');
-    if (step.sourceUrl === '[redacted]') {
-      wrap.append(node('p', 'Redacted during review.', 'journey-edited'));
-    } else {
-      const redactSource = node('button', `Redact source URL for step ${step.seq}`, 'journey-secondary');
-      redactSource.type = 'button';
-      redactSource.disabled = busy || redactBusy !== null;
-      redactSource.setAttribute('data-focus-id', `redact-source-${step.id}`);
-      redactSource.addEventListener('click', () => {
+    const redactControl = (url: string, target: JourneyUrlRedactionTarget, label: string) => {
+      if (url === '[redacted]') {
+        wrap.append(node('p', 'Redacted during review.', 'journey-edited'));
+        return;
+      }
+      const redact = node('button', `Redact ${label} URL for step ${step.seq}`, 'journey-secondary');
+      redact.type = 'button';
+      redact.disabled = busy || redactBusy !== null;
+      redact.setAttribute('data-focus-id', `redact-${target}-${step.id}`);
+      redact.addEventListener('click', () => {
         if (busy || redactBusy !== null) return;
-        redactBusy = `${step.id}:source`;
+        redactBusy = `${step.id}:${target}`;
         error = '';
         render();
-        void client.redactUrl(step.id, 'source').then(() => { error = ''; }).catch(caught => {
+        void client.redactUrl(step.id, target).then(() => { error = ''; }).catch(caught => {
           error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
         }).finally(() => {
           redactBusy = null;
           if (alive) void refresh();
         });
       });
-      wrap.append(redactSource);
-    }
-    if (step.image.status === 'retained' && step.image.imageId) {
+      wrap.append(redact);
+    };
+    redactControl(step.sourceUrl, 'source', 'source');
+    if (step.kind === 'navigation') redactControl(step.navigation.toUrl, 'destination', 'destination');
+    if (step.image.status === 'retained') {
       const image = draft.images[step.image.imageId];
-      if (image) {
-        if (image.captureUrl === '[redacted]') {
-          wrap.append(node('p', 'Redacted during review.', 'journey-edited'));
-        } else {
-          const redactCapture = node('button', `Redact image URL for step ${step.seq}`, 'journey-secondary');
-          redactCapture.type = 'button';
-          redactCapture.disabled = busy || redactBusy !== null;
-          redactCapture.setAttribute('data-focus-id', `redact-capture-${step.id}`);
-          redactCapture.addEventListener('click', () => {
-            if (busy || redactBusy !== null) return;
-            redactBusy = `${step.id}:capture`;
-            error = '';
-            render();
-            void client.redactUrl(step.id, 'capture').then(() => { error = ''; }).catch(caught => {
-              error = caught instanceof Error ? caught.message : 'Could not update the journey. Try again.';
-            }).finally(() => {
-              redactBusy = null;
-              if (alive) void refresh();
-            });
-          });
-          wrap.append(redactCapture);
-        }
-      }
+      if (image) redactControl(image.captureUrl, 'capture', 'image');
     }
     return wrap;
   }
@@ -968,7 +950,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         }
         const entered = renderEnteredValue(step as { id: string; seq: number; kind: string; enteredValue?: { kind: string; value?: string; values?: string[]; checked?: boolean; truncated?: boolean; edited?: true } });
         if (entered) item.append(entered);
-        item.append(renderUrlRedact(step as { id: string; seq: number; sourceUrl: string; image: { status: string; imageId?: string } }, state.draft));
+        item.append(renderUrlRedact(step, state.draft));
         item.append(renderRemove(step));
         list.append(item);
       }

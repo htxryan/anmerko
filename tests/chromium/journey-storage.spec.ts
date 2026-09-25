@@ -267,6 +267,40 @@ test('list marks journeys spanning more than one source URL', async ({ page }) =
   });
 });
 
+function withNavigation(draft: JourneyDraftV1, toUrl: string): JourneyDraftV1 {
+  const navigation: JourneyDraftStep = {
+    kind: 'navigation',
+    id: 'step-3',
+    seq: 3,
+    observedAt: '2026-09-20T12:00:03.000Z',
+    elapsedMs: 3_000,
+    sourceUrl: SOURCE_URL,
+    navigation: { toUrl, causedByStepId: 'step-2' },
+    image: { status: 'unavailable', reason: 'navigation-timeout' },
+  };
+  return { ...draft, steps: [...draft.steps, navigation] };
+}
+
+test('snapshots saved with only source and capture redactions still open', async ({ page }) => {
+  await openStore(page);
+  const draft = withNavigation(baseDraft(), 'https://example.com/checkout');
+  const legacy: JourneyDraftV1 = {
+    ...draft,
+    steps: draft.steps.map(step => step.id === 'step-1' ? { ...step, sourceUrl: '[redacted]' } : step),
+    images: { ...draft.images, 'image-2': { ...draft.images['image-2'], captureUrl: '[redacted]' } },
+    redactions: { steps: { 'step-1': { sourceUrl: true }, 'step-2': { captureUrl: true } } },
+  };
+  expect(await invoke(page, 'save', { input: snapshotInput(legacy) })).toEqual({
+    ok: true, value: { journeyId: 'journey-1', revision: 0 },
+  });
+  const opened = await invoke(page, 'open', { journeyId: 'journey-1' });
+  expect(opened.ok).toBe(true);
+  expect((opened.value as { draft: JourneyDraftV1 }).draft).toEqual(legacy);
+  expect(await invoke(page, 'list', {})).toEqual({
+    ok: true, value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 3, spansPages: true }],
+  });
+});
+
 test('invalid snapshots are rejected and never stored', async ({ page }) => {
   await openStore(page);
 

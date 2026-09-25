@@ -39,7 +39,7 @@ Reloading the page records a navigation step and continues. A suspended browser 
 
 ## Review a journey
 
-Review starts with **Expected result** and **Actual result** — both are required to save, up to 4,000 characters each. Every step shows its action, timing, full source URL, and screenshot state. Remove steps you don't need; sequence numbers stay stable. For each screenshot choose **Keep**, **Mask**, or **Remove** — masks flatten permanently and cannot be undone. **Redact** source and image URLs to `[redacted]` without breaking step and image links. Edit or clear captured values; edited values are marked and originals leave the draft.
+Review starts with **Expected result** and **Actual result** — both are required to save, up to 4,000 characters each. Every step shows its action, timing, full source URL, and screenshot state. Remove steps you don't need; sequence numbers stay stable. For each screenshot choose **Keep**, **Mask**, or **Remove** — masks flatten permanently and cannot be undone. **Redact** source, navigation destination, and image URLs to `[redacted]` without breaking step and image links. Edit or clear captured values; edited values are marked and originals leave the draft.
 
 Acknowledge that full URLs and entered values are retained, then **Save journey**. Saved journeys appear once each in **Saved journeys** with a **Spans pages** label when they cover more than one page on that site. Reopen a saved journey to keep editing; saving again stores a new revision. Delete one journey or all of them with confirmation; deletion removes the snapshots but never exported files.
 
