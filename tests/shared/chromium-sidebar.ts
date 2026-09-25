@@ -50,6 +50,16 @@ export async function sidebar(context: BrowserContext, page: Page) {
     const closesTarget = selector === '.dock' || selector === '.minimize';
     return evaluate(`const button = root.querySelector(${JSON.stringify(selector)}); if (!button) throw new Error('Sidebar button missing'); ${closesTarget ? 'setTimeout(() => button.click(), 0)' : 'button.click()'};`);
   }
+  // A real mouse click. It focuses the side panel and reaches controls that
+  // ignore untrusted events, such as Record journey.
+  async function press(selector: string) {
+    const point = await evaluate(`const element = root.querySelector(${JSON.stringify(selector)}); if (!element) throw new Error('Sidebar control missing: ' + ${JSON.stringify(selector)});
+      element.scrollIntoView({ block: 'center', behavior: 'instant' }); const box = element.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };`);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await command('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    }
+  }
   async function targets() {
     const snapshot = await cdp.send('Target.getTargets');
     return snapshot.targetInfos.filter(target => target.url.endsWith('/sidebar.html')).map(target => ({
@@ -64,7 +74,7 @@ export async function sidebar(context: BrowserContext, page: Page) {
   }`);
   await expect.poll(() => evaluate("return !!root?.querySelector('.panel') && root.querySelector('.connection-prompt').hidden")).toBe(true);
   return {
-    targetId, acquisition: acquisition!, evaluate, command, click, targets, surface,
+    targetId, acquisition: acquisition!, evaluate, command, click, press, targets, surface,
     value: (selector: string) => evaluate(`return root.querySelector(${JSON.stringify(selector)})?.value`),
     close: () => cdp.send('Target.closeTarget', { targetId }),
   };
