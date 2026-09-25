@@ -17,6 +17,27 @@ test('all framework fixtures and page probes select the full browser matrix', as
   }
 });
 
+test('journey modules that bind browser APIs select the full browser matrix', async () => {
+  const filters = await readFile('.github/filters.yml', 'utf8');
+  const highrisk = section(filters, 'highrisk', 'releasegate');
+  // Each of these talks to a browser API, extension messaging or an injected entry point.
+  const integration = {
+    'src/journey-extension.ts': /webNavigation\.|\.alarms|\.tabs\.|\.scripting|storage\.session/,
+    'src/journey-feature.ts': /webNavigation|alarms/,
+    'src/journey-page-bridge.ts': /runtime\.(?:connect|sendMessage)/,
+    'src/journey-observer.ts': /ensureJourneyPage/,
+    'src/journey-page.ts': /extensionApi\(\)/,
+    'src/journey-client.ts': /runtime\.(?:sendMessage|onMessage)/,
+    'src/journey-messaging.ts': /sender\.id/,
+    'src/journey-store.ts': /indexedDB\.open/,
+  };
+  for (const [path, binding] of Object.entries(integration)) {
+    assert.match(await readFile(path, 'utf8'), binding, `${path} no longer binds the browser API this policy assumes`);
+    assert.ok(highrisk.includes(`'${path}'`), `${path} must force full browser validation`);
+  }
+  assert.doesNotMatch(highrisk, /'src\/journey-\*/, 'pure journey model, UI and export modules keep the fast scope');
+});
+
 test('standalone release and deployment helpers select their required CI jobs', async () => {
   const filters = await readFile('.github/filters.yml', 'utf8');
   const common = section(filters, 'common', 'extension');

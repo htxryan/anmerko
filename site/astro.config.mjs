@@ -6,6 +6,9 @@ export default defineConfig({
   output: 'static',
   trailingSlash: 'always',
   markdown: { syntaxHighlight: false },
+  // The demo compiles the shared panel from src/, but it never records
+  // journeys, so the journey UI folds away as it does in the Orion build.
+  vite: { define: { __TARGET_JOURNEYS__: 'false' } },
   security: {
     csp: {
       directives: ["default-src 'self'", "img-src 'self' data:", "base-uri 'none'", "object-src 'none'", "form-action 'none'"],

@@ -2,6 +2,17 @@
 
 Press **Run workflow** on **Release** with the default values. The same action is available locally as `task release`. The workflow requires exact full Check evidence and verified signing before promotion. Verify native store installation and Firefox Android behavior separately.
 
+## Permission changes
+
+Release cannot enter store-dashboard privacy fields. The first release with journeys adds the `alarms` and `webNavigation` permissions. Chrome and Edge show `webNavigation` as "Read your browsing history" and turn a store installation off after the update until the user accepts it; Firefox asks before it updates. Manual Chrome and Edge ZIP installations get the new permissions on **Reload** without a prompt. Before pressing **Run workflow** for a release that adds a permission:
+
+1. In the Chrome Web Store dashboard, open **Privacy practices**, enter each new permission's justification from the [listing copy's permission table](store/listing-copy.md#reviewer-fields), and save. For journeys, that means `alarms` and `webNavigation`. If the tab doesn't list a new permission yet, enter it as soon as Release's upload appears there. If publishing fails meanwhile, Release records Chrome as `retry:<code>` and the scheduled continuation tries again.
+2. Have the same justifications ready for Edge. Release doesn't update Edge Add-ons. When you upload the release's Edge ZIP in Partner Center, enter them under **Privacy** > **Permission justification**, and add the listing copy's product note to **Notes for certification** before **Publish**.
+
+Firefox needs no dashboard entry. Release sends both AMO versions the journey note, permission rationale, and smoke test with the build instructions.
+
+## Release flow
+
 Release snapshots current `main`, finds a successful full **Check** for that exact commit, or dispatches one and returns. Successful explicit Check and Deploy runs dispatch a resume-only continuation, and a new promotion dispatches one after retaining its authorizing evidence. Hourly scheduled continuations recover interrupted work and poll pending store reviews; neither callback nor schedule can start a release. Dependency installation waits until a release is ready for work. Private internal jobs use the local macOS VM; public and fork jobs use hosted macOS runners. Compatible Linux jobs prefer the local ARM64 runner, with the retained hosted x64 route for branded desktop browsers.
 
 The workflow chooses the next three-part version above `package.json` and approved downloads. Store adapters then refuse a conflicting same-version submission and resume a matching one. A recovery may supply the optional version override and adoption switch only when existing bytes are being verified. The source commit, version, Check run, package hashes, and state revisions are stored as append-only release assets. After the atomic candidate is uploaded, its GitHub Release becomes a prerelease so read-only Check jobs can verify it; the prerelease flag remains until website deployment and both stores publish. Re-running the button resumes those bytes.

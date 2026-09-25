@@ -21,6 +21,18 @@ test('public build removes stale files and publishes only help, privacy and a 40
   assert.doesNotMatch(policy, /href="\/(?:privacy\/)?"/);
 });
 
+test('store support and privacy pages explain the journeys update for each installation type', async () => {
+  execFileSync(process.execPath, ['scripts/site/build-support-site.mjs']);
+  const help = await readFile('artifacts/store-site/support/index.html', 'utf8');
+  assert.match(help, /If Chrome or Edge turned anmerko off after an update, open the browser(?:'|&#39;|’)s Extensions page and accept the new permission/);
+  assert.match(help, /<code>comments\.md<\/code>, or <code>prompt\.md<\/code> for a journey/);
+  const policy = await readFile('artifacts/store-site/support/privacy/index.html', 'utf8');
+  assert.match(policy, /When a store installation updates from a version without journeys, desktop Chrome and Edge turn anmerko off/);
+  assert.match(policy, /A manual ZIP installation in Chrome or Edge doesn(?:'|&#39;|’)t ask/);
+  assert.doesNotMatch(policy, /When anmerko updates from a version without journeys/);
+  assert.match(policy, /private or incognito windows/);
+});
+
 test('public routes cover the support namespace without replacing the main site', async () => {
   const config = JSON.parse(await readFile('site/support/wrangler.jsonc', 'utf8'));
   assert.deepEqual(config.routes, [

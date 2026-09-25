@@ -37,11 +37,11 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 
 Chrome and Edge show `webNavigation` as “Read your browsing history” and Firefox as “Access browser activity during navigation”. anmerko never reads your browser history. Navigation events are used only for the tab being recorded, and only the same-origin page URLs that become journey steps are kept, locally, with that journey.
 
-Firefox packages omit `sidePanel`. When anmerko updates from a version without journeys, desktop Chrome and Edge turn anmerko off until you accept the `webNavigation` warning, and Firefox waits for your approval before updating.
+Firefox packages omit `sidePanel`. When a store installation updates from a version without journeys, desktop Chrome and Edge turn anmerko off until you accept the `webNavigation` warning, and Firefox waits for your approval before updating. A manual ZIP installation in Chrome or Edge doesn't ask: replacing its files and selecting **Reload** grants the new permissions and keeps anmerko on. Installing a newer signed Firefox XPI asks for your approval first.
 
 anmerko holds no host permissions and no optional permissions, and never prompts for site access. `activeTab` covers only the website address where you activate it — in Firefox, only until that page reloads or opens another page — so a journey records only where you started it. A different domain, subdomain, port, or protocol ends the journey, and in Firefox so does any page load.
 
-Journeys aren't available on iPhone or iPad. Edge there installs the desktop Edge package, so it lists the same permissions, including `webNavigation`, but anmerko never records a journey there. Orion's package omits `alarms`, `sidePanel`, and `webNavigation`.
+Journeys aren't available on iPhone or iPad, or in private or incognito windows, even if you allow anmerko to run there. Edge on iPhone and iPad installs the desktop Edge package, so it lists the same permissions, including `webNavigation`, but anmerko never records a journey there. Orion's package omits `alarms`, `sidePanel`, and `webNavigation`.
 
 ## Limits
 
