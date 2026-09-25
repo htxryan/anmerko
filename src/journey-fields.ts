@@ -40,8 +40,9 @@ const UI_HOSTS = new Set(['anmerko-overlay', 'anmerko-journey-strip']);
 // Secret cues come from a field's name, id, and autocomplete (identifiers)
 // and from its label, aria-label, aria-labelledby text, and placeholder
 // (prose). Matching is fail-closed: ambiguous security, payment, and banking
-// controls are omitted. Text is split into lowercase tokens on
-// non-alphanumerics and camelCase boundaries.
+// controls are omitted. Text loses diacritics and is split into lowercase
+// tokens on non-alphanumerics and camelCase boundaries; a run of single
+// letters also counts as one token (`C.V.V.`, `P I N`).
 //
 // Whole-word cues match a single token (trailing digits ignored, so `cvv2`
 // matches) or two adjacent tokens joined (`account no`, `acctNo`,
@@ -50,29 +51,40 @@ const UI_HOSTS = new Set(['anmerko-overlay', 'anmerko-journey-strip']);
 const SECRET_WORDS = new Set([
   'password', 'passwd', 'pwd', 'passcode', 'passphrase', 'passkey',
   'secret', 'secrets', 'token', 'tokens', 'apikey', 'credential', 'credentials',
-  'ssn', 'cvv', 'cvc', 'csc', 'cvn', 'cvd', 'otp', 'totp', 'hotp', 'pin', '2fa', 'mfa',
-  'iban', 'mnemonic', 'expiry', 'expiration', 'mmyy', 'mmyyyy',
+  'ssn', 'cvv', 'cvc', 'ccv', 'csc', 'cvn', 'cvd', 'otp', 'totp', 'hotp', 'pin', '2fa', 'mfa', 'twofa',
+  'iban', 'mnemonic', 'expiry', 'expiration', 'mmyy', 'mmyyyy', 'ccexp',
   'accountno', 'accountnum', 'acctno', 'acctnum', 'acctnumber', 'accno', 'accnum', 'accnumber',
   'routingno', 'routingnum', 'sortcode',
   'authcode', 'accesscode', 'resetcode', 'logincode', 'smscode', 'activationcode',
   'licensekey', 'licencekey', 'productkey', 'activationkey', 'recoverykey', 'encryptionkey',
-  'signingkey', 'sshkey', 'masterkey',
+  'signingkey', 'sshkey', 'masterkey', 'senha',
 ]);
 // Identifier-only words: in label or placeholder prose they are too ambiguous
 // (`Boarding pass`, `Cc`, `Card title`).
 const IDENTIFIER_SECRET_WORDS = new Set(['pass', 'pw', 'card', 'cc', 'ccnum', 'ccn', 'cid']);
+// Card security code spellings match anywhere inside one token (`cardcvv`,
+// `cvvnumber`, `CARDCCV`), since no ordinary word contains them; `csc` and
+// `cvn` match at a token's start or end (`cscnumber`, `cardcsc`). They never
+// match across words, so `CV cover letter` and `Basic CV` stay recordable.
+const CARD_CODE_TOKEN = /cvv|cvc|ccv|^(?:csc|cvn)|(?:csc|cvn)$/;
 // Distinctive compounds matched anywhere once separators are removed
-// (`userPassword`, `one-time-code`, `x_api_key`, `Security code`). `code`,
+// (`userPassword`, `x_api_key`, `Security code`, `Mot de passe`). `code`,
 // `number`, `key`, and `name` alone are never cues, so postal, promo,
 // coupon, and confirmation codes, phone numbers, and account or display
 // names stay recordable.
 const COMPOUND_SECRET_PATTERN = new RegExp([
-  'password', 'passwd', 'passphrase', 'passcode', 'secret', 'apikey', 'onetime', 'totp', 'hotp', 'twofactor',
+  'password', 'passwd', 'passwort', 'kennwort', 'motdepasse', 'contrasen', 'wachtwoord',
+  'passphrase', 'passcode', 'secret', 'apikey', 'onetimecode', 'twofactor',
   'cardnum', 'creditcard', 'debitcard', 'cardholder', 'nameoncard', 'cardverification', 'cardsecurity', 'ccnum',
-  'socialsecurity', 'securitycode', 'securityanswer', 'verificationcode', 'verifycode', 'recoverycode', 'backupcode',
-  'privatekey', 'accesskey', 'seedphrase', 'recoveryphrase', 'mnemonic',
-  'accountnumber', 'routingnumber', 'bankaccount', '(?:exp|expiry|expiration)(?:month|year|date|mm|yy)',
+  'socialsecurity', 'securitycode', 'securityanswer', 'securityquestion', 'sicherheitscode', 'codigodeseguridad',
+  'verif(?:y|ication)?code', 'auth(?:entication|orization)?code', 'recoverycode', 'backupcode',
+  'priv(?:ate)?key', 'accesskey', 'seedphrase', 'recoveryphrase', 'walletseed', 'mnemonic',
+  'accountnumber', 'routingnumber', 'bankacc(?:oun)?t', '(?:exp|expiry|expiration)(?:month|year|date|mm|yy|yr)',
 ].join('|'));
+// Identifier-only compounds: in prose they also join ordinary words
+// (`One-time donation`, `Shot put`, `Hotpot order`); prose still matches
+// `TOTP`, `HOTP`, and `one-time code`.
+const IDENTIFIER_COMPOUND_PATTERN = /onetime|totp|hotp/;
 const SENSITIVE_AUTOCOMPLETE = new Set(['current-password', 'new-password', 'one-time-code']);
 
 function isFieldElement(value: unknown): value is FieldElement {
@@ -105,17 +117,22 @@ const NON_LABEL_TAGS = new Set(['select', 'option', 'optgroup', 'datalist', 'tex
 const MAX_LABEL_CHARACTERS = 512;
 
 function cueTokens(text: string): string[] {
-  return text
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/([a-z\d])(?=[A-Z])|([A-Z])(?=[A-Z][a-z])/g, '$1$2 ')
     .toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
 function hasSecretCues(text: string, identifier: boolean): boolean {
   const tokens = cueTokens(text);
+  const letterRuns = (tokens.join(' ').match(/\b[a-z](?: [a-z]\b)+/g) ?? []).map(run => run.replace(/ /g, ''));
   const secret = (word: string) => SECRET_WORDS.has(word) || (identifier && IDENTIFIER_SECRET_WORDS.has(word));
-  if (tokens.some((token, index) => secret(token) || secret(token.replace(/\d+$/, ''))
-    || (index > 0 && secret(tokens[index - 1] + token)))) return true;
-  return COMPOUND_SECRET_PATTERN.test(tokens.join(''));
+  if (tokens.some((token, index) => {
+    const bare = token.replace(/\d+$/, '');
+    return secret(token) || secret(bare) || CARD_CODE_TOKEN.test(bare)
+      || (index > 0 && secret(tokens[index - 1] + token));
+  }) || letterRuns.some(run => secret(run) || CARD_CODE_TOKEN.test(run))) return true;
+  const joined = tokens.join('');
+  return COMPOUND_SECRET_PATTERN.test(joined) || (identifier && IDENTIFIER_COMPOUND_PATTERN.test(joined));
 }
 
 function hasRevealCues(haystack: string): boolean {

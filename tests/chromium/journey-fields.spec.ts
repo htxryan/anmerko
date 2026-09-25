@@ -322,12 +322,16 @@ test('secret, verification, banking, and card-expiry names are excluded without 
     'cvv2', 'card_cvc', 'cardCVV', 'cvcCode', 'CVV', 'csc', 'cvn', 'cvd', 'security_answer', 'passphrase',
     'api-key', 'client_secret', 'authCode', 'twoFactorCode', 'otpCode', 'license_key', 'acctNo', 'sort_code',
     'SSNField', 'user_pw', 'recovery_phrase', 'bank_account',
+    'cardcvv', 'cvvcode', 'ccv', 'cvvnumber', 'cardccv', 'cvcnumber', 'cardcvc', 'CARDCVV', 'cscnumber', 'cardcsc',
+    'cvnCode', 'verifcode', 'authenticationCode', 'authorization_code', 'security_question_answer', 'twofa', 'twoFA',
+    'privkey', 'priv_key', 'wallet_seed', 'ccexp', 'cc_exp', 'exp_yr', 'bankacct', 'passwort', 'kennwort',
   ];
   const recordable = [
     'account_name', 'accountNotes', 'display_name', 'displayName', 'email', 'search', 'comment',
     'postal_code', 'promo_code', 'coupon-code', 'country_code', 'confirmation_code', 'username',
     'company', 'passenger', 'keyword', 'product_keyword', 'expected_date', 'experience', 'discard_reason',
     'spinner_label', 'phone_number', 'order-number',
+    'cv_cover_letter', 'basic_cv', 'services', 'civic_number', 'focus_keyphrase', 'author', 'export_mode',
   ];
   await page.setContent('<form id="fields"></form><button type="button" id="other">Other</button>');
   await page.evaluate(([excluded, recordable]) => {
@@ -366,6 +370,37 @@ test('secret, verification, banking, and card-expiry names are excluded without 
     return entered.kind === 'text' ? entered.value : `selection:${entered.values.join(',')}`;
   });
   expect(values).toEqual([...recordable.map(name => `value:${name}`), 'selection:February']);
+  expectAllBatchesValid(seen);
+});
+
+test('card-code spellings, spelled-out initialisms, and translated labels are prose secret cues', async ({ page }) => {
+  await page.setContent(`
+    <input type="text" id="p1" name="first" placeholder="CCV">
+    <label for="p2">C.V.V.</label><input type="text" id="p2" name="second">
+    <input type="text" id="p3" name="third" aria-label="Authentication code">
+    <label for="p4">Answer to your security question</label><input type="text" id="p4" name="fourth">
+    <label for="p5">Contraseña</label><input type="text" id="p5" name="fifth">
+    <input type="text" id="p6" name="sixth" placeholder="Mot de passe">
+    <label for="p7">Código de seguridad</label><input type="text" id="p7" name="seventh">
+    <label for="p8">Senha</label><input type="text" id="p8" name="eighth">
+    <label for="p9">One-time donation</label><input type="text" id="p9" name="ninth">
+    <label for="p10">Shot put distance</label><input type="text" id="p10" name="tenth">
+    <input type="text" id="p11" name="eleventh" placeholder="Hotpot order">
+    <label for="p12">CV cover letter</label><input type="text" id="p12" name="twelfth">
+    <label for="p13">Basic CV</label><input type="text" id="p13" name="thirteenth">
+    <button type="button" id="other">Other</button>
+  `);
+  const seen: unknown[] = [];
+  await attach(page, seen);
+
+  for (let index = 1; index <= 13; index++) {
+    await page.fill(`#p${index}`, `value-p${index}`);
+    await page.click('#other');
+  }
+
+  expect(seen.map(commit => (commit as any).enteredValue.value)).toEqual(
+    ['value-p9', 'value-p10', 'value-p11', 'value-p12', 'value-p13'],
+  );
   expectAllBatchesValid(seen);
 });
 
