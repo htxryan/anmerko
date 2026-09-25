@@ -148,7 +148,7 @@ jobs:
 
   firefox:
     name: Firefox / Android
-    needs: [changes, desktop, release-proof]
+    needs: [changes, desktop, android, release-proof]
     if: ${{ !cancelled() && needs.changes.outputs.reuse != 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.firefox == 'true') }}
     runs-on: ${{ fromJSON(github.event.repository.private && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_MODE != 'hosted' && '["self-hosted","Linux","ARM64","macbook-linux"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 15
@@ -162,6 +162,11 @@ jobs:
         if: needs.desktop.result != 'success'
         run: |
           echo '::error::The shared Chrome, Edge, and Firefox matrix failed. Inspect the individual browser steps; this aggregate alone does not identify the failing browser.'
+          exit 1
+      - name: Require the Firefox for Android emulator suite
+        if: needs.android.result != 'success'
+        run: |
+          echo '::error::Firefox for Android failed in the emulator. Inspect the "Firefox Android emulator" job.'
           exit 1
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
@@ -186,6 +191,46 @@ jobs:
           path: |
             artifacts/
             !artifacts/firefox-ci/**
+
+  android:
+    name: Firefox Android emulator
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.reuse != 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.firefox == 'true') }}
+    # The x86_64 emulator needs KVM, which hosted x64 Linux runners provide and
+    # the local ARM64 runner cannot, so this job always uses a hosted runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build:firefox
+      - name: Allow the emulator to use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test release Firefox for Android in an emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          cores: 4
+          ram-size: 4096M
+          disable-animations: true
+          script: npm run test:android
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: anmerko-firefox-android-emulator
+          retention-days: 7
+          path: artifacts/android-*/
 
   # The same reusable workflow validates PRs and explicit release candidates.
   desktop:

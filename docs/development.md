@@ -23,6 +23,7 @@ Its local test page is maintained at `tests/fixtures/demo/index.html`.
 | `npm run package` | Build a versioned ZIP in `artifacts/` |
 | `npm run package:orion` | Build `artifacts/anmerko-<version>-orion.zip` for folder-based installation in Orion on iPhone |
 | `npm run test:desktop -- --browser chrome` | Test installed Chrome with the production manifest |
+| `npm run test:android` | Test release Firefox for Android on a running emulator or device (after `npm run build:firefox`) |
 | `npm run test:desktop -- --browser chrome --manual` | Open a disposable profile for native UI checks |
 | `node scripts/extension/icons.mjs` | Regenerate extension icons |
 
@@ -106,7 +107,11 @@ For Firefox, run `npm run build:firefox`, `npm run package:firefox`, and `npm ru
 | `FIREFOX_HEADLESS=0` | Show the test browser |
 | `FIREFOX_XPI=/absolute/path/to/candidate.xpi` | Test signed installation, upgrade, and restart |
 
-The Mozilla wrapper pins Node 22.23.2 because its linter fails under Node 24. Firefox 142 requires local-path temporary loading. Its retargeted touch clicks need suppression until a fresh pointerdown; ZIP checks must wait for the end record. Keep those shared fixes covered by regressions. Validate Firefox Android installation and behavior in an Android runtime, including a disposable Android emulator. Signing and publication gates remain in [the release guide](release-process.md).
+The Mozilla wrapper pins Node 22.23.2 because its linter fails under Node 24. Firefox 142 requires local-path temporary loading. Its retargeted touch clicks need suppression until a fresh pointerdown; ZIP checks must wait for the end record. Keep those shared fixes covered by regressions.
+
+`npm run test:android` installs the latest release Firefox for Android APK (set `FIREFOX_ANDROID_VERSION` to pin a version) on the emulator or device that `adb` selects. It is a quick sanity check: it loads the unchanged `dist-firefox` package as a temporary add-on through geckodriver, activates it through GeckoView's browser-action entry point (the same call Firefox's Extensions menu makes), and confirms the panel opens without docking. Screenshots go to `artifacts/android-firefox-*/`. Desktop suites cover feedback behavior. The **Firefox Android emulator** CI job runs this suite on an API 34 x86_64 emulator on a hosted runner, because the emulator needs KVM. The required **Firefox / Android** check fails when that job fails. This suite does not cover Firefox's native menu rendering or signed store installation.
+
+Signing and publication gates remain in [the release guide](release-process.md).
 
 The development-only `addons-linter` dependency currently inherits `image-size`
 through `web-ext`. A package override pins `image-size` 2.0.4 to address
