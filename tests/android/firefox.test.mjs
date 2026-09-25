@@ -107,7 +107,7 @@ test('Firefox for Android opens the production panel from the browser action', {
     await driver.wait(() => driver.executeScript(host => !!document.querySelector(host)?.shadowRoot.querySelector('.panel'), expectedHost),
       15000, `${expectedHost} opens after the browser action`);
     assert.match(await driver.executeScript(() => navigator.userAgent), /Android/);
-    assert.equal(await driver.executeScript(host => !!document.querySelector(host).shadowRoot.querySelector('[aria-label="Dock sidebar"]'), expectedHost),
+    assert.equal(await driver.executeScript(host => document.querySelector(host).shadowRoot.querySelector('.dock')?.checkVisibility() ?? false, expectedHost),
       false, 'docking stays unavailable on Android');
     await screenshot('panel');
   } catch (error) {
