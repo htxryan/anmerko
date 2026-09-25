@@ -2,10 +2,14 @@ import { copyPrompt } from '../shared/clipboard';
 import { test, expect } from '@playwright/test';
 const panel = (page: import('@playwright/test').Page) => page.getByRole('complementary', { name: 'anmerko feedback panel' });
 
-test('the demo offers no journey launch without the extension', async ({ page }) => {
+test('the demo shows the three comment actions and no journey launch without the extension', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Try the Demo' }).click();
-  await panel(page).getByRole('button', { name: 'More Comment Options' }).click();
+  const actions = panel(page).getByRole('group', { name: 'Comment Actions' });
+  await expect(actions.getByRole('button')).toHaveCount(3);
+  for (const name of ['Select Element', 'Take Screenshot', 'New Global Comment']) await expect(actions.getByRole('button', { name, exact: true })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: 'More Comment Options' })).toHaveCount(0);
+  await expect(panel(page).locator('#comment-menu')).toHaveCount(0);
   await expect(panel(page).getByRole('menuitem', { name: 'Record journey' })).toHaveCount(0);
 });
 
