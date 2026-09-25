@@ -159,6 +159,42 @@ test('review edits refused by a save in progress say so, and real staleness stil
   });
 });
 
+test('a summary write names its journey and is refused once another journey is under review', async ({ page }) => {
+  await page.addScriptTag({ content: clientBundle });
+  const outcomes = await page.evaluate(async () => {
+    const { clientModule } = globalThis as HarnessWindow;
+    const runtime = (globalThis as any).chrome.runtime;
+    const reviewing = (journeyId: string) => ({ phase: 'reviewing', epoch: 2, sessionId: 'S', journeyId, ownerTabId: 1, ownerWindowId: 1,
+      warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+      draft: { id: journeyId, revision: 3, images: {}, steps: [] } });
+    // The review this view typed in (J1) was saved or closed, and J2 is now under review or saving.
+    const run = async (current: unknown) => {
+      const sent: unknown[] = [];
+      runtime.sendMessage = async (message: { type: string; journeyId?: string }) => {
+        sent.push(message.type === 'ANMERKO_JOURNEY_STATE' ? message.type : { type: message.type, journeyId: message.journeyId });
+        return message.type === 'ANMERKO_JOURNEY_STATE' ? { ok: true, value: current } : { ok: true };
+      };
+      try {
+        await clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })).updateSummary('Expected', 'Actual', 'J1');
+        return { sent, outcome: 'ok' };
+      } catch (error) {
+        return { sent, outcome: `${(error as { code?: string }).code ?? 'none'}: ${(error as Error).message}` };
+      }
+    };
+    return {
+      sameJourney: await run(reviewing('J1')),
+      otherJourney: await run(reviewing('J2')),
+      otherJourneySaving: await run({ ...reviewing('J2'), phase: 'saving' }),
+    };
+  });
+  const stale = 'stale-review: Another review tab changed this journey. Reload the review and try again.';
+  expect(outcomes).toEqual({
+    sameJourney: { sent: ['ANMERKO_JOURNEY_STATE', { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', journeyId: 'J1' }], outcome: 'ok' },
+    otherJourney: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale },
+    otherJourneySaving: { sent: ['ANMERKO_JOURNEY_STATE'], outcome: stale },
+  });
+});
+
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   await page.evaluate(() => {
