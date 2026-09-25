@@ -110,6 +110,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let imageBusy: string | null = null;
   let confirmingImageRemove: string | null = null;
   let pendingFocus: string[] | null = null;
+  let imageStatus: { stepId: string; text: string } | null = null;
 
   async function refresh() {
     const current = ++version;
@@ -137,6 +138,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         confirmingRemove = null;
         confirmingImageRemove = null;
         imageBusy = null;
+        imageStatus = null;
         pendingFocus = null;
         editingStepId = null;
         valueBusy = null;
@@ -361,8 +363,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     imageId: string,
     change: JourneyImageChange,
     returnTo: string,
+    subject: string,
   ): Promise<void> {
     imageBusy = step.id;
+    imageStatus = null;
     error = '';
     render();
     // A removed screenshot takes its controls with it; keep the reader on its step.
@@ -370,6 +374,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     try {
       await client.reviewImage(imageId, change);
       error = '';
+      imageStatus = { stepId: step.id, text: `Screenshot for ${subject} ${change.operation === 'remove' ? 'removed' : 'masked'}.` };
       if (change.operation === 'remove') pendingFocus = [`step-${step.id}`];
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'Could not update the screenshot. Try again.';
@@ -384,12 +389,14 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     imageId: string,
     image: JourneyDraftImage,
     note: string | undefined,
+    subject: string,
   ): Promise<void> {
-    if (busy || imageBusy !== null || imageEditor || state.phase !== 'reviewing' || !image.dataUrl) return;
+    if (busy || saveBusy || imageBusy !== null || imageEditor || state.phase !== 'reviewing' || !image.dataUrl) return;
     const maskedFrom = image.dataUrl;
     const abort = new AbortController();
     imageEditor = { journeyId: state.draft.id, imageId, abort };
     confirmingImageRemove = null;
+    imageStatus = null;
     error = '';
     render();
     const returnTo = `mask-image-${step.id}`;
@@ -404,7 +411,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     await changeImage(step, imageId, result.kind === 'applied'
       ? { operation: 'replace', image: result.image, maskedFrom }
-      : { operation: 'remove' }, returnTo);
+      : { operation: 'remove' }, returnTo, subject);
   }
 
   function renderImageReview(
@@ -414,31 +421,46 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     sharedSteps: number[],
   ): HTMLElement {
     const wrap = node('div', undefined, 'journey-image-actions');
-    if (image.redacted === true) wrap.append(node('p', 'Masked during review.', 'journey-edited'));
+    const maskDescription: string[] = [];
+    if (image.redacted === true) {
+      const masked = node('p', 'Masked during review.', 'journey-edited');
+      masked.id = `journey-image-masked-${step.id}`;
+      maskDescription.push(masked.id);
+      wrap.append(masked);
+    }
+    const help = node('p', 'Mask part of this screenshot or remove it before saving. Masks cannot be undone.', 'journey-help');
+    help.id = `journey-image-help-${step.id}`;
+    maskDescription.push(help.id);
+    wrap.append(help);
     const shared = sharedSteps.length > 1
       ? `Steps ${stepList(sharedSteps)} share this screenshot. Masking or removing it changes all of them.`
       : undefined;
-    const note = node('p', shared ?? 'Mask part of this screenshot or remove it before saving. Masks cannot be undone.', 'journey-help');
-    note.id = `journey-image-note-${step.id}`;
-    wrap.append(note);
+    const sharedId = `journey-image-shared-${step.id}`;
+    if (shared) {
+      const note = node('p', shared, 'journey-help');
+      note.id = sharedId;
+      maskDescription.push(sharedId);
+      wrap.append(note);
+    }
+    const subject = sharedSteps.length > 1 ? `steps ${stepList(sharedSteps)}` : `step ${step.seq}`;
     if (typeof (client as Partial<JourneyClient>).reviewImage !== 'function') return wrap;
     const actions = node('div', undefined, 'journey-step-actions');
-    const disabled = busy || imageBusy !== null;
+    const disabled = busy || saveBusy || imageBusy !== null;
     if (confirmingImageRemove === step.id) {
       const confirm = node('button', `Confirm remove screenshot for step ${step.seq}`, 'journey-danger');
       confirm.type = 'button';
       confirm.disabled = disabled;
       confirm.setAttribute('data-focus-id', `confirm-remove-image-${step.id}`);
-      if (shared) confirm.setAttribute('aria-describedby', note.id);
+      if (shared) confirm.setAttribute('aria-describedby', sharedId);
       const disarm = () => {
         confirmingImageRemove = null;
         render();
         focusControl(`remove-image-${step.id}`);
       };
       confirm.addEventListener('click', () => {
-        if (busy || imageBusy !== null) return;
+        if (busy || saveBusy || imageBusy !== null) return;
         confirmingImageRemove = null;
-        void changeImage(step, imageId, { operation: 'remove' }, `remove-image-${step.id}`);
+        void changeImage(step, imageId, { operation: 'remove' }, `remove-image-${step.id}`, subject);
       });
       confirm.addEventListener('keydown', event => {
         if (event.key === 'Escape') { event.preventDefault(); disarm(); }
@@ -454,15 +476,15 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         mask.type = 'button';
         mask.disabled = disabled;
         mask.setAttribute('data-focus-id', `mask-image-${step.id}`);
-        if (shared) mask.setAttribute('aria-describedby', note.id);
-        mask.addEventListener('click', () => { void openImageEditor(step, imageId, image, shared); });
+        mask.setAttribute('aria-describedby', maskDescription.join(' '));
+        mask.addEventListener('click', () => { void openImageEditor(step, imageId, image, shared, subject); });
         actions.append(mask);
       }
       const remove = node('button', `Remove screenshot for step ${step.seq}`, 'journey-secondary');
       remove.type = 'button';
       remove.disabled = disabled;
       remove.setAttribute('data-focus-id', `remove-image-${step.id}`);
-      if (shared) remove.setAttribute('aria-describedby', note.id);
+      if (shared) remove.setAttribute('aria-describedby', sharedId);
       remove.addEventListener('click', () => {
         confirmingImageRemove = step.id;
         confirmingRemove = null;
@@ -714,7 +736,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const ack = node('input');
     ack.type = 'checkbox';
     ack.checked = acknowledged;
-    ack.disabled = busy || saveBusy;
+    // A pending mask or removal must land before the draft can be saved.
+    ack.disabled = busy || saveBusy || imageBusy !== null;
     ack.setAttribute('data-focus-id', 'journey-ack');
     ack.setAttribute('aria-label', 'I understand this journey retains full URLs, any entered values, and its kept screenshots.');
     ack.addEventListener('change', () => { acknowledged = ack.checked; render(); });
@@ -741,7 +764,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     const save = node('button', 'Save journey', 'journey-primary');
     save.type = 'button';
-    save.disabled = reasons.length > 0 || busy || saveBusy;
+    save.disabled = reasons.length > 0 || busy || saveBusy || imageBusy !== null;
     save.setAttribute('aria-describedby', describedBy);
     save.setAttribute('data-focus-id', 'journey-save');
     save.addEventListener('click', () => {
@@ -1128,6 +1151,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
             : step.image.status === 'removed' ? 'removed during review' : 'capture pending';
           item.append(node('p', `Screenshot unavailable: ${reason}.`, 'journey-help'));
         }
+        if (imageStatus?.stepId === step.id) {
+          const status = node('p', imageStatus.text, 'journey-status');
+          status.setAttribute('role', 'status');
+          item.append(status);
+        }
         const entered = renderEnteredValue(step as { id: string; seq: number; kind: string; enteredValue?: { kind: string; value?: string; values?: string[]; checked?: boolean; truncated?: boolean; edited?: true } });
         if (entered) item.append(entered);
         item.append(renderUrlRedact(step as { id: string; seq: number; sourceUrl: string; image: { status: string; imageId?: string } }, state.draft));
@@ -1158,7 +1186,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       }
     } else if (oldFocus) Array.from(view.querySelectorAll('button')).find(button => button.textContent === oldFocus && !button.disabled)?.focus();
     if (pendingFocus !== null && imageBusy === null) {
-      focusControl(...pendingFocus);
+      // Reclaim only focus the pending change dropped; a reader who moved on keeps their place.
+      const settled = document.activeElement;
+      if (settled === null || settled === document.body) focusControl(...pendingFocus);
       pendingFocus = null;
     }
   }
