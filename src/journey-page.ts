@@ -28,6 +28,8 @@ if (!journeysEnabled) {
   // first Start, even one that fails. A review tab opened from the toolbar has
   // no link at all. Either way this tab then offers guidance instead of Start.
   let launchUsed = intent === undefined;
+  // Start and Cancel start stay until the one start this link allows settles.
+  let startInFlight = false;
   const base = createJourneyClient(undefined, intent);
   const client = {
     ...base,
@@ -36,14 +38,17 @@ if (!journeysEnabled) {
       if (session.phase !== 'idle') launchUsed = true;
       return session;
     },
-    canStart: () => !launchUsed,
+    canStart: () => !launchUsed || startInFlight,
     start: async (includeEnteredValues: boolean): Promise<void> => {
       launchUsed = true;
+      startInFlight = true;
       try {
         await base.start(includeEnteredValues);
       } catch (error) {
         if ((error as { code?: unknown } | null)?.code === 'launch-expired') showLaunchExpired();
         throw error;
+      } finally {
+        startInFlight = false;
       }
     },
   };

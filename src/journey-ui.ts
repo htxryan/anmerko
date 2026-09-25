@@ -157,6 +157,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   const urgentLive = node('p');
   urgentLive.setAttribute('aria-live', 'assertive');
   live.append(politeLive, urgentLive);
+  // A failed start is announced by inserting this alert once, not by the
+  // error text that each launch re-render rebuilds beside Start.
+  const startAlert = node('p');
+  startAlert.setAttribute('role', 'alert');
   // The mask dialog lives beside the view so review re-renders never remove it.
   const imageDialog = node('div', undefined, 'journey-image-dialog');
   root.append(view, live, imageDialog);
@@ -168,6 +172,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let includeEnteredValues = false;
   let error = '';
   let startError = '';
+  // Seen: shown while this surface was visible. A start error that arrives
+  // while the reader is on the website tab waits for them, focus included.
+  let startErrorSeen = false;
+  let startErrorFocus = false;
+  let startInFlight = false;
   let loadFailed = false;
   let summaryPending: { expected: string; actual: string } | null = null;
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -213,6 +222,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if ((next.phase === 'idle' || next.phase === 'saved')
         && state.phase !== 'idle' && state.phase !== 'saved') includeEnteredValues = false;
       state = next;
+      // A start error belongs to the launch view it failed in. Any other view
+      // makes it stale, except the brief "starting" of the start it reports.
+      if (next.phase !== 'idle' && !startInFlight) clearStartError();
       const exportKey = next.phase === 'reviewing' ? `${next.draft.id}@${next.draft.revision}`
         : next.phase === 'saved' ? `${next.journeyId}@${next.revision}` : null;
       if (exportStatusFor !== exportKey) { exportStatus = ''; exportStatusFor = null; }
@@ -352,6 +364,24 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       if (target instanceof HTMLElement && !target.matches(':disabled')) { target.focus(); return true; }
     }
     return false;
+  }
+
+  function clearStartError(): void {
+    startError = '';
+    startErrorSeen = false;
+    startErrorFocus = false;
+    startAlert.remove();
+    startAlert.textContent = '';
+  }
+
+  // Focus follows a failed start back to Start once this surface has focus, so
+  // a start that failed while the reader was on the website waits for them.
+  function focusStartError(): void {
+    if (!startErrorFocus || !startError || !alive || !document.hasFocus()) return;
+    startErrorFocus = false;
+    // A start that briefly reached "starting" moved focus to that heading.
+    const active = scopeActiveElement();
+    if (focusLost() || active?.getAttribute('data-focus-id') === 'journey-heading') focusControl('journey-start', 'journey-start-error');
   }
 
   async function refreshSavedList(): Promise<void> {
@@ -1290,30 +1320,34 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       start.addEventListener('click', () => {
         if (busy) return;
         const current = ++actionVersion;
-        const retry = ['journey-start', 'journey-start-error'];
-        startError = '';
+        clearStartError();
         error = '';
-        pendingFocus = retry;
+        pendingFocus = ['journey-start', 'journey-start-error'];
+        // Focus waits for a hidden surface, not for a visible sidebar whose reader moved to the page.
+        const failed = (caught: unknown) => {
+          startError = message(caught, 'Could not start the journey. Try again.');
+          startErrorFocus = document.hasFocus() || document.visibilityState !== 'visible';
+        };
         let request: Promise<void>;
         try { request = client.start(includeEnteredValues); }
         catch (caught) {
-          startError = message(caught, 'Could not start the journey. Try again.');
+          failed(caught);
           render();
-          focusControl(...retry);
+          focusStartError();
           return;
         }
         busy = true;
+        startInFlight = true;
         render();
         void request.catch(caught => {
-          if (current === actionVersion) startError = message(caught, 'Could not start the journey. Try again.');
+          if (current === actionVersion) failed(caught);
         }).finally(async () => {
+          startInFlight = false;
           if (current !== actionVersion) return;
           busy = false;
           if (!alive) return;
           await refresh();
-          // A start that briefly reached "starting" moved focus to that heading.
-          const active = scopeActiveElement();
-          if (startError && alive && (focusLost() || active?.getAttribute('data-focus-id') === 'journey-heading')) focusControl(...retry);
+          focusStartError();
         });
       });
       buttons.append(start);
@@ -1321,12 +1355,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       wrap.append(buttons);
     }
     if (startError) {
-      const alert = node('p', startError, 'journey-error');
-      alert.id = 'journey-start-error';
-      alert.setAttribute('role', 'alert');
-      alert.tabIndex = -1;
-      alert.setAttribute('data-focus-id', 'journey-start-error');
-      wrap.append(alert);
+      const shown = node('p', startError, 'journey-error');
+      shown.id = 'journey-start-error';
+      shown.tabIndex = -1;
+      shown.setAttribute('data-focus-id', 'journey-start-error');
+      wrap.append(shown);
     }
     return wrap;
   }
@@ -1473,6 +1506,11 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (error) {
       const alert = node('p', error, 'journey-error'); alert.setAttribute('role', 'alert'); view.append(alert);
     }
+    if (startError && !startErrorSeen && state.phase === 'idle' && document.visibilityState === 'visible') {
+      startErrorSeen = true;
+      startAlert.textContent = startError;
+      live.append(startAlert);
+    }
     let restored = false;
     if (focusId) {
       const restore = view.querySelector(`[data-focus-id="${CSS.escape(focusId)}"]`);
@@ -1502,13 +1540,17 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
   }
 
-  // Returning to this surface clears a start error that no longer applies.
+  // Returning to this surface clears a start error the reader already saw here.
+  // One that arrived while the surface was hidden is shown and announced now.
   const reactivated = () => {
     if (document.visibilityState !== 'visible' || !startError || !alive) return;
-    startError = '';
-    void refresh();
+    if (startErrorSeen) { clearStartError(); void refresh(); return; }
+    render();
+    focusStartError();
   };
+  const refocused = () => { focusStartError(); };
   document.addEventListener('visibilitychange', reactivated);
+  window.addEventListener('focus', refocused);
   const unsubscribe = client.subscribe(() => { void refresh(); });
   void refresh();
   return () => {
@@ -1516,6 +1558,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     imageEditor?.abort.abort();
     document.removeEventListener('visibilitychange', reactivated);
+    window.removeEventListener('focus', refocused);
     unsubscribe(); view.remove(); live.remove(); imageDialog.remove();
   };
 }

@@ -93,6 +93,52 @@ test('consumed launch intent shows guidance instead of a dead start', async ({ p
   expect(await section.evaluate(element => getComputedStyle(element).paddingTop)).toBe('24px');
 });
 
+test('a journey tab keeps Start and Cancel start while its one start is in flight, and keeps a failure that arrives while hidden', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body><main id="journey"></main></body></html>');
+  await page.evaluate(`location.hash = '#launch=${'a'.repeat(16)}'`);
+  await page.evaluate(`
+    let visible = true;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visible ? 'visible' : 'hidden' });
+    document.hasFocus = () => visible;
+    window.setVisible = value => {
+      visible = value;
+      document.dispatchEvent(new Event('visibilitychange'));
+      if (value) window.dispatchEvent(new Event('focus'));
+    };
+    window.chrome = {
+      runtime: {
+        getManifest: () => ({ background: { service_worker: 'background.js' } }),
+        sendMessage: message => {
+          if (message && message.type === 'ANMERKO_JOURNEY_STATE') return Promise.resolve({ ok: true, value: { phase: 'idle', epoch: 0 } });
+          if (message && message.type === 'ANMERKO_JOURNEY_LIST') return Promise.resolve({ ok: true, value: [] });
+          // The background shows the website tab, then cannot reach it.
+          if (message && message.type === 'ANMERKO_JOURNEY_START') return new Promise(resolve => { window.failStart = () => resolve({ ok: false, code: 'owner-unavailable' }); });
+          return Promise.resolve({ ok: false });
+        },
+        onMessage: { addListener: () => {}, removeListener: () => {} },
+      },
+    };
+  `);
+  await page.addScriptTag({ content: journeyPageBundle });
+  const start = page.getByRole('button', { name: 'Start journey', exact: true });
+  await start.click();
+  await expect(page.getByRole('button', { name: 'Cancel start', exact: true })).toBeEnabled();
+  await expect(start).toBeDisabled();
+  await expect(page.getByText(/^To record a new journey, go to the website tab/)).toHaveCount(0);
+  await page.evaluate(() => { (window as any).setVisible(false); (window as any).failStart(); });
+  const message = 'anmerko could not reach the website tab. On that tab, click anmerko in the browser toolbar or Extensions menu, then try again.';
+  const shown = page.locator('.journey-view').getByText(message, { exact: true });
+  await expect(shown).toBeAttached();
+  await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeAttached();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  // Returning to the tab shows and announces why the start failed.
+  await page.evaluate(() => (window as any).setVisible(true));
+  await expect(page.getByRole('alert')).toHaveText(message);
+  await expect(shown).toBeVisible();
+  await expect(shown).toBeFocused();
+});
+
 test('panels without a journey client keep exactly the three comment actions', async ({ page }) => {
   await mountPanel(page, {});
   const actions = page.getByRole('group', { name: 'Comment Actions' });

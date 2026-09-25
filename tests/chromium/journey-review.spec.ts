@@ -40,6 +40,7 @@ const bundle = () => buildSync({ stdin: { contents: `
   let staleListResult = [];
   let failingDeleteIds = [];
   let startError = null;
+  let startHook = null;
   let firefox = false;
   let startable = true;
   let reopenInto = null;
@@ -48,7 +49,11 @@ const bundle = () => buildSync({ stdin: { contents: `
     get pageLoadsEndJourney() { return firefox; },
     canStart: () => startable,
     read: async () => state,
-    start: async includeEnteredValues => { startCalls.push(includeEnteredValues); if (startError) throw new Error(startError); },
+    start: async includeEnteredValues => {
+      startCalls.push(includeEnteredValues);
+      startHook?.();
+      if (startError) throw new Error(startError);
+    },
     stop: async () => {},
     discard: async () => { state = { phase: 'idle', epoch: 9 }; changed(); },
     updateSummary: async (expected, actual) => {
@@ -277,6 +282,8 @@ const bundle = () => buildSync({ stdin: { contents: `
     reopenCalls: () => reopenCalls,
     deleteCalls: () => deleteCalls,
     failStart: message => { startError = message; },
+    // Runs inside Start, as the background does when it switches to the website tab.
+    onStart: hook => { startHook = hook; },
     setFirefox: value => { firefox = value; changed(); },
     setStartable: value => { startable = value; changed(); },
     // Reopening a saved journey lands in review at its saved revision.
@@ -1288,14 +1295,115 @@ test('a failed start shows its error beside Start, announces it, keeps focus the
   await expect(start).toBeFocused();
   await expect(start).toHaveAccessibleDescription(message);
   // The error follows Start directly, above the saved list, so it is seen where the reader acted.
-  const [startBox, alertBox, savedBox] = await Promise.all([start.boundingBox(), alert.boundingBox(),
+  const shown = page.locator('.journey-view').getByText(message, { exact: true });
+  const [startBox, shownBox, savedBox] = await Promise.all([start.boundingBox(), shown.boundingBox(),
     page.getByRole('region', { name: 'Saved journeys' }).boundingBox()]);
-  expect(alertBox!.y).toBeGreaterThan(startBox!.y);
-  expect(alertBox!.y + alertBox!.height).toBeLessThan(savedBox!.y);
-  expect(alertBox!.y - (startBox!.y + startBox!.height)).toBeLessThan(40);
+  expect(shownBox!.y).toBeGreaterThan(startBox!.y);
+  expect(shownBox!.y + shownBox!.height).toBeLessThan(savedBox!.y);
+  expect(shownBox!.y - (startBox!.y + startBox!.height)).toBeLessThan(40);
   // Coming back to the surface clears the stale error.
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(alert).toHaveCount(0);
+  await expect(shown).toHaveCount(0);
+});
+
+// Fakes page visibility and document focus, as a journey tab sees them while
+// the background shows the website tab.
+async function fakeVisibility(page: Page) {
+  await page.evaluate(() => {
+    let visible = true;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visible ? 'visible' : 'hidden' });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => !visible });
+    document.hasFocus = () => visible;
+    (window as any).setVisible = (value: boolean) => {
+      visible = value;
+      document.dispatchEvent(new Event('visibilitychange'));
+      if (value) window.dispatchEvent(new Event('focus'));
+    };
+  });
+}
+
+test('a start error is announced once and survives launch re-renders without a new alert', async ({ page }) => {
+  await openIdle(page);
+  const message = 'The initial journey screenshot failed. Try again.';
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify(message)})`);
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(message);
+  // The visible error is plain text; the one alert lives outside the re-rendered view.
+  await expect(page.locator('.journey-view [role="alert"]')).toHaveCount(0);
+  await page.evaluate(() => {
+    (window as any).alertsAdded = 0;
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const added of Array.from(record.addedNodes)) {
+          if (added instanceof Element && (added.matches('[role="alert"]') || added.querySelector('[role="alert"]'))) (window as any).alertsAdded++;
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await page.evaluate(`journeyReviewHarness.setList(${JSON.stringify(savedItems())})`);
+  await expect(page.getByRole('region', { name: 'Saved journeys' })).toBeVisible();
+  await expect(page.locator('.journey-view').getByText(message, { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(message);
+  expect(await page.evaluate(() => (window as any).alertsAdded)).toBe(0);
+});
+
+test('a start error clears once another view replaces the launch view', async ({ page }) => {
+  await openIdle(page);
+  const message = 'The initial journey screenshot failed. Try again.';
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify(message)})`);
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(message);
+  // A review opened elsewhere, then discarded here, returns to a launch view without the old error.
+  await page.evaluate('journeyReviewHarness.setReviewing()');
+  await expect(page.getByRole('heading', { name: 'Review journey' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm discard journey', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeFocused();
+  await expect(page.getByText(message, { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).not.toHaveAttribute('aria-describedby');
+});
+
+test('a start that fails while the surface is hidden keeps its error until the reader returns to see it', async ({ page }) => {
+  await openIdle(page);
+  await fakeVisibility(page);
+  const message = 'anmerko could not reach the website tab. On that tab, click anmerko in the browser toolbar or Extensions menu, then try again.';
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify(message)})`);
+  // The background switches to the website tab before the start fails.
+  await page.evaluate('journeyReviewHarness.onStart(() => setVisible(false))');
+  const start = page.getByRole('button', { name: 'Start journey', exact: true });
+  await start.click();
+  const shown = page.locator('.journey-view').getByText(message, { exact: true });
+  await expect(shown).toBeAttached();
+  // Nothing is announced to a hidden surface, and focus is not taken there.
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(start).not.toBeFocused();
+  // Returning shows, announces, and focuses the failed start instead of clearing it.
+  await page.evaluate('journeyReviewHarness.onStart(null)');
+  await page.evaluate(() => (window as any).setVisible(true));
+  await expect(page.getByRole('alert')).toHaveText(message);
+  await expect(shown).toBeVisible();
+  await expect(start).toBeFocused();
+  await expect(start).toHaveAccessibleDescription(message);
+  // Once seen, leaving and returning again clears it.
+  await page.evaluate(() => (window as any).setVisible(false));
+  await page.evaluate(() => (window as any).setVisible(true));
+  await expect(shown).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('a start error seen in a visible sidebar never pulls focus back from the page', async ({ page }) => {
+  await openIdle(page);
+  const message = 'The initial journey screenshot failed. Try again.';
+  await page.evaluate(`journeyReviewHarness.failStart(${JSON.stringify(message)})`);
+  // The reader moves to the web page beside the sidebar while Start is in flight.
+  await page.evaluate('journeyReviewHarness.onStart(() => { document.hasFocus = () => false; })');
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(message);
+  await page.evaluate(() => { document.hasFocus = () => true; window.dispatchEvent(new Event('focus')); });
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
 
 test('Firefox launches say up front that page loads end the journey', async ({ page }) => {
