@@ -24,26 +24,29 @@ With anmerko, you can attach comments to webpage elements, capture a region of t
 - Point to the element that needs attention.
 - Add screenshot comments when visual context matters.
 - Collect page-wide feedback alongside specific comments.
+- Record a journey of clicks and page changes on one website, with a screenshot per step, when a problem takes several actions to reproduce.
 - Keep comments and settings in your browser profile until you delete them.
 - Share only when you choose to copy or export.
 
 ## Reviewer fields
 
-**Product note:** anmerko stores feedback locally and shares it only through explicit copy or export actions. The package, documentation, listing assets, and support URLs use the current product name. No new permissions are requested.
+**Product note:** anmerko stores feedback locally and shares it only through explicit copy or export actions. The package, documentation, listing assets, and support URLs use the current product name. This version adds journeys: after the user chooses **Record journey**, anmerko records ordered clicks, same-origin page changes, and a screenshot per step in that tab, then opens a local review before anything can be copied or exported. It adds two API permissions and no host or optional permissions. `webNavigation` shows "Read your browsing history" in Chrome and Edge and "Access browser activity during navigation" in Firefox; it is used only while a user-started journey is recording, to order same-origin page changes in the recorded tab. Events from other tabs and frames are ignored, and no browsing history is read, stored, or sent. `alarms` shows no warning; it enforces the journey time limit and review expiry.
 
-**Smoke test:** Open a normal HTTPS page. Activate anmerko, save an element comment, capture a region and comment on it, and add page-wide feedback. Inspect the combined prompt, copy or export it, reopen Settings, and follow the support and privacy links in the store listing.
+**Smoke test:** Open a normal HTTPS page. Activate anmerko, save an element comment, capture a region and comment on it, and add page-wide feedback. Inspect the combined prompt, copy or export it, reopen Settings, and follow the support and privacy links in the store listing. Then record a short journey: choose **Record journey** from **More Comment Options**, choose **Start journey**, click a control on the same page, and choose **Stop journey**. In review, enter the expected and actual results, mask part of one screenshot, acknowledge retention, choose **Save journey**, and then **Copy Prompt** or **Download Markdown + Images**.
 
 **Permissions and privacy:**
 
 | Permission | Reviewer explanation |
 | --- | --- |
 | `activeTab` | Access the current website after the user activates the extension. |
-| `scripting` | Add the annotation interface to the activated website. |
-| `storage` | Save comments and settings in the current browser profile. |
+| `scripting` | Add the annotation interface and, while a journey records, the click recorder to the activated website. |
+| `storage` | Save comments, settings, and in-progress journey state in the current browser profile. |
 | `clipboardWrite` | Copy the structured prompt when the user chooses Copy Prompt. |
 | `sidePanel` | Open the Chrome or Edge sidebar. |
+| `webNavigation` | While a user-started journey records, order same-origin page loads, route changes, and hash changes in the recorded tab, and end the journey when that tab leaves the starting website. Events from other tabs and frames are ignored; browsing history is never read, stored, or sent. |
+| `alarms` | End a recording at the five-minute limit, warn before an unsaved journey review expires, and discard it after 30 idle minutes, even if the background was suspended. |
 
-The extension requests no persistent all-sites permission. It makes no analytics, AI, or cloud-sync requests. Its required Firefox data-collection declaration remains `none` only while that statement matches the submitted package and dashboard answers.
+The extension requests no host permissions or persistent all-sites access. It makes no analytics, AI, or cloud-sync requests. Journey steps, screenshots, and saved journeys stay in the browser profile and leave it only when the user copies or exports them. Its required Firefox data-collection declaration remains `none` only while that statement matches the submitted package and dashboard answers.
 
 ## Chrome Web Store entry
 

@@ -57,7 +57,12 @@ installation. Edge Android support retains its documented owner verification.
   Linux testing beyond the existing automated coverage.
 - **Store updates:** preserve useful 0.5.5 test installations and check ordinary
   update retention when the next approved release exists. A future release is
-  not a prerequisite for closing this launch.
+  not a prerequisite for closing this launch. The next release adds the
+  `webNavigation` and `alarms` permissions for journeys. Chrome and Edge disable
+  the updated extension until the user accepts the new "Read your browsing
+  history" warning, and Firefox waits for the user to approve the new
+  permission before applying the update. Include that approval in the
+  retention check.
 - **Additional coverage:** native minimum-version store actions and some
   extended platform cases remain unrun. Private audit evidence records their
   limits. Expand checks for changed behavior or actual failures; report

@@ -31,9 +31,11 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 | `alarms` | Time out a recording and expire stale reviews |
 | `clipboardWrite` | Copy the requested prompt |
 | `sidePanel` | Open the Chrome or Edge sidebar |
-| `webNavigation` | Observe page changes during a journey |
+| `webNavigation` | Order page changes in the recorded tab during a journey. Chrome and Edge show this as “Read your browsing history” and Firefox as “Access browser activity during navigation”; anmerko ignores other tabs and never stores or sends your history |
 
 anmerko holds no host permissions and no optional permissions, and never prompts for site access. `activeTab` covers only the website address where you activate it — in Firefox, only until that page reloads or opens another page — so a journey records only where you started it. A different domain, subdomain, port, or protocol ends the journey, and in Firefox so does any page load.
+
+Orion on iPhone does not include journeys; its package omits `alarms`, `sidePanel`, and `webNavigation`.
 
 ## Limits
 

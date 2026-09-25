@@ -10,9 +10,10 @@ import { extensionApi } from './platform';
 import { openDock, supportsDocking } from './docking';
 import { bindSidebarConnection } from './sidebar-connection';
 import { createCaptureService } from './capture-service';
-import { journeysEnabled } from './journey-feature';
 import { bindJourneyExtension } from './journey-extension';
 export { activateTab } from './activate';
+
+declare const __ANMERKO_JOURNEYS__: boolean;
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
@@ -43,7 +44,10 @@ const screenshotService = createCaptureService(
     },
   },
 );
-const journeys = journeysEnabled ? bindJourneyExtension(screenshotService) : undefined;
+// Read the build define here rather than journeysEnabled: esbuild folds it only
+// within this module, which drops the journey runtime from Orion's bundle.
+const journeys = typeof __ANMERKO_JOURNEYS__ !== 'undefined' && __ANMERKO_JOURNEYS__
+  ? bindJourneyExtension(screenshotService) : undefined;
 type LayoutMode = 'dock' | 'overlay' | 'minimized' | 'closed';
 const layoutModes = new Set<LayoutMode>(['dock', 'overlay', 'minimized', 'closed']);
 
