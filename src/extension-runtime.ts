@@ -273,6 +273,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     ...(journeyParts && journeys && native ? {
       journeys: journeyParts.createJourneyClient(() => ({ ownerTabId: targetTab, ownerWindowId: windowId })),
       ...journeyParts.sidePanelJourneyCommands(),
+      journeyPrivateWindow: async () => (await api.windows.getCurrent()).incognito === true,
     } : {}),
     settingsLabel: 'Extension settings',
     storageError: 'Could not save or load comments. Keep your draft and try again. If the extension was reloaded, refresh this page.',

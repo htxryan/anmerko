@@ -684,6 +684,26 @@ test('Firefox reuses the floating panel\'s journey tab for the next Record journ
   assert.equal((await driver.getAllWindowHandles()).length, 2, 'no second journey tab opens');
 }));
 
+// A journey tab keeps nothing awake, so Firefox unloads the idle event page
+// long before its launch link expires. Its Start still starts the journey.
+test('Firefox starts a journey tab\'s journey after its event page unloaded', { timeout: 90000 }, async t => session(t, async ({ driver, ui, click, activate }) => {
+  await activate();
+  const website = await driver.getWindowHandle();
+  await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'the floating panel is shown');
+  await click('.comment-options');
+  await driver.wait(async () => (await ui('.journey-record'))?.isDisplayed(), 5000, 'More Comment Options offers Record journey');
+  await click('.journey-record');
+  await driver.wait(async () => (await driver.getAllWindowHandles()).length === 2, 5000, 'Record journey opens a journey tab');
+  await driver.switchTo().window((await driver.getAllWindowHandles()).find(handle => handle !== website));
+  const start = await driver.wait(until.elementLocated(By.css('[data-focus-id="journey-start"]')), 5000, 'the journey tab offers Start');
+  await driver.wait(until.elementIsEnabled(start), 5000);
+  await suspendBackground(driver);
+  await start.click();
+  const view = () => driver.executeScript(() => document.querySelector('.journey-view')?.innerText ?? '');
+  await driver.wait(async () => /Recording journey/.test(await view()), 20000, 'the woken event page starts the journey');
+  assert.doesNotMatch(await view(), /already opened/);
+}));
+
 test('Firefox wakes its unloaded event page for tab and navigation events only while a journey needs them', { timeout: 180000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
   const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
   const privileged = async (script, ...args) => {

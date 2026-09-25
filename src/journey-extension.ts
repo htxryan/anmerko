@@ -22,15 +22,16 @@ export interface JourneyScreenshotService {
 
 export interface JourneyExtensionBinding {
   ready: Promise<void>;
-  handleToolbarClick(): Promise<boolean>;
+  // A click in a private window never brings a review forward there.
+  handleToolbarClick(privateWindow?: boolean): Promise<boolean>;
   stopIfRecording(): boolean;
-  openReviewIfAvailable(): boolean;
+  openReviewIfAvailable(privateWindow?: boolean): boolean;
 }
 
 type Message = Record<string, unknown> & { type?: unknown };
 type ActiveState = Extract<JourneySession, { phase: 'starting' | 'recording' }>;
 type JourneyCommandErrorCode = 'busy' | 'owner-unavailable' | 'initial-capture-failed'
-  | 'launch-expired' | 'session-storage-failed' | 'stale-review' | 'saved-journeys-full';
+  | 'launch-expired' | 'session-storage-failed' | 'stale-review' | 'saved-journeys-full' | 'private-window';
 type TrustedSurface =
   | { kind: 'sidebar' }
   | { kind: 'review'; tabId: number }
@@ -63,6 +64,10 @@ const LISTENER_HINT_KEY = 'anmerko:journey-listeners:v1';
 // tab, which is how a floating panel or Android starts a journey. A worker can
 // restart while it records, so this outlives the background's memory.
 const TAB_REVIEW_KEY = 'anmerko:journey-tab-review:v1';
+// Launch links waiting for their Start, by intent. A journey tab keeps nothing
+// awake, and a worker or event page idles out long before a link expires, so
+// they outlive the background's memory too.
+const LAUNCH_INTENTS_KEY = 'anmerko:journey-launch-intents:v1';
 // Firefox unloads an event page after 30 idle seconds; any API call restarts that count.
 const KEEP_AWAKE_INTERVAL_MS = 10_000;
 const MAX_CONCURRENT_NORMALIZATIONS = 1;
@@ -191,6 +196,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const journeyUrl = api.runtime.getURL('journey.html');
   const windowsApi = api.windows as typeof chrome.windows | undefined;
   const launchIntents = new Map<string, LaunchIntent>();
+  let launchIntentsWrite: Promise<void> = Promise.resolve();
+  // The link Record journey is giving a journey tab right now, and the tabs
+  // closed before stored links were restored.
+  let switchingIntent: LaunchIntent | undefined;
+  let launchIntentsRestored = false;
+  const removedBeforeRestore = new Set<number>();
   let decoratedTabId: number | undefined;
   let reviewWarningTabId: number | undefined;
   let launchGeneration = 0;
@@ -292,9 +303,59 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       : { kind: 'launch', tabId, intent: location.intent };
   };
 
+  // Stores every link that has its tab, as it is when the write runs, so the
+  // last write always leaves the latest links. A link without a tab cannot
+  // start anything yet.
+  const persistLaunchIntents = (): Promise<void> => {
+    const operation = launchIntentsWrite.then(() => {
+      const stored = Object.fromEntries(Array.from(launchIntents)
+        .filter(([, intent]) => intent.launchTabId !== undefined).map(([id, intent]) => [id, { ...intent }]));
+      return Object.keys(stored).length > 0
+        ? api.storage.session.set({ [LAUNCH_INTENTS_KEY]: stored })
+        : api.storage.session.remove([LAUNCH_INTENTS_KEY]);
+    });
+    launchIntentsWrite = operation.catch(() => {});
+    return operation;
+  };
+  const launchIntentsChanged = () => { void persistLaunchIntents().catch(() => {}); };
+
   const clearExpiredIntents = () => {
     const now = Date.now();
-    for (const [id, intent] of launchIntents) if (intent.expiresAt <= now) launchIntents.delete(id);
+    let expired = false;
+    for (const [id, intent] of launchIntents) {
+      if (intent.expiresAt > now) continue;
+      launchIntents.delete(id);
+      expired = true;
+    }
+    if (expired) launchIntentsChanged();
+  };
+
+  // Links stored by a background that has since stopped, less any that
+  // expired, are malformed, or whose journey tab closed before this read.
+  const restoreLaunchIntents = async (): Promise<void> => {
+    let stored: unknown;
+    try { stored = (await api.storage.session.get([LAUNCH_INTENTS_KEY]))[LAUNCH_INTENTS_KEY]; }
+    catch { /* Unread links expire unused. */ }
+    finally { launchIntentsRestored = true; }
+    if (stored === undefined) {
+      removedBeforeRestore.clear();
+      return;
+    }
+    const now = Date.now();
+    let dropped = !isRecord(stored);
+    for (const [id, value] of Object.entries(isRecord(stored) ? stored : {})) {
+      if (SAFE_ID.test(id) && isRecord(value) && validInteger(value.ownerTabId) && validInteger(value.ownerWindowId)
+        && validInteger(value.launchTabId) && !removedBeforeRestore.has(value.launchTabId)
+        && typeof value.documentToken === 'string' && SAFE_ID.test(value.documentToken) && typeof value.url === 'string'
+        && validNumber(value.expiresAt) && value.expiresAt > now && value.expiresAt <= now + LAUNCH_TTL_MS) {
+        launchIntents.set(id, {
+          ownerTabId: value.ownerTabId, ownerWindowId: value.ownerWindowId, documentToken: value.documentToken,
+          url: value.url, expiresAt: value.expiresAt, launchTabId: value.launchTabId,
+        });
+      } else dropped = true;
+    }
+    removedBeforeRestore.clear();
+    if (dropped) await persistLaunchIntents().catch(() => {});
   };
 
   const focusTab = async (tabId: number): Promise<void> => {
@@ -671,6 +732,14 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   };
 
+  // A journey started from a launch tab has no native side panel showing it,
+  // so the end of its recording brings that tab forward as the review, unless
+  // the reader deliberately went elsewhere.
+  const surfaceEndedRecording = (sessionId: string, state: JourneySession) => {
+    if (state.phase === 'reviewing' && state.sessionId === sessionId && sessionId === tabReviewSession
+      && state.draft.stopReason !== 'focus-lost') void openReview().catch(() => {});
+  };
+
   const changed = (state: JourneySession) => {
     const previous = publishedState;
     publishedState = state;
@@ -685,13 +754,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (state.phase === 'starting') rememberTabReview(startingFromLaunch ? state.sessionId : undefined);
     // Once the review ends, no tab holds it.
     else if (state.phase === 'idle' || state.phase === 'saved') rememberTabReview(undefined);
-    // A journey started from a launch tab has no native side panel showing
-    // it, so its end brings that tab forward as the review, unless the reader
-    // deliberately went elsewhere.
-    if (state.phase === 'reviewing' && activeState(previous) && previous.sessionId === state.sessionId
-      && state.sessionId === tabReviewSession && state.draft.stopReason !== 'focus-lost') {
-      void openReview().catch(() => {});
-    }
+    if (activeState(previous)) surfaceEndedRecording(previous.sessionId, state);
     if (state.phase === 'recording') {
       void pageCommand(state.ownerTabId, {
         type: 'ANMERKO_JOURNEY_PAGE_STATUS', sessionId: state.sessionId,
@@ -835,7 +898,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
   const ownerRemoved = (tabId: number) => {
     if (tabId === reviewTabId) reviewTabId = undefined;
-    for (const [id, intent] of launchIntents) if (intent.launchTabId === tabId) launchIntents.delete(id);
+    if (!launchIntentsRestored) removedBeforeRestore.add(tabId);
+    let removed = false;
+    for (const [id, intent] of launchIntents) {
+      if (intent.launchTabId !== tabId) continue;
+      // A journey tab that closes while Record journey switches it to a new
+      // link leaves that link for another tab rather than ending it.
+      if (intent === switchingIntent) intent.launchTabId = undefined;
+      else launchIntents.delete(id);
+      removed = true;
+    }
+    if (removed) launchIntentsChanged();
     syncListeners();
     enqueueRoutedEvent(async () => {
       const state = controller.getState();
@@ -931,10 +1004,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   };
   // Owner and navigation events matter only while a journey starts or
-  // records. A pending launch tab also needs its closing seen, or the unused
-  // intent would refuse Record journey until it expires; the intent lives
-  // only in memory, so that listener never needs to wake the background. A
-  // review tab that closes unseen is replaced on demand.
+  // records. A pending launch tab also has its closing watched, which drops
+  // its link. A closing missed while the background slept costs nothing: that
+  // link expires unused, and the next Record journey replaces it. A review tab
+  // that closes unseen is replaced on demand.
   const syncListeners = () => {
     if (!initialized) return;
     const live = !initializationError && activeState(controller.getState());
@@ -1090,16 +1163,21 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   };
 
   const initialize = async () => {
-    const restored = await sessionStore.read(Date.now());
+    const { state: restored, endedRecording } = await sessionStore.restore(Date.now());
     try {
       const stored = (await api.storage.session.get([TAB_REVIEW_KEY]))[TAB_REVIEW_KEY];
       if ('sessionId' in restored && stored === restored.sessionId) tabReviewSession = stored;
       else if (stored !== undefined) await api.storage.session.remove([TAB_REVIEW_KEY]);
     } catch { /* The review then stays where the reader opens it. */ }
+    await restoreLaunchIntents();
     controller = makeController(restored);
     persistedStateRead = true;
     const state = controller.getState();
     publishedState = state;
+    // A recording whose deadline passed while nothing ran stopped as it was
+    // read. Its owner tab still shows the recording badge a previous start
+    // set, which clears as it would for a live stop.
+    if (endedRecording && 'ownerTabId' in restored) decoratedTabId = restored.ownerTabId;
     decorateForState(state);
     if (JSON.stringify(state) !== JSON.stringify(restored)) await persistState(state);
     else await syncJourneyAlarms(state);
@@ -1115,6 +1193,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (current.phase === 'reviewing' && Date.now() >= Date.parse(current.warningAt)) showReviewWarning(current);
     initialized = true;
     syncListeners();
+    // That stop brings a journey tab's review forward as a live stop does.
+    if (endedRecording && 'sessionId' in restored) surfaceEndedRecording(restored.sessionId, current);
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
@@ -1204,10 +1284,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         try {
           await focusTab(tab.tabId);
           pending.expiresAt = Date.now() + LAUNCH_TTL_MS;
+          launchIntentsChanged();
           return;
         } catch { /* Replaced below. */ }
       }
       launchIntents.delete(id);
+      launchIntentsChanged();
       if (tab?.windowId === senderWindowId) reusable.push(tab.tabId);
       else if (tab) await api.tabs.remove(tab.tabId).catch(() => {});
     }
@@ -1222,6 +1304,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     };
     launchIntents.set(id, intent);
     syncListeners();
+    switchingIntent = intent;
+    try { await giveLaunchTab(id, intent, url, senderWindowId, reusable); }
+    finally { if (switchingIntent === intent) switchingIntent = undefined; }
+  };
+
+  const giveLaunchTab = async (id: string, intent: LaunchIntent, url: string, senderWindowId: number, reusable: number[]) => {
     // No journey is under way, so every journey tab in this window is spent: a
     // replaced launch, or a saved or discarded journey's review. The first
     // that can takes the new launch link and comes forward, so journeys never
@@ -1238,11 +1326,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       let reused: chrome.tabs.Tab | undefined;
       try { reused = await api.tabs.update(tabId, { url, active: true }); }
       catch { /* Try the next journey tab, then open one. */ }
-      if (!reused) {
-        if (launchIntents.get(id) === intent) intent.launchTabId = undefined;
+      if (launchIntents.get(id) !== intent) throw new Error(GENERIC_ERROR);
+      // A tab that closed as it switched no longer holds the link.
+      if (!reused || intent.launchTabId !== tabId) {
+        if (intent.launchTabId === tabId) intent.launchTabId = undefined;
         continue;
       }
-      if (launchIntents.get(id) !== intent) throw new Error(GENERIC_ERROR);
+      launchIntentsChanged();
       reviewTabId = tabId;
       if (windowsApi?.update && validInteger(reused.windowId)) await windowsApi.update(reused.windowId, { focused: true }).catch(() => {});
       return;
@@ -1259,6 +1349,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       throw new Error(GENERIC_ERROR);
     }
     intent.launchTabId = created.id;
+    launchIntentsChanged();
     reviewTabId = created.id;
   };
 
@@ -1272,6 +1363,16 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return intent;
   };
 
+  // Whether a launch tab's link can still start a journey, so a spent link
+  // reloaded by Back never offers Start. A link whose new tab is still
+  // opening counts as the tab's own.
+  const launchPending = (surface: TrustedSurface, value: unknown): boolean => {
+    clearExpiredIntents();
+    if (surface.kind !== 'launch' || value !== surface.intent) throw new Error(GENERIC_ERROR);
+    const intent = launchIntents.get(surface.intent);
+    return intent !== undefined && (intent.launchTabId === undefined || intent.launchTabId === surface.tabId);
+  };
+
   const cancelLaunchIntent = (surface: TrustedSurface, value: unknown): boolean => {
     clearExpiredIntents();
     if (value === undefined) return true;
@@ -1281,6 +1382,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (intent) {
       if (intent.launchTabId !== undefined && intent.launchTabId !== surface.tabId) return false;
       launchIntents.delete(value);
+      launchIntentsChanged();
     }
     return true;
   };
@@ -1296,12 +1398,14 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (windowsApi?.update) await windowsApi.update(ownerTab.windowId, { focused: true });
       if (generation !== launchGeneration) return;
       const owner = await focusedOwnerTab(intent.ownerTabId, intent.ownerWindowId, intent.url);
+      if (owner.tab.incognito) throw new JourneyCommandError('private-window');
       if (generation !== launchGeneration) return;
       identity = await identify(intent.ownerTabId);
       if (generation !== launchGeneration) return;
       if (!identity.visible || identity.documentToken !== intent.documentToken
         || identity.url !== intent.url || owner.url !== intent.url) throw new Error(GENERIC_ERROR);
-    } catch {
+    } catch (error) {
+      if (error instanceof JourneyCommandError) throw error;
       throw new JourneyCommandError('owner-unavailable');
     }
     startingFromLaunch = true;
@@ -1315,10 +1419,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   // the current one is refused as stale. The controller then checks the
   // journey, epoch and revision as it applies the edit, with no wait between.
   const requireReview = (message: Message): void => {
-    if (message.sessionId === undefined) return;
-    if (typeof message.sessionId !== 'string') throw new Error(GENERIC_ERROR);
+    if (typeof message.journeyId !== 'string' || typeof message.sessionId !== 'string') throw new Error(GENERIC_ERROR);
     const current = controller.getState();
-    if (!('sessionId' in current) || current.sessionId !== message.sessionId) throw new JourneyCommandError('stale-review');
+    if (!('sessionId' in current) || current.journeyId !== message.journeyId
+      || current.sessionId !== message.sessionId) throw new JourneyCommandError('stale-review');
   };
 
   // A discard pressed in a review or on a saved confirmation names that view
@@ -1363,6 +1467,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         const generation = launchGeneration;
         const intent = consumeLaunchIntent(surface, message.intent);
         if (!intent) throw new JourneyCommandError('launch-expired');
+        // The link is spent before anything starts, even for a background
+        // that restarts before this start finishes.
+        try { await persistLaunchIntents(); }
+        catch { throw new Error(GENERIC_ERROR); }
         if (message.includeEnteredValues !== undefined && typeof message.includeEnteredValues !== 'boolean') {
           throw new JourneyCommandError('owner-unavailable');
         }
@@ -1376,8 +1484,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       const ownerWindowId = message.ownerWindowId;
       const generation = launchGeneration;
       await withPersistedState((async () => {
-        try { await focusedOwnerTab(ownerTabId, ownerWindowId); }
+        let owner: Awaited<ReturnType<typeof focusedOwnerTab>>;
+        try { owner = await focusedOwnerTab(ownerTabId, ownerWindowId); }
         catch { throw new JourneyCommandError('owner-unavailable'); }
+        if (owner.tab.incognito) throw new JourneyCommandError('private-window');
         if (generation !== launchGeneration) return;
         ensureJourneySupport();
         if (generation !== launchGeneration) return;
@@ -1388,7 +1498,22 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       })());
       return;
     }
+    if (message.type === 'ANMERKO_JOURNEY_LAUNCH_PENDING') return launchPending(surface, message.intent);
     if (message.type === 'ANMERKO_JOURNEY_STOP') {
+      // Stop journey and Cancel start name the journey their view showed.
+      // One that has ended leaves nothing to stop; another is never stopped
+      // from it. A Cancel start pressed before its journey exists names none.
+      if (message.journeyId !== undefined || message.sessionId !== undefined) {
+        if (typeof message.journeyId !== 'string' || typeof message.sessionId !== 'string') throw new Error(GENERIC_ERROR);
+        const current = controller.getState();
+        if (!activeState(current)) {
+          if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
+          return;
+        }
+        if (current.journeyId !== message.journeyId || current.sessionId !== message.sessionId) {
+          throw new JourneyCommandError('stale-review');
+        }
+      }
       launchGeneration += 1;
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       await withPersistedState(controller.stop('user'));
@@ -1538,8 +1663,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (message.type === 'ANMERKO_JOURNEY_REOPEN') {
       if (!cancelLaunchIntent(surface, message.intent)) throw new JourneyCommandError('launch-expired');
       if (typeof message.journeyId !== 'string') throw new Error(GENERIC_ERROR);
-      const snapshot = await openJourneySnapshot(message.journeyId);
-      if (!snapshot) throw new Error(GENERIC_ERROR);
       let ownerTabId: number | undefined;
       let ownerWindowId: number | undefined;
       if (surface.kind === 'review' || surface.kind === 'launch') {
@@ -1549,9 +1672,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       } else {
         const tabs = await api.tabs.query({ active: true, currentWindow: true }).catch(() => []);
         const tab = tabs.find(candidate => validInteger(candidate.id) && validInteger(candidate.windowId));
+        // A saved journey never opens for review in a private window.
+        if (tab?.incognito) throw new JourneyCommandError('private-window');
         ownerTabId = tab?.id;
         ownerWindowId = tab?.windowId;
       }
+      const snapshot = await openJourneySnapshot(message.journeyId);
+      if (!snapshot) throw new Error(GENERIC_ERROR);
       if (!validInteger(ownerTabId) || !validInteger(ownerWindowId)) {
         throw new Error('Reopening needs an available website tab.');
       }
@@ -1565,13 +1692,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       // Another review surface is still masking or removing a screenshot.
       if (imageReviewsInFlight > 0) throw new JourneyCommandError('stale-review');
       // A Save names the review it was pressed in; another review is never saved from it.
-      if (message.journeyId !== undefined || message.sessionId !== undefined) {
-        if (typeof message.journeyId !== 'string' || typeof message.sessionId !== 'string') throw new Error(GENERIC_ERROR);
-        const current = controller.getState();
-        if (!('sessionId' in current) || current.journeyId !== message.journeyId || current.sessionId !== message.sessionId) {
-          throw new JourneyCommandError('stale-review');
-        }
-      }
+      requireReview(message);
       let saved: { journeyId: string; revision: number } | undefined;
       await withPersistedState(controller.save(message.acknowledged).then(result => {
         saved = result;
@@ -1658,8 +1779,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (sender.id !== api.runtime.id || !isRecord(rawMessage)) return;
     const message = rawMessage as Message;
     const surface = trustedSurface(sender);
-    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_PHASE', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_REDACT_LABEL', 'ANMERKO_JOURNEY_REVIEW_IMAGE', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
+    if (surface && ['ANMERKO_JOURNEY_STATE', 'ANMERKO_JOURNEY_PHASE', 'ANMERKO_JOURNEY_LAUNCH_PENDING', 'ANMERKO_JOURNEY_START', 'ANMERKO_JOURNEY_STOP', 'ANMERKO_JOURNEY_DISCARD', 'ANMERKO_JOURNEY_UPDATE_SUMMARY', 'ANMERKO_JOURNEY_REMOVE_STEP', 'ANMERKO_JOURNEY_EDIT_VALUE', 'ANMERKO_JOURNEY_REDACT_URL', 'ANMERKO_JOURNEY_REDACT_LABEL', 'ANMERKO_JOURNEY_REVIEW_IMAGE', 'ANMERKO_JOURNEY_SAVE', 'ANMERKO_JOURNEY_LIST', 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', 'ANMERKO_JOURNEY_REOPEN'].includes(String(message.type))) {
       return reply((async () => {
+        // Journeys are unavailable in private windows. A journey tab there
+        // neither shows nor changes the journey of a regular window.
+        if (surface.kind !== 'sidebar' && sender.tab?.incognito) throw new JourneyCommandError('private-window');
         await ready;
         if (initializationError) {
           // Only the explicit reset, which names no journey, clears failed storage.
@@ -1675,8 +1799,10 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (!validInteger(senderTabId) || !validInteger(senderWindowId) || sender.frameId !== 0 || typeof sender.url !== 'string') return;
     let senderUrl: string;
     try { senderUrl = normalizedUrl(sender.url); } catch { return; }
+    const privateWindow = sender.tab?.incognito === true;
     if (message.type === 'ANMERKO_JOURNEY_OPEN') {
       return reply((async () => {
+        if (privateWindow) throw new JourneyCommandError('private-window');
         await ready;
         // Failed journey storage is reset from a journey tab.
         if (initializationError) return openReview();
@@ -1687,7 +1813,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (message.type === 'ANMERKO_JOURNEY_PENDING') {
       return reply((async () => {
         await ready;
-        if (initializationError) return false;
+        if (initializationError || privateWindow) return false;
         const state = controller.getState();
         return state.phase === 'reviewing' || state.phase === 'saving';
       })(), respond);
@@ -1726,17 +1852,17 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   return {
     ready,
-    async handleToolbarClick() {
+    async handleToolbarClick(privateWindow = false) {
       await ready;
       if (initializationError) return false;
       if (activeState(controller.getState())) {
         const stopping = controller.stop('user');
         try { await withPersistedState(stopping); }
-        catch { await openReview(); }
+        catch { if (!privateWindow) await openReview(); }
         return true;
       }
       const state = controller.getState();
-      if (state.phase === 'reviewing' || state.phase === 'saving') {
+      if (!privateWindow && (state.phase === 'reviewing' || state.phase === 'saving')) {
         await openReview();
         return true;
       }
@@ -1749,8 +1875,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       void withPersistedState(stopping).catch(() => openReview().catch(() => {}));
       return true;
     },
-    openReviewIfAvailable() {
-      if (!initialized || initializationError) return false;
+    openReviewIfAvailable(privateWindow = false) {
+      if (!initialized || initializationError || privateWindow) return false;
       const state = controller.getState();
       if (state.phase !== 'reviewing' && state.phase !== 'saving') return false;
       void openReview().catch(() => {});

@@ -72,12 +72,13 @@ const panelBundle = buildSync({ stdin: { resolveDir: process.cwd(), contents: `
         for (const listener of window.journeyListeners || []) listener();
       },
     } } : {}),
+    ...(setup.privateWindow ? { journeyPrivateWindow: async () => true } : {}),
     ...(setup.native ? { presentation: { native: true, dockViaToolbar: false, sync: async () => {}, changeLayout: async () => {},
       locate: async () => null, hierarchy: async () => null, startCapture: async () => {}, captureError() {}, connect() {} } } : {}),
   });
 ` }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
 
-async function mountPanel(page: Page, setup: { journeys?: boolean; native?: boolean; recording?: boolean; inPanel?: boolean },
+async function mountPanel(page: Page, setup: { journeys?: boolean; native?: boolean; recording?: boolean; inPanel?: boolean; privateWindow?: boolean },
   globals: Record<string, unknown> = {}) {
   await page.goto('http://127.0.0.1:4173');
   await page.evaluate(({ value, globals }) => { Object.assign(window, globals); (window as any).panelSetup = value; }, { value: setup, globals });
@@ -111,6 +112,7 @@ test('page overlays request a trusted journey surface without mounting raw revie
     ['session-storage-failed', 'Journey storage failed. Choose Record journey again to open the journey tab and reset journey storage.'],
     ['stale-review', 'The journey changed in another anmerko view. Choose Review journey to see the latest version.'],
     ['unreachable', 'anmerko could not reach the extension. Reload this page, then try again.'],
+    ['private-window', "Journeys aren't available in private windows."],
   ];
   await page.evaluate('window.rejectLaunch = true');
   for (const [code, text] of guidance) {
@@ -435,8 +437,8 @@ test('Manage saved journeys closes a save confirmation first and waits while a j
   await expect(view.getByRole('heading', { name: 'Journey saved' })).toHaveCount(0);
   await expect(view.getByRole('button', { name: /^Delete journey: Checkout keeps the item/ })).toBeVisible();
   expect(await page.evaluate('window.discards')).toBe(1);
-  // The discard names the saved confirmation it closes.
-  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved', journeyId: 'J1' }]);
+  // The discard names the saved phase, so it closes only a save's confirmation.
+  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved' }]);
   await page.getByRole('button', { name: 'Back to comments', exact: true }).click();
 
   // While a journey records or waits for review, the view has no list and a
@@ -472,11 +474,14 @@ test('Manage saved journeys closes a save confirmation first and waits while a j
     (window as any).beforeDiscard = () => { (window as any).journeyState = { phase: 'reviewing', epoch: 1 }; };
   });
   await panel.locator('.status').evaluate(status => { status.textContent = ''; });
+  const sessionReads = await page.evaluate('window.sessionReads');
   await manage.click();
   await expect(panel.locator('.status')).toHaveText('Finish or discard the current journey to reopen or manage saved journeys.');
   await expect(view).toHaveCount(0);
   expect(await page.evaluate('window.journeyState')).toEqual({ phase: 'reviewing', epoch: 1 });
-  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved', journeyId: 'J1' }, { phase: 'saved', journeyId: 'J1' }]);
+  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved' }, { phase: 'saved' }]);
+  // Manage reads the phase alone: never the session, which in review carries every screenshot.
+  expect(await page.evaluate('window.sessionReads')).toBe(sessionReads);
 });
 
 test('a native panel offers a pending review and opens the journey view for it', async ({ page }) => {
@@ -520,4 +525,119 @@ test('a native panel follows journey changes by phase alone and reads the sessio
   for (let step = 0; step < 5; step++) await notify({ phase: 'reviewing', epoch: 2 });
   await expect.poll(async () => (await reads()).phase).toBeGreaterThanOrEqual(before + 16);
   expect((await reads()).session).toBe(closed);
+});
+
+test('Record journey in the native side panel after a save starts a new journey, and never discards a review', async ({ page }) => {
+  await mountPanel(page, { journeys: true, native: true, inPanel: true }, {
+    journeyState: { phase: 'saved', epoch: 5, journeyId: 'J1', revision: 2 },
+  });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const view = page.locator('anmerko-overlay .journey-container');
+  // The saved confirmation closes, as the floating panel's Record journey does; the snapshot stays saved.
+  await panel.getByRole('button', { name: 'More Comment Options' }).click();
+  await page.getByRole('menuitem', { name: 'Record journey', exact: true }).click();
+  await expect(view.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await expect(view.getByRole('heading', { name: 'Journey saved' })).toHaveCount(0);
+  await expect(view.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  expect(await page.evaluate('window.discardTargets')).toEqual([{ phase: 'saved' }]);
+  await page.getByRole('button', { name: 'Back to comments', exact: true }).click();
+
+  // A journey waiting for review elsewhere opens as it is.
+  await page.evaluate(() => {
+    (window as any).journeyState = { phase: 'saving', epoch: 6 };
+    for (const listener of (window as any).journeyListeners) listener();
+  });
+  await panel.getByRole('button', { name: 'More Comment Options' }).click();
+  await page.getByRole('menuitem', { name: 'Review journey', exact: true }).click();
+  await expect(view.getByRole('heading', { name: 'Saving journey' })).toBeVisible();
+  expect(await page.evaluate('window.discards')).toBe(1);
+});
+
+test('a native side panel in a private window says journeys are unavailable instead of opening one', async ({ page }) => {
+  // A regular window's journey waits for review, and a journey is saved.
+  await mountPanel(page, { journeys: true, native: true, inPanel: true, privateWindow: true }, {
+    journeyState: { phase: 'saving', epoch: 3 },
+    savedJourneys: [{ journeyId: 'J1', revision: 2, updatedAt: '2026-09-21T01:00:00.000Z', stepCount: 3, spansPages: false, expected: 'Checkout keeps the item' }],
+  });
+  await page.evaluate(() => (window as any).controller.applyState({ url: location.href, draft: null, scope: 'page', picking: false, settings: false }));
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const view = page.locator('anmerko-overlay .journey-container');
+  const status = panel.locator('.status');
+  const unavailable = "Journeys aren't available in private windows.";
+  await expect(panel.getByRole('region', { name: 'Saved journeys' })).toBeVisible();
+  // No review is offered here.
+  await expect(panel.getByText('A recorded journey is waiting for review.', { exact: true })).toBeHidden();
+  await panel.getByRole('button', { name: 'More Comment Options' }).click();
+  await page.getByRole('menuitem', { name: 'Record journey', exact: true }).click();
+  await expect(status).toHaveText(unavailable);
+  await expect(view).toHaveCount(0);
+  await status.evaluate(element => { element.textContent = ''; });
+  await panel.getByRole('button', { name: 'Manage saved journeys', exact: true }).click();
+  await expect(status).toHaveText(unavailable);
+  await expect(view).toHaveCount(0);
+  // The regular window's journey is never read here, nor its phase.
+  expect(await page.evaluate(() => ({ session: (window as any).sessionReads ?? 0, phase: (window as any).phaseReads ?? 0, discards: (window as any).discards ?? 0 })))
+    .toEqual({ session: 0, phase: 0, discards: 0 });
+});
+
+// The journey page module with a stubbed extension API that answers each
+// message type from window.answers.
+async function mountJourneyPage(page: Page, script: string) {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body><main id="journey"></main></body></html>');
+  await page.evaluate(`location.hash = '#launch=${'a'.repeat(16)}'`);
+  await page.evaluate(`window.sent = [];
+    window.messages = [];
+    window.chrome = {
+      runtime: {
+        sendMessage: async message => {
+          window.sent.push(message.type);
+          window.messages.push(message);
+          const answer = (window.answers || {})[message.type];
+          if (answer) return answer;
+          if (message.type === 'ANMERKO_JOURNEY_STATE') return { ok: true, value: { phase: 'idle', epoch: 0 } };
+          if (message.type === 'ANMERKO_JOURNEY_LIST') return { ok: true, value: [] };
+          return { ok: false };
+        },
+        onMessage: { addListener: () => {}, removeListener: () => {} },
+      },
+    };
+    ${script}`);
+  await page.evaluate(addJourneyApis);
+  await page.addScriptTag({ content: journeyPageBundle });
+}
+
+test('a journey tab reloaded on a spent launch link offers no Start, and one still pending does', async ({ page }) => {
+  const start = page.getByRole('button', { name: 'Start journey', exact: true });
+  const elsewhere = page.getByText(/^To record a new journey, go to the website tab/);
+  // Back reloads a link that the next Record journey replaced.
+  await mountJourneyPage(page, `window.answers = { ANMERKO_JOURNEY_LAUNCH_PENDING: { ok: true, value: false } };`);
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await expect(elsewhere).toBeVisible();
+  await expect(start).toHaveCount(0);
+  await expect(page.getByLabel('Include entered values')).toHaveCount(0);
+  expect(await page.evaluate('window.sent')).not.toContain('ANMERKO_JOURNEY_START');
+
+  await mountJourneyPage(page, `window.answers = { ANMERKO_JOURNEY_LAUNCH_PENDING: { ok: true, value: true } };`);
+  await expect(start).toBeEnabled();
+  await expect(elsewhere).toHaveCount(0);
+});
+
+test('a journey tab in a private window shows no journey', async ({ page }) => {
+  await mountJourneyPage(page, `window.chrome.tabs = { getCurrent: async () => ({ id: 9, incognito: true }) };`);
+  await expect(page.getByRole('heading', { name: 'Journey recording unavailable' })).toBeVisible();
+  await expect(page.getByText("Journeys aren't available in private windows. Comments still work on the website tab.", { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
+  expect(await page.evaluate('window.sent')).toEqual([]);
+});
+
+test('Stop journey names the journey its view showed', async ({ page }) => {
+  await mountJourneyPage(page, `window.answers = {
+    ANMERKO_JOURNEY_STATE: { ok: true, value: { phase: 'recording', epoch: 2, journeyId: 'J1', sessionId: 'S1', draft: { steps: [{}] } } },
+    ANMERKO_JOURNEY_STOP: { ok: true },
+  };`);
+  await page.getByRole('button', { name: 'Stop journey', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).messages.filter((message: any) => message.type === 'ANMERKO_JOURNEY_STOP')))
+    .toEqual([{ type: 'ANMERKO_JOURNEY_STOP', intent: 'a'.repeat(16), journeyId: 'J1', sessionId: 'S1' }]);
 });

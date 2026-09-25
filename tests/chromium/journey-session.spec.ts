@@ -259,6 +259,17 @@ test('expired recording stops at its original deadline and anchors review expiry
   expect(await store.read(Date.parse(deadlineAt) + 2)).toEqual(restored);
 });
 
+test('a read that stops an expired recording says so, once', async () => {
+  const storage = new MemoryStorage();
+  const store = createJourneySessionStore(storage);
+  await store.write(recording());
+  expect(await store.restore(Date.parse(deadlineAt) - 1)).toMatchObject({ state: { phase: 'recording' }, endedRecording: false });
+  const stopped = await store.restore(Date.parse(deadlineAt) + 1);
+  expect(stopped).toMatchObject({ state: { phase: 'reviewing', draft: { stopReason: 'duration-limit' } }, endedRecording: true });
+  // The review it became is stored, so the next read only restores it.
+  expect(await store.restore(Date.parse(deadlineAt) + 2)).toEqual({ state: stopped.state, endedRecording: false });
+});
+
 test('recording past its entire review window is purged without reading payload bytes', async () => {
   const storage = new MemoryStorage();
   const store = createJourneySessionStore(storage);

@@ -122,7 +122,10 @@ api.storage.onChanged.addListener((changes, area) => {
 });
 api.action.onClicked.addListener(tab => {
   if (journeys?.stopIfRecording()) return;
-  if (journeys?.openReviewIfAvailable()) return;
+  // Journeys are unavailable in private windows: a click there opens comments,
+  // never a regular window's review.
+  const privateWindow = tab.incognito === true;
+  if (journeys?.openReviewIfAvailable(privateWindow)) return;
   if (!tab.id) return;
   const webPage = !!tab.url && /^https?:/.test(tab.url);
   const openRequestedPage = (preservedDock?: Promise<void>) => {
@@ -153,7 +156,7 @@ api.action.onClicked.addListener(tab => {
   // Observe its rejection while retaining the original promise so an idle
   // click can fall back to the overlay when docking fails.
   void preservedDock?.catch(() => {});
-  void journeys.handleToolbarClick().then(handled => {
+  void journeys.handleToolbarClick(privateWindow).then(handled => {
     if (!handled) openRequestedPage(preservedDock);
   }).catch(() => {});
 });
