@@ -15,9 +15,18 @@ export function browserTarget(args = process.argv.slice(2)) {
   return targets[name];
 }
 
-export function browserManifest(source, version, target) {
+// Journeys are opt-in and unavailable on Orion. Only journey builds request
+// their navigation and timer APIs, so release builds keep the shipped warnings.
+const journeyPermissions = ['alarms', 'webNavigation'];
+
+export function journeyBuild(target, env = process.env) {
+  return env.ANMERKO_JOURNEYS === '1' && target.name !== 'orion';
+}
+
+export function browserManifest(source, version, target, journeys = false) {
   const manifest = structuredClone(source);
   manifest.version = version;
+  if (journeys) manifest.permissions.push(...journeyPermissions);
   if (target.name === 'orion') {
     delete manifest.minimum_chrome_version;
     delete manifest.side_panel;

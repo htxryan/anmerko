@@ -8,10 +8,8 @@
     "activeTab",
     "scripting",
     "storage",
-    "alarms",
     "clipboardWrite",
-    "sidePanel",
-    "webNavigation"
+    "sidePanel"
   ],
   "action": {
     "default_title": "Annotate with anmerko"
