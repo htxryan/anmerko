@@ -583,7 +583,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   };
 
-  const makeController = (restored?: JourneySession) => createJourneyController({
+  const makeController = (restored?: JourneySession): JourneyController => {
+    const created = createJourneyController({
       identify,
       connect,
       capture,
@@ -594,11 +595,16 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
       },
       pageAccessLost,
-      changed,
+      // A controller replaced after a storage failure may still finish work it
+      // began, such as a save. Its late state must not overwrite the
+      // replacement in storage, alarms, the toolbar, or open surfaces.
+      changed: state => { if (controller === created) changed(state); },
       async saveSnapshot(input) {
         return saveJourneySnapshot(input);
       },
     }, restored);
+    return created;
+  };
 
   controller = makeController();
 

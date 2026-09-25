@@ -295,6 +295,46 @@ test('recovery never promotes starting or resumes saving', async () => {
   expect(restored.expiresAt).toBe('2026-09-20T12:34:00.000Z');
 });
 
+test('a save over its committed review and a republished committed state write no screenshot bytes again', async () => {
+  const storage = new MemoryStorage();
+  const store = createJourneySessionStore(storage);
+  const review = reviewing();
+  const { warningAt: _warningAt, expiresAt: _expiresAt, ...owner } = review;
+  await store.write(review);
+  const reviewWrites = storage.setCount;
+  expect(reviewWrites).toBe(3);
+
+  // The saving phase shares the review's draft; a failed save republishes the review itself.
+  await store.write({ ...owner, phase: 'saving' });
+  await store.write(review);
+  expect(storage.setCount).toBe(reviewWrites);
+  // A restart during the save resumes the committed review.
+  const restarted = createJourneySessionStore(storage);
+  const restored = await restarted.read(Date.parse('2026-09-20T12:06:00.000Z'));
+  expect(restored).toEqual(review);
+  if (restored.phase !== 'reviewing') throw new Error('Expected the restored review');
+  const { warningAt: _restoredWarning, expiresAt: _restoredExpiry, ...restoredOwner } = restored;
+  await restarted.write({ ...restoredOwner, phase: 'saving' });
+  expect(storage.setCount).toBe(reviewWrites);
+
+  // Anything else is written: a changed draft, even an equal copy, and the saved result.
+  await store.write({ ...owner, phase: 'saving', draft: structuredClone(review.draft) });
+  expect(storage.setCount).toBe(reviewWrites + 3);
+  await store.write({ phase: 'saved', epoch: review.epoch + 1, journeyId: review.journeyId, revision: review.draft.revision });
+  expect(storage.setCount).toBe(reviewWrites + 6);
+  await expect(createJourneySessionStore(storage).read(Date.parse('2026-09-20T12:06:00.000Z'))).resolves.toEqual({
+    phase: 'saved', epoch: review.epoch + 1, journeyId: review.journeyId, revision: review.draft.revision,
+  });
+  // A failed write forgets the committed state, so the review is written again.
+  storage.failSetAt = storage.setCount + 1;
+  await expect(store.write(review)).rejects.toMatchObject({ code: 'storage-unavailable' });
+  storage.failSetAt = undefined;
+  await store.write({ phase: 'idle', epoch: review.epoch + 2 });
+  const beforeRewrite = storage.setCount;
+  await store.write(review);
+  expect(storage.setCount).toBe(beforeRewrite + 3);
+});
+
 test('expired saving is purged from derived control expiry without reading payload bytes', async () => {
   const storage = new MemoryStorage();
   const store = createJourneySessionStore(storage);

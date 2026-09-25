@@ -1074,6 +1074,98 @@ test('a review edit racing a save is refused as stale and the snapshot is exactl
     .toEqual(state.draft.steps.map((step: any) => [step.id, step.sourceUrl]));
 });
 
+test('saving never copies the reviewed screenshots into session storage again', async ({ page }) => {
+  const state = await reviewWithClickScreenshot(page);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId,
+    revision: state.draft.revision, updatedAt: new Date().toISOString(),
+    expected: 'The receipt lists the order.', actual: 'The receipt is blank.',
+  })).toEqual({ ok: true });
+  await page.evaluate(() => {
+    const session = (globalThis as any).chrome.storage.session;
+    const set = session.set;
+    (globalThis as any).__sessionWrites = [];
+    session.set = (items: Record<string, any>) => {
+      (globalThis as any).__sessionWrites.push(Object.entries(items).map(([key, value]) => ({
+        key, phase: value?.state?.phase ?? value?.phase ?? value?.status, bytes: JSON.stringify(value).length,
+      })));
+      return set(items);
+    };
+  });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  expect(saved).toMatchObject({ ok: true });
+  const writes = (await page.evaluate(() => (globalThis as any).__sessionWrites)).flat();
+  // Only the small saved confirmation is written: the review already holds
+  // the draft a restart would resume, so the saving phase adds no copy.
+  expect(writes.filter((write: any) => write.key.endsWith(':payload')).map((write: any) => write.phase)).toEqual(['saved']);
+  expect(Math.max(...writes.map((write: any) => write.bytes))).toBeLessThan(1_000);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({ phase: 'saved' });
+});
+
+test('a controller replaced by a storage failure during its save cannot publish the late saved state', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const summary = (current: any, actual: string) => ({
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: current.epoch, journeyId: current.journeyId,
+    revision: current.draft.revision, updatedAt: new Date().toISOString(), expected: 'The receipt lists the order.', actual,
+  });
+  expect(await dispatch(page, summary(state, 'The receipt is blank.'))).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).toEqual({ ok: true, value: [] });
+  // Hold the snapshot store so the save stays in flight, and hold the next
+  // review alarm so its failure lands while the controller is saving.
+  await page.evaluate(async () => {
+    const test = globalThis as any;
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open('anmerko:journey-store:v1');
+      opening.onsuccess = () => resolve(opening.result);
+      opening.onerror = () => reject(opening.error);
+    });
+    const snapshots = db.transaction('snapshots', 'readwrite').objectStore('snapshots');
+    test.__holdSnapshots = true;
+    const hold = () => { snapshots.get('held').onsuccess = () => { if (test.__holdSnapshots) hold(); else db.close(); }; };
+    hold();
+    const alarms = test.chrome.alarms;
+    test.__createAlarm = alarms.create;
+    alarms.create = () => new Promise((_resolve, reject) => { test.__failAlarm = () => reject(new Error('alarm create failed')); });
+  });
+  const pending = page.evaluate(({ edit }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const edited = harness.dispatch(edit, { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' });
+    return new Promise(resolve => {
+      const saveWhenHeld = () => {
+        if (!(globalThis as any).__failAlarm) { setTimeout(saveWhenHeld, 5); return; }
+        const saving = harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true },
+          { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' });
+        resolve(Promise.all([edited, saving]));
+      };
+      saveWhenHeld();
+    });
+  }, { edit: summary(state, 'The receipt is blank after the edit.') });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('saving');
+
+  await page.evaluate(() => (globalThis as any).__failAlarm());
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason)
+    .toBe('session-storage-limit');
+  await page.evaluate(() => {
+    const test = globalThis as any;
+    test.chrome.alarms.create = test.__createAlarm;
+    test.__holdSnapshots = false;
+  });
+  const [edited, saved] = await pending as any[];
+  expect(edited).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
+  expect(saved).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
+  // The replacement review stays the journey everywhere: in memory, in
+  // session storage, and after a restart.
+  const current = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(current).toMatchObject({ phase: 'reviewing', journeyId: state.journeyId, draft: { actual: 'The receipt is blank after the edit.' } });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sessionStorage['anmerko:journey-session:v1:control']))
+    .toMatchObject({ status: 'committed', phase: 'reviewing' });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.reboot());
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+    .toMatchObject({ phase: 'reviewing', journeyId: state.journeyId });
+});
+
 test('a saved journey never blocks Record journey from the floating panel or a new sidebar start', async ({ page }) => {
   const saveInJourneyTab = async () => {
     const state = await reviewWithClickScreenshot(page);
