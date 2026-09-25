@@ -60,11 +60,11 @@ Provisioning downloads from `nodejs.org`, `dl.google.com`, `packages.microsoft.c
 ```sh
 #!/bin/bash
 # The repository is cloned before this runs.
-script=$(find /home -maxdepth 4 -path '*/scripts/cloud/setup.sh' -print -quit)
+script=$(find /home -maxdepth 5 -path '*/scripts/cloud/setup.sh' -print -quit)
 [ -n "$script" ] && bash "$script" >/tmp/anmerko-cloud-setup.log 2>&1 || true
 ```
 
-A cold run takes about four minutes, within the five-minute setup-script limit. Cloud VMs are Firecracker microVMs without `/dev/kvm`, so the Android emulator cannot run there. Validate Firefox for Android installation in an emulator on a KVM-capable host or on a device (`npm run firefox:android`).
+Cold provisioning takes about three minutes, within the five-minute setup-script limit, and the full matrix about ten more. Cloud VMs are Firecracker microVMs without `/dev/kvm`, so the Android emulator cannot run there. Validate Firefox for Android installation in an emulator on a KVM-capable host or on a device (`npm run firefox:android`).
 
 ## Website and documentation
 
