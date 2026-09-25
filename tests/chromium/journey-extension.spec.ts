@@ -84,6 +84,100 @@ async function dispatch(page: Page, message: unknown, sender: Sender = sidebar) 
   return page.evaluate(({ message, sender }) => (globalThis as HarnessWindow).harness.dispatch(message, sender), { message, sender });
 }
 
+type MaskRect = { x: number; y: number; width: number; height: number };
+type ArchiveWindow = typeof globalThis & {
+  journeyArchive: { feedbackArchive(notes: unknown[], preamble: string, journeys: unknown[]): Uint8Array<ArrayBuffer> };
+};
+
+const archiveBundle = buildSync({
+  stdin: { contents: "export { feedbackArchive } from './src/export';", resolveDir: process.cwd() },
+  bundle: true,
+  write: false,
+  format: 'iife',
+  globalName: 'journeyArchive',
+}).outputFiles[0].text;
+
+const unavailable = { ok: false, error: 'Journey command unavailable.' };
+const staleReview = { ...unavailable, code: 'stale-review' };
+
+// An 8×4 capture with a red left half and a blue right half, so masked and
+// untouched pixels are both recognizable after every re-encode.
+async function usePatternedCapture(page: Page) {
+  await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 8; canvas.height = 4;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = 'rgb(220, 40, 40)'; context.fillRect(0, 0, 4, 4);
+    context.fillStyle = 'rgb(40, 40, 220)'; context.fillRect(4, 0, 4, 4);
+    (globalThis as any).__journeyPng = canvas.toDataURL('image/png');
+  });
+}
+
+function patternedPixels(masks: MaskRect[]): number[][] {
+  const pixels: number[][] = [];
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 8; x++) {
+      const masked = masks.some(rect => x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height);
+      pixels.push(masked ? [0, 0, 0, 255] : x < 4 ? [220, 40, 40, 255] : [40, 40, 220, 255]);
+    }
+  }
+  return pixels;
+}
+
+async function dataUrlPixels(page: Page, dataUrl: string): Promise<number[][]> {
+  return page.evaluate(async dataUrl => {
+    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d')!;
+    context.drawImage(bitmap, 0, 0);
+    const data = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    const pixels: number[][] = [];
+    for (let index = 0; index < data.length; index += 4) pixels.push(Array.from(data.slice(index, index + 4)));
+    return pixels;
+  }, dataUrl);
+}
+
+// Stands in for the review editor: flattens an opaque mask into a copy.
+async function maskedPng(page: Page, dataUrl: string, rect: MaskRect): Promise<string> {
+  return page.evaluate(async ({ dataUrl, rect }) => {
+    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width; canvas.height = bitmap.height;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(bitmap, 0, 0);
+    context.fillStyle = '#000';
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    return canvas.toDataURL('image/png');
+  }, { dataUrl, rect });
+}
+
+async function reviewWithClickScreenshot(page: Page) {
+  await usePatternedCapture(page);
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const recording = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  await page.evaluate(({ owner, state }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const port = harness.connectPort('anmerko-journey-events-v1', owner);
+    harness.postPort(port, { type: 'ANMERKO_JOURNEY_EVENTS', batch: {
+      schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+      documentToken: state.documentToken, localCounter: 1,
+      events: [{
+        kind: 'click', id: 'image-click', observedAt: new Date().toISOString(), elapsedMs: 20,
+        sourceUrl: 'https://example.test/path?item=1#top',
+        target: { tag: 'button', selectorPath: ['button'], label: 'Pay', editable: false,
+          viewport: { width: 1280, height: 720 }, scroll: { x: 0, y: 10 }, point: { x: 20, y: 20 } },
+        image: { status: 'pending', captureId: 'image-click-capture' },
+      }],
+    } });
+  }, { owner: ownerPage, state: recording });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps
+    .map((step: any) => step.image.status)).toEqual(['retained', 'retained']);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.phase).toBe('reviewing');
+  return reviewing;
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto('http://127.0.0.1:4173/journey');
   await page.evaluate(() => {
@@ -724,6 +818,161 @@ test('review summaries and step removal apply with revision guards', async ({ pa
     .toEqual({ ok: true });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', journeyId: 42 }))
     .toEqual({ ok: false, error: 'Journey command unavailable.' });
+});
+
+test('screenshot review authenticates its sender and rejects malformed, mismatched, and stale changes', async ({ page }) => {
+  const reviewing = await reviewWithClickScreenshot(page);
+  const imageId = reviewing.draft.steps[0].image.imageId;
+  const original = reviewing.draft.images[imageId].dataUrl;
+  const rect = { x: 0, y: 0, width: 3, height: 2 };
+  const replace = {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace',
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision, imageId,
+    dataUrl: await maskedPng(page, original, rect),
+  };
+
+  // Website pages, subframes, lookalike review URLs, and other extensions are never answered.
+  expect(await dispatch(page, replace, ownerPage)).toBeUndefined();
+  expect(await dispatch(page, replace, { ...reviewPage, frameId: 2 })).toBeUndefined();
+  expect(await dispatch(page, replace, { ...reviewPage, url: `${reviewPage.url}?source=page` })).toBeUndefined();
+  expect(await dispatch(page, replace, { ...sidebar, id: 'other-extension' })).toBeUndefined();
+  expect(await dispatch(page, { ...replace, intent: 'forged_intent_1234567890' }, reviewPage))
+    .toEqual({ ...unavailable, code: 'launch-expired' });
+
+  const wrongSize = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 5; canvas.height = 5;
+    return canvas.toDataURL('image/png');
+  });
+  const withoutImage = Object.fromEntries(Object.entries(replace).filter(([key]) => key !== 'dataUrl'));
+  expect(await dispatch(page, withoutImage)).toEqual(unavailable);
+  expect(await dispatch(page, { ...replace, operation: 'mask' })).toEqual(unavailable);
+  expect(await dispatch(page, { ...replace, imageId: 'image-missing' })).toEqual(unavailable);
+  expect(await dispatch(page, { ...replace, dataUrl: 'data:image/png;base64,AAAA' })).toEqual(unavailable);
+  expect(await dispatch(page, { ...replace, dataUrl: 'https://example.test/mask.png' })).toEqual(unavailable);
+  expect(await dispatch(page, { ...replace, dataUrl: wrongSize })).toEqual(unavailable);
+  expect(await dispatch(page, { ...replace, revision: reviewing.draft.revision - 1 })).toEqual(staleReview);
+  expect(await dispatch(page, { ...replace, revision: reviewing.draft.revision + 1 })).toEqual(staleReview);
+  expect(await dispatch(page, { ...replace, epoch: reviewing.epoch + 1 })).toEqual(staleReview);
+  expect(await dispatch(page, { ...replace, operation: 'remove', journeyId: 'journey-other' })).toEqual(staleReview);
+  let state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.revision).toBe(reviewing.draft.revision);
+  expect(state.draft.images[imageId]).toEqual(reviewing.draft.images[imageId]);
+
+  // The review tab's metadata and timestamp are ignored: the background derives both.
+  const broadcasts = await page.evaluate(() => (globalThis as HarnessWindow).harness.broadcasts.length);
+  const startedAt = Date.now();
+  expect(await dispatch(page, {
+    ...replace, width: 1, height: 1, byteLength: 1, updatedAt: '2000-01-01T00:00:00.000Z',
+  }, reviewPage)).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const record = state.draft.images[imageId];
+  expect(state.draft.revision).toBe(reviewing.draft.revision + 1);
+  expect(Date.parse(state.draft.updatedAt)).toBeGreaterThanOrEqual(startedAt);
+  expect(record).toMatchObject({ width: 8, height: 4, redacted: true, captureUrl: reviewing.draft.images[imageId].captureUrl });
+  expect(record.byteLength).toBe(Buffer.from(record.dataUrl.split(',')[1], 'base64').length);
+  expect(await dataUrlPixels(page, record.dataUrl)).toEqual(patternedPixels([rect]));
+  expect(await page.evaluate(count => (globalThis as HarnessWindow).harness.broadcasts.slice(count), broadcasts))
+    .toContainEqual({ type: 'ANMERKO_JOURNEY_CHANGED' });
+
+  // The edit went through the session store, so a restarted background keeps it.
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.reboot());
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.images[imageId]).toEqual(record);
+  expect(await dispatch(page, replace)).toEqual(staleReview);
+});
+
+test('masked and removed screenshots persist through save, reopen, and export', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const initialId = state.draft.steps[0].image.imageId;
+  const clickId = state.draft.steps[1].image.imageId;
+  expect(clickId).not.toBe(initialId);
+  const first = { x: 0, y: 0, width: 3, height: 2 };
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+  });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId: initialId,
+    dataUrl: await maskedPng(page, state.draft.images[initialId].dataUrl, first),
+  })).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state), updatedAt: new Date().toISOString(),
+    expected: 'Card details stay private.', actual: 'The card number was visible.',
+  })).toEqual({ ok: true });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  expect(saved).toMatchObject({ ok: true });
+  let snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
+  expect(snapshot.images[initialId].redacted).toBe(true);
+  expect(await dataUrlPixels(page, snapshot.images[initialId].dataUrl)).toEqual(patternedPixels([first]));
+
+  // A reopened saved journey accepts the same screenshot review.
+  await page.evaluate(() => {
+    (globalThis as HarnessWindow).harness.tabs[80] = {
+      id: 80, windowId: 7, active: true, url: 'chrome-extension://test-extension/journey.html',
+    };
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REOPEN', journeyId: saved.value.journeyId }, reviewPage))
+    .toMatchObject({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
+  expect(state.draft.images[initialId].redacted).toBe(true);
+  const second = { x: 5, y: 2, width: 3, height: 2 };
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId: initialId,
+    dataUrl: await maskedPng(page, state.draft.images[initialId].dataUrl, second),
+  }, reviewPage)).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'remove', ...guards(state), imageId: clickId,
+  }, reviewPage)).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
+  expect(state.draft.steps[1].image).toEqual({ status: 'removed' });
+  expect(Object.keys(state.draft.images)).toEqual([initialId]);
+  const resaved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewPage);
+  expect(resaved.value.revision).toBeGreaterThan(saved.value.revision);
+
+  snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
+  expect(Object.keys(snapshot.images)).toEqual([initialId]);
+  expect(snapshot.draft.steps[1].image).toEqual({ status: 'removed' });
+  expect(await dataUrlPixels(page, snapshot.images[initialId].dataUrl)).toEqual(patternedPixels([first, second]));
+  const blobKeys = await page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+    const opening = indexedDB.open('anmerko:journey-store:v1');
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      const keys = opening.result.transaction('blobs').objectStore('blobs').getAllKeys();
+      keys.onsuccess = () => { opening.result.close(); resolve(keys.result.map(String)); };
+      keys.onerror = () => reject(keys.error);
+    };
+  }));
+  expect(blobKeys).toEqual([`${saved.value.journeyId}\u0000${initialId}`]);
+
+  await page.addScriptTag({ content: archiveBundle });
+  const archive = await page.evaluate(async draft => {
+    const bytes = (globalThis as ArchiveWindow).journeyArchive.feedbackArchive([], 'Recorded journey brief.', [draft]);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const files: Record<string, Uint8Array<ArrayBuffer>> = {};
+    for (let offset = 0; view.getUint32(offset, true) === 0x04034b50;) {
+      const size = view.getUint32(offset + 18, true);
+      const nameLength = view.getUint16(offset + 26, true);
+      const start = offset + 30 + nameLength + view.getUint16(offset + 28, true);
+      files[new TextDecoder().decode(bytes.subarray(offset + 30, offset + 30 + nameLength))] = bytes.subarray(start, start + size);
+      offset = start + size;
+    }
+    const pngs = Object.keys(files).filter(name => name.endsWith('.png'));
+    const bitmap = await createImageBitmap(new Blob([files[pngs[0]]], { type: 'image/png' }));
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d')!;
+    context.drawImage(bitmap, 0, 0);
+    const data = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    const pixels: number[][] = [];
+    for (let index = 0; index < data.length; index += 4) pixels.push(Array.from(data.slice(index, index + 4)));
+    return { pngs, markdown: new TextDecoder().decode(files['journeys.md']), pixels };
+  }, snapshot.draft);
+  expect(archive.pngs).toEqual([expect.stringContaining(initialId)]);
+  expect(archive.pngs.join()).not.toContain(clickId);
+  expect(archive.markdown).toContain('Screenshot: removed during review');
+  expect(archive.markdown).toContain('Image redacted: Yes');
+  expect(archive.pixels).toEqual(patternedPixels([first, second]));
 });
 
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
