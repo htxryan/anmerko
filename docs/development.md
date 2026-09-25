@@ -98,7 +98,7 @@ The demo imports the same controller and `src/panel.css` as the extension. Keep 
 
 Guard pending saves and drafts before closing. Disposal removes listeners, subscriptions, and timers. Chrome can reuse a sidebar after `pagehide`; keep its controller until explicit disposal or context destruction.
 
-The native sidebar's `anmerko-sidebar` port carries page ownership and layout handoff. An idle background drops it (Chrome stops the worker after about 30 seconds; Firefox unloads its event page). The sidebar does not reconnect in a keepalive loop; Float, Minimize, or Close reopens the port in the same click and posts the startup request ahead of the layout.
+The native sidebar's `anmerko-sidebar` port carries page ownership and layout handoff. An idle background drops it (Chrome stops the worker after about 30 seconds; Firefox unloads its event page). The sidebar does not reconnect in a keepalive loop; Float, Minimize, or Close reopens the port in the same click and posts the startup request ahead of the layout, also when posting finds the port dead before its disconnect event arrives.
 
 Chromium tests use disposable profiles and test-only activation/capture permissions; release packages exclude those permissions. Branded Chrome checks use the unchanged production manifest.
 

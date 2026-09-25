@@ -237,6 +237,34 @@ test('native Float after idle shutdown reopens the port with its startup request
   await expect.poll(() => run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'overlay']);
 });
 
+test('native Minimize after the background stops, before the sidebar sees the disconnect, reopens the port in the click', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  await run(page, 'nativeHarness.reply()');
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  await expect(panel.locator('.connection-prompt')).toBeHidden();
+  // The port is dead, and its disconnect event has not reached the sidebar yet.
+  await run(page, 'nativeHarness.stop()');
+
+  await run(page, 'nativeHarness.resetLayoutSequence()');
+  await panel.getByRole('button', { name: 'Minimize comments', exact: true }).click();
+  expect(await run(page, 'nativeHarness.layoutSequence')).toEqual(['port-post', 'close']);
+  expect(await run(page, 'nativeHarness.connections')).toBe(2);
+  const [startup, layout] = await run(page, 'nativeHarness.requests.slice(-2)') as any[];
+  expect(startup).toEqual({ tabId: 1, windowId: 1, version: expect.any(Number) });
+  expect(layout).toEqual({
+    type: 'ANMERKO_SIDEBAR_LAYOUT', version: startup.version, mode: 'minimized',
+    state: expect.objectContaining({ url: 'http://127.0.0.1:4173/page' }),
+  });
+  await expect(panel.locator('.status')).not.toContainText(/Could not change layout|Disconnected/);
+  // The old port's late disconnect event leaves the new one in place.
+  await run(page, 'nativeHarness.deliverLateDisconnect()');
+  await run(page, 'nativeHarness.bindBackground()');
+  await expect.poll(() => run(page, 'nativeHarness.backgroundModes')).toEqual(['remote', 'minimized']);
+});
+
 test('page lifecycle fallback reconnects a reused sidebar document', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');
