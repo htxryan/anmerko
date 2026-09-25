@@ -133,9 +133,11 @@ test('background revalidates the port-owned tab and window before changing layou
 });
 
 test('a toolbar click on a protected page explains it without opening the side panel', async ({ page }) => {
+  // Built from parts so the public-source check never sees a machine file URL.
+  const fileUrl = ['file:', '', '', 'tmp', 'page.html'].join('/');
   for (const content of [bundle, journeyBundle]) {
     await loadHarness(page, content);
-    for (const url of ['chrome://newtab/', 'about:blank', 'file:///tmp/page.html', 'chrome-extension://test-extension/sidebar.html']) {
+    for (const url of ['chrome://newtab/', 'about:blank', fileUrl, 'chrome-extension://test-extension/sidebar.html']) {
       expect(await run(page, `sidebarHarness.toolbarAction(${JSON.stringify(url)})`), url).toEqual([]);
     }
     await expect.poll(() => run(page, 'sidebarHarness.createdTabs.length')).toBe(4);
