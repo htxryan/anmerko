@@ -31,9 +31,12 @@ fi
 install_node() {
   [[ "$("$node_home/bin/node" -v 2>/dev/null)" == "v$node_version" ]] && return
   log "Installing Node $node_version"
-  rm -rf "$node_home" && mkdir -p "$node_home"
+  # Unpack beside the target and rename, so commands started while this runs
+  # never execute a half-written binary ("Text file busy").
+  rm -rf "$node_home.partial" && mkdir -p "$node_home.partial"
   curl -fsSL "https://nodejs.org/dist/v$node_version/node-v$node_version-linux-x64.tar.xz" \
-    | tar -xJ -C "$node_home" --strip-components=1
+    | tar -xJ -C "$node_home.partial" --strip-components=1
+  rm -rf "$node_home" && mv "$node_home.partial" "$node_home"
 }
 
 install_packages() {
