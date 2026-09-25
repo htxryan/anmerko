@@ -1,9 +1,10 @@
 import { parseArgs } from 'node:util';
 
+// Journeys ship in Chrome, Edge, and Firefox builds; Orion builds exclude them.
 const targets = {
-  chromium: { name: 'chromium', label: 'Chrome', outdir: 'dist', syntax: 'chrome142', format: 'esm', archiveSuffix: '' },
-  firefox: { name: 'firefox', label: 'Firefox / Android', outdir: 'dist-firefox', syntax: 'firefox142', format: 'iife', archiveSuffix: '-firefox-unsigned' },
-  orion: { name: 'orion', label: 'Orion for iOS', outdir: 'dist-orion', syntax: 'safari16.4', format: 'iife', archiveSuffix: '-orion' },
+  chromium: { name: 'chromium', label: 'Chrome', outdir: 'dist', syntax: 'chrome142', format: 'esm', archiveSuffix: '', journeys: true },
+  firefox: { name: 'firefox', label: 'Firefox / Android', outdir: 'dist-firefox', syntax: 'firefox142', format: 'iife', archiveSuffix: '-firefox-unsigned', journeys: true },
+  orion: { name: 'orion', label: 'Orion for iOS', outdir: 'dist-orion', syntax: 'safari16.4', format: 'iife', archiveSuffix: '-orion', journeys: false },
 };
 
 export function browserTarget(args = process.argv.slice(2)) {
@@ -15,18 +16,14 @@ export function browserTarget(args = process.argv.slice(2)) {
   return targets[name];
 }
 
-// Journeys are opt-in and unavailable on Orion. Only journey builds request
-// their navigation and timer APIs, so release builds keep the shipped warnings.
+// Only journey targets request the navigation and timer APIs, so Orion keeps
+// its shipped permissions.
 const journeyPermissions = ['alarms', 'webNavigation'];
 
-export function journeyBuild(target, env = process.env) {
-  return env.ANMERKO_JOURNEYS === '1' && target.name !== 'orion';
-}
-
-export function browserManifest(source, version, target, journeys = false) {
+export function browserManifest(source, version, target) {
   const manifest = structuredClone(source);
   manifest.version = version;
-  if (journeys) manifest.permissions.push(...journeyPermissions);
+  if (target.journeys) manifest.permissions.push(...journeyPermissions);
   if (target.name === 'orion') {
     delete manifest.minimum_chrome_version;
     delete manifest.side_panel;

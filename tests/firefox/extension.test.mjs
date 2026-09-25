@@ -10,7 +10,6 @@ import { startFixtureServer } from '../fixtures/component-context/server.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
 import { readFile, readdir, mkdir, writeFile, mkdtemp, rm, cp, realpath } from 'node:fs/promises';
 import { tmpdir, release, arch } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -126,9 +125,7 @@ async function session(t, run, remoteExtensions = false, signedXpi = process.env
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
     assert.equal(manifest.name, 'anmerko');
     assert.equal(manifest.version, JSON.parse(await readFile('package.json', 'utf8')).version);
-    // Only a build made with ANMERKO_JOURNEYS=1 adds the journey APIs.
-    assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite',
-      ...(process.env.ANMERKO_JOURNEYS === '1' ? ['alarms', 'webNavigation'] : [])]);
+    assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage', 'clipboardWrite', 'alarms', 'webNavigation']);
     assert.equal(manifest.host_permissions, undefined);
     assert.equal(manifest.optional_permissions, undefined);
     assert.equal(manifest.optional_host_permissions, undefined);
@@ -590,15 +587,7 @@ test('Firefox default process isolation reconnects an open sidebar after page re
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'fresh toolbar activation reconnects the existing remote sidebar');
 }, true));
 
-// Journeys ship behind ANMERKO_JOURNEYS=1; signed packages and default builds skip.
-const journeysBuilt = (() => {
-  try { return /\bjourneysEnabled = true\b/.test(readFileSync('dist-firefox/background.js', 'utf8')); }
-  catch { return false; }
-})();
-const journeySkip = process.env.FIREFOX_XPI ? 'journeys are not in signed packages'
-  : !journeysBuilt && 'build dist-firefox with ANMERKO_JOURNEYS=1 to run journey tests';
-
-test('Firefox ends a journey on a same-origin reload with page-access-lost and explains it in review', { timeout: 90000, skip: journeySkip }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+test('Firefox ends a journey on a same-origin reload with page-access-lost and explains it in review', { timeout: 90000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
   const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
   await activateDock();
   await dockClick('.comment-options');
