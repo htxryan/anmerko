@@ -180,7 +180,9 @@ export function extensionRuntime(onDispose: () => void): Runtime {
       }
       // Chrome can show a closed sidebar's document again. Once a closing layout
       // hands the page its view, that document keeps the connection prompt until
-      // a fresh owner answers, so a stale panel never offers a refused Float.
+      // a fresh owner answers. Like a fresh sidebar that is not connected yet,
+      // it still shows Float, and refuses it with guidance above the prompt's
+      // shade instead of moving a page it no longer owns.
       sidebarHandedOff = version => {
         if (!signal.aborted && closingLayoutVersion === version) controller.connectionFailed();
       };

@@ -371,6 +371,67 @@ test('a Floated sidebar document stays disconnected until a fresh owner answers 
   }));
 });
 
+// WCAG relative luminance of an sRGB colour given as 0-255 channels.
+function luminance([r, g, b]: number[]) {
+  const linear = (value: number) => {
+    const channel = value / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+test('a handed-off sidebar offers Float like a fresh one and shows its refusal above the shade', async ({ page }) => {
+  const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
+  await page.setViewportSize({ width: 360, height: 720 });
+  await page.goto('http://127.0.0.1:4173/sidebar.html');
+  await page.addScriptTag({ content: nativeBundle });
+  await expect.poll(() => run(page, 'nativeHarness.startupRequests.length')).toBe(1);
+  const panel = page.getByRole('complementary', { name: 'anmerko feedback panel' });
+  const float = panel.getByRole('button', { name: 'Float panel', exact: true });
+  // A fresh sidebar shows Float while its connection prompt is up.
+  await expect(panel.locator('.connection-prompt')).toBeVisible();
+  await expect(float).toBeEnabled();
+  await run(page, 'nativeHarness.reply()');
+  await float.click();
+  await expect(panel.locator('.connection-prompt')).toBeVisible();
+  const layouts = `nativeHarness.requests.filter(request => request.type === 'ANMERKO_SIDEBAR_LAYOUT').length`;
+  expect(await run(page, layouts)).toBe(1);
+  const status = panel.locator('.status');
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => {
+      document.querySelector('anmerko-overlay')!.shadowRoot!.querySelector<HTMLElement>('.app')!.dataset.theme = value;
+    }, theme);
+    // The handed-off document still offers Float and refuses it with guidance.
+    await expect(float).toBeEnabled();
+    await float.click();
+    await expect(status).toHaveText('Could not change layout. Click anmerko in the browser toolbar to open the sidebar.');
+    expect(await run(page, layouts)).toBe(1);
+    const colors = await status.evaluate(element => {
+      const style = getComputedStyle(element);
+      const channels = (value: string) => value.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+      return { text: channels(style.color), background: channels(style.backgroundColor) };
+    });
+    // The shade must not dim the status: its rendered background is its own.
+    const shot = await status.screenshot();
+    const rendered = await page.evaluate(async data => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${data}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(image, 0, 0);
+      return Array.from(context.getImageData(3, 3, 1, 1).data).slice(0, 3);
+    }, shot.toString('base64'));
+    for (const [index, channel] of rendered.entries()) {
+      expect(Math.abs(channel - colors.background[index]), `${theme} background ${rendered} vs ${colors.background}`).toBeLessThanOrEqual(2);
+    }
+    const [lighter, darker] = [luminance(colors.text), luminance(rendered)].sort((a, b) => b - a);
+    expect((lighter + 0.05) / (darker + 0.05), theme).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
 test('an explicit reopen of a live sidebar keeps Float on the current owner while its replacement is pending', async ({ page }) => {
   const nativeBundle = buildSync({ entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');

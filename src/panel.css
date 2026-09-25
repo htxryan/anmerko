@@ -179,6 +179,8 @@ footer { padding: 16px 20px 17px; border-top: 1px solid var(--border); backgroun
 .status:not(:empty) { padding-top: 9px; padding-bottom: 9px; }
 .status.error { color: var(--danger); background: var(--danger-bg); }
 .connection-shade { position: absolute; inset: 0; z-index: 1; background: var(--scrim); pointer-events: none; }
+/* Like the header, a status shown with the shade (a refused layout change) sits above it and keeps its contrast. */
+.panel:has(> .connection-shade:not([hidden])) > .status { position: relative; z-index: 2; }
 .connection-prompt { position: absolute; top: 50%; transform: translateY(-50%); left: 16px; right: 16px; z-index: 2; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; max-height: calc(100% - 220px); padding: 20px; overflow-y: auto; border: 1px solid var(--accent-border); border-radius: 14px; background: var(--accent-soft); color: var(--muted); box-shadow: 0 8px 28px #1b2b4918; font-size: 12px; line-height: 1.6; }
 .connection-prompt .connection-instruction { color: var(--text); font-size: 15px; font-weight: 550; line-height: 1.5; }
 .connection-prompt > [data-icon] { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: var(--surface); color: var(--accent); }
