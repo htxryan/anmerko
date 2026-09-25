@@ -29,4 +29,4 @@ Edit the introduction and click **Save Preamble**. Markdown is supported; an emp
 
 > Comments collected with anmerko. Page URLs and captured context are listed with each comment.
 
-Copy and ZIP exports use the last saved preamble. Failed saves retain your edits. Save before closing or refreshing; layout changes keep unfinished edits while the document stays open.
+Comment copies and ZIP exports use the last saved preamble; journey exports don't use it. Failed saves retain your edits. Save before closing or refreshing; layout changes keep unfinished edits while the document stays open.
