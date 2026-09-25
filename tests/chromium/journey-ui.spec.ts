@@ -11,6 +11,7 @@ const bundle = () => buildSync({ stdin: { contents: `
   let changed = () => {};
   const calls = [];
   let pendingStart = false;
+  let failAfterStarting = false;
   let readError = false;
   let discardCalls = 0;
   const client = {
@@ -21,6 +22,11 @@ const bundle = () => buildSync({ stdin: { contents: `
     start: async includeEnteredValues => {
       calls.push(includeEnteredValues);
       if (pendingStart) { state = {phase:'starting', draft:{steps:[]}}; changed(); return new Promise(() => {}); }
+      if (failAfterStarting) {
+        state = {phase:'starting', draft:{steps:[]}}; changed();
+        await new Promise(resolve => setTimeout(resolve, 50));
+        state = { phase: 'idle', epoch: 4 }; changed();
+      }
       throw new Error('Initial screenshot failed. Try again.');
     },
     stop: async () => { state = { phase:'idle',epoch:3 }; changed(); },
@@ -33,6 +39,7 @@ const bundle = () => buildSync({ stdin: { contents: `
     discardCalls: () => discardCalls,
     failRead: () => { readError = true; changed(); },
     pending: () => { pendingStart = true; },
+    failAfterStarting: () => { failAfterStarting = true; },
     set: next => { state = next; changed(); },
   };
 `, resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text' } }).outputFiles[0].text;
@@ -47,6 +54,45 @@ test('launch is explicit, entered values stay off, and failed initial capture of
   await expect(page.getByRole('alert')).toHaveText('Initial screenshot failed. Try again.');
   expect(await page.evaluate('journeyHarness.calls')).toEqual([false]);
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeFocused();
+});
+
+test('a start that reaches the first screenshot and then fails returns focus to Start', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyHarness.failAfterStarting()');
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('Initial screenshot failed. Try again.');
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeFocused();
+});
+
+test('a successful start moves focus to the recording heading once the first screenshot is taken', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await page.evaluate('journeyHarness.pending()');
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  // Focus stays put while the first screenshot is taken, so Firefox keeps the capture.
+  await expect(page.getByRole('heading', { name: 'Taking the first screenshot…' })).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  await page.evaluate(() => (window as any).journeyHarness.set({ phase: 'recording', draft: { steps: [{}] } }));
+  await expect(page.getByRole('heading', { name: 'Recording journey' })).toBeFocused();
+});
+
+test('a surface without document focus never pulls focus from the page beside it', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  // A sidebar whose web page holds focus reports no document focus.
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await page.evaluate(() => (window as any).journeyHarness.set({ phase: 'recording', draft: { steps: [{}] } }));
+  await expect(page.getByRole('heading', { name: 'Recording journey' })).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  await page.evaluate(() => (window as any).journeyHarness.set({ phase: 'idle', epoch: 5 }));
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
 
 test('initial capture can be cancelled while its promise remains pending', async ({ page }) => {
@@ -77,6 +123,7 @@ test('stopped review shows complete URLs as text and explains missing screenshot
   expect(await page.locator('img').count()).toBe(0);
   expect(await page.locator('a[href]').count()).toBe(0);
   await page.getByRole('button', { name: 'Discard journey', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm discard journey', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
 });
 
@@ -87,9 +134,9 @@ test('stopped review explains that a storage failure may lose the latest draft',
   await page.evaluate(`journeyHarness.set({phase:'reviewing',epoch:2,draft:{
     id:'J1',includeEnteredValues:false,stopReason:'session-storage-limit',steps:[],images:{},expected:'',actual:''
   }})`);
-  await expect(page.getByRole('alert')).toHaveText(
-    'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.',
-  );
+  const text = 'Journey storage failed while recording. Review this draft now because the latest action or the draft may be lost if the extension closes.';
+  await expect(page.locator('.journey-stop-reason.journey-notice-error')).toHaveText(text);
+  await expect(page.locator('.journey-live [aria-live="assertive"]')).toHaveText(text);
 });
 
 test('failed session loading offers an explicit storage reset', async ({ page }) => {

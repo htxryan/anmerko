@@ -9,7 +9,7 @@ import type { ComponentContextUpdate, Controller, DraftTargetIdentity, Presentat
 import { statusMessage } from './status';
 import { splitMenu } from './split-menu';
 import { createUuid } from './uuid';
-import { mountJourneyUI } from './journey-ui';
+import { mountJourneyUI, savedJourneyTime, savedJourneyTitle, type JourneySavedSummary } from './journey-ui';
 import { buildPrompt, captureElement, DEFAULT_PROMPT_PREAMBLE, elementHierarchy, pageUrl, readNotes, removeNote, resolveElement, samePage, saveNote, shorten, STORAGE_PREFIX, type Note } from './core';
 
 type Theme = 'light' | 'dark';
@@ -89,7 +89,13 @@ export function mount(runtime: Runtime): Controller {
       $('.panel').inert = true;
       const unmount = mountJourneyUI(container, client);
       disposeJourney = () => { unmount(); container.remove(); $('.panel').inert = false; disposeJourney = undefined; };
-      back.addEventListener('click', () => { disposeJourney?.(); $('.comment-options').focus(); void refresh(); });
+      back.addEventListener('click', () => {
+        disposeJourney?.();
+        // Return to the control that opened the journey, or the first usable one.
+        ['.comment-options', '.select', '.settings-button'].map(selector => $<HTMLButtonElement>(selector))
+          .find(control => !control.disabled)?.focus();
+        void refresh();
+      });
       back.focus();
     }, { signal: abort.signal });
     abort.signal.addEventListener('abort', () => disposeJourney?.(), { once: true });
@@ -108,7 +114,7 @@ export function mount(runtime: Runtime): Controller {
   const componentContextStatus = statusMessage($('.component-context-status'), abort.signal);
   let notes: Note[] = [];
   let noteViews: Array<() => void> = [];
-  let savedJourneys: Array<{ journeyId: string; revision: number; updatedAt: string; stepCount: number; spansPages: boolean }> | null = null;
+  let savedJourneys: JourneySavedSummary[] | null = null;
   let disposeEditor: (() => void) | undefined;
   let editorView: ReturnType<typeof createCommentCard> | undefined;
   const componentCapture = componentContextCapture();
@@ -748,14 +754,22 @@ export function mount(runtime: Runtime): Controller {
       for (const journey of savedJourneys) {
         const row = document.createElement('li');
         row.className = 'saved-journey';
-        const steps = `${journey.stepCount} ${journey.stepCount === 1 ? 'step' : 'steps'}`;
-        row.textContent = `Journey ${journey.journeyId} · revision ${journey.revision} · ${steps}`;
+        const title = document.createElement('span');
+        title.className = 'saved-journey-title';
+        title.textContent = savedJourneyTitle(journey);
+        const meta = document.createElement('span');
+        meta.className = 'saved-journey-meta';
+        const time = document.createElement('time');
+        time.dateTime = journey.updatedAt;
+        time.textContent = savedJourneyTime(journey.updatedAt);
+        meta.append('Saved ', time, ` · ${journey.stepCount} ${journey.stepCount === 1 ? 'step' : 'steps'}`);
         if (journey.spansPages === true) {
           const spans = document.createElement('span');
           spans.className = 'saved-journey-spans';
           spans.textContent = 'Spans pages';
-          row.append(' · ', spans);
+          meta.append(' · ', spans);
         }
+        row.append(title, meta);
         journeysList.append(row);
       }
       journeysSection.append(journeysList);
@@ -1107,7 +1121,27 @@ export function mount(runtime: Runtime): Controller {
     startGlobalComment();
   });
   $('.minimize').addEventListener('click', () => { void minimize(); });
-  $('.resume').addEventListener('click', () => { if (returnToDock && !mobile) void changeLayout('dock'); else setMinimized(false); });
+  // A floating panel would cover the page being recorded, and the recording
+  // strip already offers Stop, so the panel steps aside until the journey ends.
+  let minimizedForJourney = false;
+  const unwatchJourney = runtime.watchJourneyRecording?.(recording => {
+    if (!alive || native) return;
+    app.classList.toggle('journey-recording', recording);
+    if (recording) {
+      if (presentation === 'overlay' && !$('.panel').hidden && !draft && !captureBusy && !picking && !minimizing) {
+        minimizedForJourney = true;
+        returnToDock = false;
+        setMinimized(true);
+      }
+    } else if (minimizedForJourney) {
+      minimizedForJourney = false;
+      if (presentation === 'overlay' && !$('.resume').hidden) setMinimized(false);
+    }
+  });
+  $('.resume').addEventListener('click', () => {
+    minimizedForJourney = false;
+    if (returnToDock && !mobile) void changeLayout('dock'); else setMinimized(false);
+  });
   $('.dock').addEventListener('click', () => { if (!mobile) void changeLayout(native ? 'overlay' : 'dock'); });
   $('.settings-button').addEventListener('click', () => {
     setSettings(!settings);
@@ -1273,6 +1307,7 @@ export function mount(runtime: Runtime): Controller {
     captureAbort?.abort();
     abort.abort();
     unsubscribe();
+    unwatchJourney?.();
     clearInterval(navigation);
     cancelAnimationFrame(frame);
     noteViews.forEach(dispose => dispose());
