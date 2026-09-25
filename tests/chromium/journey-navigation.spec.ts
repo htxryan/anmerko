@@ -997,3 +997,47 @@ test('a document handshake the reader interrupts by leaving the tab stops for wh
   expect(stopped.draft.stopReason).toBe('page-access-lost');
   expect(asked).toEqual([]);
 });
+
+test('a late field commit before a route change leaves it uncaused, as it would in order', async () => {
+  const field = (state: Extract<JourneySession, { phase: 'recording' }>, localCounter: number, elapsedMs: number): JourneyEventBatchV1 => ({
+    schemaVersion: 1, sessionId: state.sessionId, epoch: state.epoch,
+    documentToken: state.documentToken, localCounter,
+    events: [{
+      kind: 'field-change', id: `field-${localCounter}`,
+      observedAt: new Date(START_MS + elapsedMs).toISOString(), elapsedMs,
+      sourceUrl: START_URL,
+      target: { tag: 'input', role: 'searchbox', selectorPath: ['input'], label: 'Search', editable: true, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 } },
+      enteredValue: { kind: 'text', value: 'green', truncated: false },
+      image: { status: 'unavailable', reason: 'superseded' },
+    }],
+  });
+  const record = async (order: 'in-order' | 'late') => {
+    const fixture = navigationFixture();
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7, includeEnteredValues: true });
+    let state = recording(controller.getState());
+    controller.acceptBatch(clickBatch(state, 1, START_URL, 'capture-click'), 42);
+    state = recording(controller.getState());
+    const click = state.draft.steps.at(-1)!;
+    const commit = field(state, 2, click.elapsedMs + 400);
+    if (order === 'in-order') controller.acceptBatch(commit, 42);
+    fixture.nowMs = START_MS + click.elapsedMs + 900;
+    controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/route', kind: 'same-document' });
+    state = recording(controller.getState());
+    if (order === 'late') {
+      // The click's window was open when the route change arrived alone.
+      expect(state.draft.steps.at(-1)?.navigation).toEqual({ toUrl: 'https://example.com/route', causedByStepId: click.id });
+      controller.acceptBatch(commit, 42);
+      state = recording(controller.getState());
+    }
+    expect(validateJourneyDraft(state.draft).ok).toBe(true);
+    return state.draft.steps.slice(1).map(step => step.kind === 'navigation' ? [step.kind, step.navigation] : [step.kind, step.id]);
+  };
+  const inOrder = await record('in-order');
+  expect(inOrder).toEqual([
+    ['click', 'click-1-document-start'],
+    ['field-change', 'field-2'],
+    ['navigation', { toUrl: 'https://example.com/route' }],
+  ]);
+  expect(await record('late')).toEqual(inOrder);
+});

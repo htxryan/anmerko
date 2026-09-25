@@ -984,15 +984,18 @@ export function acceptLateJourneyEventBatch(state: JourneySession, input: Journe
     ...draftStep(event, baseSeq + index + 1),
     image: { status: 'unavailable', reason: 'superseded' } as const,
   }));
-  // The route change overtook the click that made it: once that click lands
-  // before it, the navigation falls in the click's capture window, so it is
-  // recorded as the cause. A batch ends with its click; a flush of field
-  // commits alone leaves any earlier link as it was.
+  // The route change overtook the actions before it, which now land in front
+  // of it. As when they arrive in order, the last of them opens the capture
+  // window the navigation falls in: a click within its window is the cause,
+  // and a field commit, or a click whose window had closed, leaves none. A
+  // screenshot shared with its click keeps the link that shares it.
   const cause = steps.at(-1);
-  const navigation = cause?.kind === 'click'
-    && navigatedAt - Date.parse(cause.observedAt) < JOURNEY_LIMITS.captureWindowMs
-    ? { ...trailing.navigation, causedByStepId: cause.id }
-    : trailing.navigation;
+  const { causedByStepId: _earlierCause, ...uncaused } = trailing.navigation;
+  const navigation = trailing.image.status === 'retained' && trailing.image.sharedNavigationResult
+    ? trailing.navigation
+    : cause?.kind === 'click' && navigatedAt - Date.parse(cause.observedAt) < JOURNEY_LIMITS.captureWindowMs
+      ? { ...uncaused, causedByStepId: cause.id }
+      : uncaused;
   const next: RecordingJourneySession = {
     ...state,
     documentCounters: { ...state.documentCounters, [batch.documentToken]: batch.localCounter },
