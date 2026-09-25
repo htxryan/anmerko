@@ -17,6 +17,8 @@ const STOPPED_AT = '2026-09-20T12:04:00.000Z';
 const UPDATED_V2_AT = '2026-09-20T12:04:30.000Z';
 const DEADLINE_AT = '2026-09-20T12:05:00.000Z';
 const SOURCE_URL = 'https://example.com/path?private-value-7z=1#detail';
+// List labels: the expected-summary snippet and the first page's host and path, never its query.
+const LABELS = { expected: 'Checkout shows the total', startPage: 'example.com/path' } as const;
 const MINIMAL_PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+AvzvAAAAAElFTkSuQmCC';
 
@@ -244,7 +246,7 @@ test('save, open, list, and delete round-trip with byte-identical images', async
   const listed = await invoke(page, 'list', {});
   expect(listed).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false, ...LABELS }],
   });
 
   expect(await invoke(page, 'delete', { journeyId: 'journey-1' })).toEqual({ ok: true, value: null });
@@ -263,7 +265,7 @@ test('list marks journeys spanning more than one source URL', async ({ page }) =
   });
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: true }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: true, ...LABELS }],
   });
 });
 
@@ -283,8 +285,8 @@ function withNavigation(draft: JourneyDraftV1, toUrl: string): JourneyDraftV1 {
 
 test('list counts navigation destinations as pages without exposing redacted ones', async ({ page }) => {
   await openStore(page);
-  const summary = (spansPages: boolean, revision = 0, updatedAt = STOPPED_AT) => ({
-    ok: true, value: [{ journeyId: 'journey-1', revision, updatedAt, stepCount: 3, spansPages }],
+  const summary = (spansPages: boolean, revision = 0, updatedAt = STOPPED_AT, labels: object = LABELS) => ({
+    ok: true, value: [{ journeyId: 'journey-1', revision, updatedAt, stepCount: 3, spansPages, ...labels }],
   });
 
   // Every step starts on the same source URL; only the destination differs.
@@ -321,7 +323,8 @@ test('list counts navigation destinations as pages without exposing redacted one
   expect(await invoke(page, 'save', { input: snapshotInput(allRedacted) })).toEqual({
     ok: true, value: { journeyId: 'journey-1', revision: 2 },
   });
-  expect(await invoke(page, 'list', {})).toEqual(summary(false, 2, UPDATED_V2_AT));
+  // A redacted first page gives no start-page label.
+  expect(await invoke(page, 'list', {})).toEqual(summary(false, 2, UPDATED_V2_AT, { expected: LABELS.expected }));
 });
 
 test('snapshots saved with only source and capture redactions still open', async ({ page }) => {
@@ -340,7 +343,7 @@ test('snapshots saved with only source and capture redactions still open', async
   expect(opened.ok).toBe(true);
   expect((opened.value as { draft: JourneyDraftV1 }).draft).toEqual(legacy);
   expect(await invoke(page, 'list', {})).toEqual({
-    ok: true, value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 3, spansPages: true }],
+    ok: true, value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 3, spansPages: true, expected: LABELS.expected }],
   });
 });
 
@@ -457,7 +460,7 @@ test('a higher revision replaces the snapshot atomically', async ({ page }) => {
 
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 1, updatedAt: UPDATED_V2_AT, stepCount: 1, spansPages: false }],
+    value: [{ journeyId: 'journey-1', revision: 1, updatedAt: UPDATED_V2_AT, stepCount: 1, spansPages: false, expected: 'Pruned to one step', startPage: LABELS.startPage }],
   });
 });
 
@@ -504,7 +507,7 @@ test('deleted snapshots stay deleted and missing snapshots are safe', async ({ p
   });
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false, ...LABELS }],
   });
 });
 
@@ -532,7 +535,7 @@ test('corrupt stored records never leak and never break the list', async ({ page
 
   expect(await invoke(page, 'list', {})).toEqual({
     ok: true,
-    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false }],
+    value: [{ journeyId: 'journey-1', revision: 0, updatedAt: STOPPED_AT, stepCount: 2, spansPages: false, ...LABELS }],
   });
 
   const opened = await invoke(page, 'open', { journeyId: 'corrupt-1' });

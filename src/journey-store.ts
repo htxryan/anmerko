@@ -46,7 +46,13 @@ export interface JourneySnapshotSummary {
   updatedAt: string;
   stepCount: number;
   spansPages: boolean;
+  // Display labels for the saved list: an expected-result snippet and the
+  // host and path of the first step's page. Omitted when empty or redacted.
+  expected?: string;
+  startPage?: string;
 }
+
+const SUMMARY_LABEL_CHARACTERS = 120;
 
 export const JOURNEY_SNAPSHOT_DB_NAME = 'anmerko:journey-store:v1';
 export const JOURNEY_SNAPSHOT_STORE_NAMES = {
@@ -219,6 +225,21 @@ function validTimestamp(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
 }
 
+function summaryLabel(value: string): string {
+  return Array.from(value.replace(/\s+/g, ' ').trim()).slice(0, SUMMARY_LABEL_CHARACTERS).join('');
+}
+
+function pageLabel(url: unknown): string {
+  if (typeof url !== 'string') return '';
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return summaryLabel(`${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}`);
+  } catch {
+    return '';
+  }
+}
+
 function toSummary(record: unknown): JourneySnapshotSummary | undefined {
   if (!isObject(record)) return;
   const { journeyId, revision, updatedAt, stepCount } = record;
@@ -238,12 +259,16 @@ function toSummary(record: unknown): JourneySnapshotSummary | undefined {
       pages.add(step.navigation.toUrl);
     }
   }
+  const expected = isObject(draft) && typeof draft.expected === 'string' ? summaryLabel(draft.expected) : '';
+  const startPage = isObject(steps[0]) ? pageLabel(steps[0].sourceUrl) : '';
   return {
     journeyId,
     revision: revision as number,
     updatedAt: updatedAt as string,
     stepCount: stepCount as number,
     spansPages: pages.size > 1,
+    ...(expected ? { expected } : {}),
+    ...(startPage ? { startPage } : {}),
   };
 }
 
