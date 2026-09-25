@@ -142,7 +142,7 @@ test('a save into full saved-journey storage lists saved journeys to delete, the
   expect(await page.evaluate(() => (globalThis as any).background.messages
     .filter((message: { type: string }) => message.type === 'ANMERKO_JOURNEY_DELETE_SNAPSHOT')))
     .toEqual([{ type: 'ANMERKO_JOURNEY_DELETE_SNAPSHOT', journeyId: 'saved-a', revision: 1 }]);
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toBeEmpty();
 
   await page.evaluate(() => {
     const background = (globalThis as any).background;

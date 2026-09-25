@@ -318,7 +318,7 @@ test('trusted page strictly parses launch intent and shares the journey UI only 
     .some(entry => entry.message?.type === 'ANMERKO_JOURNEY_START')))).toBe(true);
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log
     .filter(entry => entry.kind === 'permission'))).toEqual([]);
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toBeEmpty();
   // The link is spent after one Start, so the tab explains how to record again.
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toHaveCount(0);
   await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeVisible();

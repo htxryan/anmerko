@@ -12,9 +12,29 @@ function launchIntent(hash: string): string | undefined {
   return match?.[1];
 }
 
+// The tab follows the panel's Appearance setting (content.ts), light unless
+// Dark is stored, and changes with it while open.
+function followTheme(): void {
+  const THEME_KEY = 'anmerko:theme';
+  const apply = (value: unknown) => { document.body.dataset.theme = value === 'dark' ? 'dark' : 'light'; };
+  apply(undefined);
+  let changed = false;
+  try {
+    const storage = extensionApi().storage;
+    storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[THEME_KEY]) return;
+      changed = true;
+      apply(changes[THEME_KEY].newValue);
+    });
+    void storage.local.get(THEME_KEY).then(stored => { if (!changed) apply(stored[THEME_KEY]); }, () => {});
+  } catch { /* Without readable storage the tab keeps the default theme. */ }
+}
+
 const style = document.createElement('style');
 style.textContent = journeySurfaceStyles;
 document.head.append(style);
+followTheme();
+
 if (!journeysAvailable({ platform: currentPlatform(), api: extensionApi() })) {
   const section = document.createElement('section');
   section.className = 'journey-view';
