@@ -48,6 +48,8 @@ Store review and website publication have separate state. Chrome and Edge ZIP do
 
 Firefox listed packages use version `V`; the separately signed website/unlisted package uses `V.1`. Submit the matching `anmerko-V-firefox-source.zip` or `anmerko-V.1-firefox-source.zip` for the exact binary under review. Use the documented manual same-profile update flow for the unlisted website track.
 
-New AMO versions include reviewer build instructions in the initial [version creation request](https://mozilla.github.io/addons-server/topics/api/addons.html#version-create). The uploaded source filename and instructions identify the exact candidate archive and `RELEASE_VERSION` command. Resuming an existing version does not edit its source or reviewer notes.
+New AMO versions include reviewer notes in the initial [version creation request](https://mozilla.github.io/addons-server/topics/api/addons.html#version-create): the build instructions, then the journey note, the `webNavigation` and `alarms` rationale, and a smoke test, within AMO's 3,000-character limit. The uploaded source filename and instructions identify the exact candidate archive and `RELEASE_VERSION` command. Resuming an existing version does not edit its source or reviewer notes.
+
+Chrome Web Store and Edge permission justifications are dashboard-only. Before pressing Release for a version that adds a permission, enter each justification in the Chrome Web Store **Privacy practices** tab and have it ready for Edge Partner Center's **Privacy** page; see [permission changes](../release-process.md#permission-changes). Store users must accept the new `webNavigation` warning after the update.
 
 Existing listing identities must be reused because changing extension IDs strands browser-local data. Current listing copy, permissions, reviewer instructions, screenshots, and support/privacy links live under [store assets](README.md).

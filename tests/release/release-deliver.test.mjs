@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertPromotionAuthor, assertSignedVariant, chromeReviewState, firefoxReviewNotes, promotableCheck, successfulDeploy } from '../../scripts/release/release-deliver.mjs';
+import { AMO_APPROVAL_NOTES_MAX_LENGTH, assertPromotionAuthor, assertSignedVariant, chromeReviewState, FIREFOX_JOURNEY_REVIEW_NOTES, firefoxReviewNotes, promotableCheck, successfulDeploy } from '../../scripts/release/release-deliver.mjs';
 import { activeRepository } from '../../scripts/release/release-repository.mjs';
 const active = activeRepository();
 const inactive = 'htxryan/other';
@@ -21,6 +21,24 @@ test('Firefox reviewer instructions match each exact submitted version and sourc
     const other = version === '0.5.5' ? '0.5.5.1' : '0.5.5';
     assert.ok(!notes.includes(`RELEASE_VERSION=${other} npm`));
   }
+});
+
+test('both AMO variants tell reviewers about journeys, their permissions and a smoke test within AMO limits', async () => {
+  const listingCopy = await readFile('docs/store/listing-copy.md', 'utf8');
+  for (const version of ['0.6.0', '0.6.0.1', '999.999.999.1']) {
+    const notes = firefoxReviewNotes(version, `/private/candidate/anmerko-${version}-firefox-source.zip`);
+    for (const required of ['Record journey', 'Start journey', 'Include entered values', 'no host or optional permissions',
+      '- webNavigation (', 'Access browser activity during navigation', 'browser history is never read',
+      'Events from other tabs and frames are ignored', '- alarms (', 'five-minute limit', '30 minutes',
+      'Smoke test:', 'Stop on the strip', 'Save journey', 'Download Markdown + Images']) {
+      assert.ok(notes.includes(required), `${version}: reviewer notes must mention ${required}`);
+    }
+    assert.ok(notes.endsWith(FIREFOX_JOURNEY_REVIEW_NOTES));
+    assert.ok(notes.length <= AMO_APPROVAL_NOTES_MAX_LENGTH, `${version}: ${notes.length} characters exceed AMO's limit`);
+  }
+  assert.equal(AMO_APPROVAL_NOTES_MAX_LENGTH, 3000);
+  assert.ok(listingCopy.includes(`\n${firefoxReviewNotes('<version>', 'anmerko-<version>-firefox-source.zip')}\n`),
+    'listing-copy.md must show the same reviewer note the release sends');
 });
 
 test('Mozilla signing may add META-INF only and cannot alter extension payload', async () => {

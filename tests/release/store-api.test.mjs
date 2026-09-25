@@ -116,6 +116,7 @@ for (const version of ['0.5.5', '0.5.5.1']) {
       assert.equal(Buffer.from(await init.body.get('source').arrayBuffer()).toString(), 'exact-bytes');
       assert.ok(init.body.get('approval_notes').includes(`source archive ${filename} for extension version ${version}.`));
       assert.ok(init.body.get('approval_notes').includes(`RELEASE_VERSION=${version} npm run build:firefox`));
+      assert.match(init.body.get('approval_notes'), /- webNavigation \(.*browser history is never read/);
       return json({ id: 44, version }, 201);
     }, jwt: () => 'token', addonId: 'fixture-addon@example.test' });
     await client.createVersion({ uploadId: 'upload-1', sourceZipPath, metadata: { approval_notes: firefoxReviewNotes(version, sourceZipPath) } });

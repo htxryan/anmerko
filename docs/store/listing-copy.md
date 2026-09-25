@@ -52,18 +52,30 @@ The extension requests no host permissions or persistent all-sites access. It ma
 
 Update the existing item `oligkkknbmklalfnkipmheifammnpgpo` by default. Enter the shared name, description, purpose, URLs, privacy answers, reviewer note, five current screenshots, icon, promo tile, and any locale fields actually present in the dashboard. Keep the verified-website field on its current real value until `https://anmerko.com` is live and verified. Do not enable a website CTA until the public listing shows anmerko and the submitted version.
 
+Before pressing Release for a version that adds permissions, enter each new permission's explanation from the table above as its justification in **Privacy practices** and save; for journeys, that means `alarms` and `webNavigation`. Release cannot set these fields. In Edge Partner Center, enter the same justifications on the **Privacy** page and the product note in **Notes for certification** when you upload the Edge ZIP. See [permission changes](../release-process.md#permission-changes).
+
 ## Firefox Add-ons entry
 
 Keep the registered GUID recorded in `listings.json`. Use the verified `anmerko` name, slug, and canonical URL. Select desktop and Android compatibility only with the matching installation evidence. Do not cancel or replace an unrelated pending review.
 
-For listed version `V`, attach `anmerko-V-firefox-source.zip`. For the website/unlisted version `V.1`, attach `anmerko-V.1-firefox-source.zip`. In each reviewer note, replace the placeholders with the exact submitted version and archive filename. The reviewer should extract that archive and use:
+For listed version `V`, attach `anmerko-V-firefox-source.zip`. For the website/unlisted version `V.1`, attach `anmerko-V.1-firefox-source.zip`. Release sends this reviewer note with each new AMO version, filled in with that exact version and archive filename. It stays within AMO's 3,000-character limit. Enter it yourself only when creating a version outside Release, filling in the placeholders the same way:
 
 ```text
+Review the matching source archive anmerko-<version>-firefox-source.zip for extension version <version>.
+
 Build with Node.js 24 or later from the extracted source archive root:
 npm ci
-RELEASE_VERSION=<exact submitted version> npm run build:firefox
+RELEASE_VERSION=<version> npm run build:firefox
 
-The resulting dist-firefox directory is the submitted extension. esbuild bundles TypeScript and embeds panel.css without minifying or obfuscating it. Review the source archive matching this submission. The listed V and website/unlisted V.1 variants are distinct packages. The unlisted package has no custom update URL; users update it manually in the same Firefox profile.
+The resulting dist-firefox directory is the submitted extension. esbuild bundles TypeScript and embeds panel.css without minifying or obfuscating it. The listed and website/unlisted variants are distinct packages; use this submission's matching source archive. The unlisted package has no custom update URL; users update it manually in the same Firefox profile.
+
+Journeys: nothing records until the user chooses Record journey and then Start journey. While a journey records, anmerko keeps ordered clicks, same-origin page changes, and a screenshot per step for that one tab. Only if the user turns on Include entered values does it also keep finished changes to form fields not identified as sensitive. A local review opens before anything can be copied or exported. Nothing is sent to a server.
+
+Journey permissions (no host or optional permissions are requested):
+- webNavigation (Firefox shows "Access browser activity during navigation"): used only while a user-started journey records, to order same-origin page loads, route changes, and hash changes in the recorded tab, and to end the journey when that tab leaves the starting website. Events from other tabs and frames are ignored, and browser history is never read. Only the same-origin page URLs that become journey steps are kept, locally, with that journey.
+- alarms (no warning): ends a recording at the five-minute limit, warns before an unsaved journey review expires, and discards it after 30 minutes without changes, even if the background script was suspended.
+
+Smoke test: open a normal HTTPS page and activate anmerko. Save an element comment and choose Copy Prompt. Choose More Comment Options, Record journey, then Start journey. Wait for the Recording strip, click a control that stays on the same page, and choose Stop on the strip. A reload or a link to another page ends a Firefox journey by design. In review, enter the expected and actual results, mask part of one screenshot, check the retention acknowledgement, choose Save journey, then Copy Prompt or Download Markdown + Images.
 ```
 
 Confirm the commands against the source archive receipt before entry. Never substitute one variant's source archive for the other.
