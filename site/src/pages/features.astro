@@ -111,12 +111,13 @@ const CLIP_V = 9;
           <ul>
             <li>At most eight names; a separate hint row, never mixed into the selector or DOM ancestry.</li>
             <li>Saved snapshot: exports reuse what was captured, and never re-inspect the page. Remove a hint while editing if you don't want to share it.</li>
-            <li>Honest fallback: production builds and unsupported pages keep ordinary element context with no invented names.</li>
+            <li>Honest fallback: production builds and unsupported pages keep ordinary element context with no invented names. Svelte and Solid intentionally receive ordinary context — neither keeps a runtime component tree to read.</li>
+            <li>Astro islands report their framework, component export, and hydration strategy; static Astro output carries no names.</li>
           </ul>
           <p><a href="/docs/usage/inline-comments/#component-hints">Component hints →</a></p>
         </div>
         <figure class="feature-clip">
-          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/05-settings.png" aria-label="Silent clip: enabling component context and capturing a React component hint">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/05-settings.png" aria-label="Silent clip: enabling component context and capturing a Preact production hint">
             <source src={`/media/features/component.mp4?v=${CLIP_V}`} type="video/mp4">
           </video>
         </figure>
