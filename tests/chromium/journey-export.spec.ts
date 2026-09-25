@@ -85,6 +85,11 @@ test('formats only a strict reviewed manifest and rejects drafts or unknown fiel
   expect(() => formatJourneyMarkdown(manifest(), 0)).toThrow(TypeError);
 });
 
+test('names withdrawn page access as the stop reason', () => {
+  expect(formatJourneyMarkdown({ ...manifest(), stopReason: 'page-access-lost' }))
+    .toContain('Stop reason: `page-access-lost`');
+});
+
 test('preserves full URL text, step order, sequence gaps, and explicit image states', () => {
   const markdown = formatJourneyMarkdown(manifest(), 4);
   const source = 'https://shop.example/items/%E2%9C%93?q=green&q=large&empty=&encoded=a%2Fb%20c#list%2Fone';

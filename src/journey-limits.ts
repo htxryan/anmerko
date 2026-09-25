@@ -51,6 +51,8 @@ export const STOP_REASONS = [
   'tab-lost',
   'protected-page',
   'capture-failed',
+  // Appended so drafts and snapshots with the earlier reasons stay valid.
+  'page-access-lost',
 ] as const;
 
 export type StopReason = typeof STOP_REASONS[number];

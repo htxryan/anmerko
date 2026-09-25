@@ -33,7 +33,7 @@ anmerko’s use of information received from Google APIs follows the [Chrome Web
 | `sidePanel` | Open the Chrome or Edge sidebar |
 | `webNavigation` | Observe page changes during a journey |
 
-anmerko holds no host permissions and no optional permissions, and never prompts for site access. `activeTab` covers only the site where you activate it, so a journey records only the site where you started it; navigating to a different site ends the journey.
+anmerko holds no host permissions and no optional permissions, and never prompts for site access. `activeTab` covers only the website address where you activate it — in Firefox, only until that page reloads or opens another page — so a journey records only where you started it. A different domain, subdomain, port, or protocol ends the journey, and in Firefox so does any page load.
 
 ## Limits
 

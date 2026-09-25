@@ -10,6 +10,7 @@ import { startFixtureServer } from '../fixtures/component-context/server.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { readFile, readdir, mkdir, writeFile, mkdtemp, rm, cp, realpath } from 'node:fs/promises';
 import { tmpdir, release, arch } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -588,6 +589,42 @@ test('Firefox default process isolation reconnects an open sidebar after page re
   await activateDock();
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'fresh toolbar activation reconnects the existing remote sidebar');
 }, true));
+
+// Journeys ship behind ANMERKO_JOURNEYS=1; signed packages and default builds skip.
+const journeysBuilt = (() => {
+  try { return /\bjourneysEnabled = true\b/.test(readFileSync('dist-firefox/background.js', 'utf8')); }
+  catch { return false; }
+})();
+const journeySkip = process.env.FIREFOX_XPI ? 'journeys are not in signed packages'
+  : !journeysBuilt && 'build dist-firefox with ANMERKO_JOURNEYS=1 to run journey tests';
+
+test('Firefox ends a journey on a same-origin reload with page-access-lost and explains it in review', { timeout: 90000, skip: journeySkip }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+  const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
+  await activateDock();
+  await dockClick('.comment-options');
+  await dockClick('.journey-record');
+  await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  await dockClick('.journey-container .journey-primary');
+  await driver.wait(async () => /Recording journey/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+  // Firefox ties activeTab to the document: the reload keeps the origin but withdraws access.
+  await driver.navigate().refresh();
+  await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'the reload ends recording in review');
+  const review = await docked(`
+    const container = root.querySelector('.journey-container');
+    const notice = container.querySelector('.journey-stop-reason');
+    return {
+      role: notice?.getAttribute('role'), notice: notice?.textContent,
+      steps: [...container.querySelectorAll('.journey-steps > li')].map(step => ({
+        heading: step.querySelector('h2')?.textContent, text: step.innerText,
+      })),
+    };
+  `);
+  assert.equal(review.role, 'status');
+  assert.match(review.notice, /^Recording ended because the browser withdrew anmerko's access when the page reloaded or opened another page\. Firefox does this on every page load/);
+  assert.deepEqual(review.steps.map(step => step.heading), ['Step 1 · Initial view', 'Step 2 · Navigation']);
+  assert.match(review.steps[1].text, new RegExp(`Destination URL\\s+${origin.replace(/[.]/g, '\\.')}/`));
+  assert.match(review.steps[1].text, /Screenshot unavailable: screenshot permission was denied\./);
+}));
 
 test('Firefox production extension covers the shared component-context fixture matrix', { timeout: 180000 }, async t => session(t, async ({
   copiedPrompt, driver, ui, click, activate, activateDock, docked, dockClick, save, evidence, extensionId,
