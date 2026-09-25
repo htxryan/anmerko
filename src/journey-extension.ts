@@ -11,6 +11,7 @@ import { stripUrlCredentials } from './journey-events';
 import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import type { StopReason } from './journey-limits';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
+import { createJourneyScreenshotTokens } from './journey-screenshot-transfer';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
 import { deleteJourneySnapshot, JourneyStoreError, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
 import { extensionApi, firefoxExtension } from './platform';
@@ -201,6 +202,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let publishedState: JourneySession = { phase: 'idle', epoch: 0 };
   let reviewOpening: Promise<void> | undefined;
   let controller: JourneyController;
+  // Review views name the screenshots they hold, which reads then leave out.
+  const screenshotTokens = createJourneyScreenshotTokens();
   let ready: Promise<void>;
   let initializationError: unknown;
   let initialized = false;
@@ -1352,7 +1355,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       // or not at all.
       const screenshots = message.screenshots === false ? false
         : message.screenshots !== 'review' || state.phase === 'reviewing' || state.phase === 'saving';
-      return screenshots || !('draft' in state) ? state : { ...state, draft: { ...state.draft, images: {} } };
+      const view = screenshots || !('draft' in state) ? state : { ...state, draft: { ...state.draft, images: {} } };
+      return Array.isArray(message.held) ? screenshotTokens(view, message.held) : view;
     }
     // A surface that follows only the phase skips the draft and its screenshots.
     if (message.type === 'ANMERKO_JOURNEY_PHASE') {

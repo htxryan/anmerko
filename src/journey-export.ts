@@ -40,6 +40,8 @@ function literalBlock(value: string): string {
 }
 
 const yesNo = (value: boolean) => value ? 'Yes' : 'No';
+// Every redaction reads the same, whatever text it carries.
+const REDACTED = '[redacted]';
 
 function relativeTime(milliseconds: number): string {
   const sign = milliseconds < 0 ? '-' : '+';
@@ -66,19 +68,23 @@ function pushTarget(lines: string[], target: SafeTarget): void {
   if (target.point) lines.push(`Target point: x ${target.point.x}, y ${target.point.y}`);
 }
 
+// A selection or checked state redacted in review shows only its marker,
+// never the empty payload it keeps.
 function pushEnteredValue(lines: string[], value: ReviewedFieldValue): void {
-  if (value.kind === 'checked') {
-    lines.push(`Entered checked state: ${yesNo(value.checked)}`);
-    return;
-  }
   if (value.kind === 'text') {
     pushReviewedText(lines, 'Entered text', value.value);
     lines.push(`Entered text truncated: ${yesNo(value.truncated)}`);
     return;
   }
+  const review = (label: string) => `${label} review: Edited: ${yesNo(value.edited === true)} · Redacted: ${yesNo(value.redacted === true)}`;
+  if (value.kind === 'checked') {
+    lines.push(`Entered checked state: ${value.redacted ? REDACTED : yesNo(value.checked)}`, review('Entered checked state'));
+    return;
+  }
   lines.push(`Entered selection allows multiple: ${yesNo(value.multiple)}`,
-    `Entered selection truncated: ${yesNo(value.truncated)}`);
-  value.values.forEach((item, index) => pushReviewedText(lines, `Entered selection value ${index + 1}`, item));
+    `Entered selection truncated: ${yesNo(value.truncated)}`, review('Entered selection'));
+  if (value.redacted) lines.push(`Entered selection: ${REDACTED}`);
+  else value.values.forEach((item, index) => pushReviewedText(lines, `Entered selection value ${index + 1}`, item));
 }
 
 function stepKind(step: JourneyStep): string {
@@ -141,21 +147,27 @@ function journeyImageNames(manifest: JourneyManifestV1): Map<string, string> {
 
 const reviewedText = (text: string, edited: boolean, redacted: boolean): ReviewedText => ({ text, edited, redacted });
 
+// Review markers travel with every kind of value. A value removed in review
+// is redacted: it keeps its kind and nothing else, so no export can present
+// the empty payload as a recorded state.
 function manifestFieldValue(value: DraftFieldValue): ReviewedFieldValue {
-  if (value.kind === 'checked') return { kind: 'checked', checked: value.checked };
   const edited = value.edited === true;
+  const removed = value.removed === true;
+  const markers = removed ? { edited: true as const, redacted: true as const } : edited ? { edited: true as const } : {};
+  if (value.kind === 'checked') return { kind: 'checked', checked: removed ? false : value.checked, ...markers };
   if (value.kind === 'text') {
     return {
       kind: 'text',
-      value: reviewedText(value.value, edited, edited && value.value === ''),
-      truncated: value.truncated,
+      value: removed ? reviewedText(REDACTED, true, true) : reviewedText(value.value, edited, false),
+      truncated: removed ? false : value.truncated,
     };
   }
   return {
     kind: 'selection',
-    values: value.values.map(item => reviewedText(item, edited, edited && item === '')),
+    values: removed ? [] : value.values.map(item => reviewedText(item, edited, false)),
     multiple: value.multiple,
-    truncated: value.truncated,
+    truncated: removed ? false : value.truncated,
+    ...markers,
   };
 }
 
@@ -269,21 +281,22 @@ function clip(value: string): string {
     : value;
 }
 
-// Every redaction reads the same, whatever text it carries.
-const REDACTED = '[redacted]';
-
 function promptText(value: ReviewedText): string {
   if (value.redacted) return REDACTED;
   return `${inlineCode(clip(value.text))}${value.edited ? ' (edited during review)' : ''}`;
 }
 
 function promptValue(value: ReviewedFieldValue): string {
-  if (value.kind === 'checked') return value.checked ? 'checked' : 'unchecked';
+  if (value.kind === 'checked') {
+    if (value.redacted) return `checked state ${REDACTED}`;
+    return `${value.checked ? 'checked' : 'unchecked'}${value.edited ? ' (edited during review)' : ''}`;
+  }
   const truncated = value.truncated ? ' (truncated when recorded)' : '';
   if (value.kind === 'text') return `value ${promptText(value.value)}${truncated}`;
-  if (!value.values.length) return `nothing selected${truncated}`;
+  if (value.redacted) return `selection ${REDACTED}`;
+  const edited = value.edited || value.values.some(item => item.edited) ? ' (edited during review)' : '';
+  if (!value.values.length) return `nothing selected${edited}${truncated}`;
   const options = value.values.map(item => item.redacted ? REDACTED : item.text).join(', ');
-  const edited = value.values.some(item => item.edited) ? ' (edited during review)' : '';
   return `selected ${inlineCode(clip(options))}${edited}${truncated}`;
 }
 

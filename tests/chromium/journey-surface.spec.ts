@@ -212,10 +212,83 @@ test('the client reads screenshots only where they are shown: a journey view in 
     redactUrl: [state(false), { type: 'ANMERKO_JOURNEY_REDACT_URL' }],
     redactLabel: [state(false), { type: 'ANMERKO_JOURNEY_REDACT_LABEL' }],
     removeImage: [state(false), { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE' }],
-    maskImage: [state(), { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE' }],
+    maskImage: [state('review'), { type: 'ANMERKO_JOURNEY_REVIEW_IMAGE' }],
     refused: [state(false), { type: 'ANMERKO_JOURNEY_REMOVE_STEP' }, state(false)],
     refusedDiscard: [{ type: 'ANMERKO_JOURNEY_DISCARD' }, state(false)],
   });
+});
+
+// The client with the background's screenshot tokens, so a fake background
+// answers reads as the real one does.
+const transferBundle = buildSync({
+  stdin: {
+    contents: `export { createJourneyClient } from './src/journey-client';
+      export { createJourneyScreenshotTokens } from './src/journey-screenshot-transfer';`,
+    resolveDir: process.cwd(),
+  },
+  bundle: true, write: false, format: 'iife', globalName: 'transferModule',
+}).outputFiles[0].text;
+
+test('a review view fetches only the screenshots it does not hold, after every change and before a mask', async ({ page }) => {
+  await page.addScriptTag({ content: transferBundle });
+  const result = await page.evaluate(async () => {
+    const { createJourneyClient, createJourneyScreenshotTokens } = (globalThis as any).transferModule;
+    const runtime = (globalThis as any).chrome.runtime;
+    const png = (name: string) => `data:image/png;base64,${name}`;
+    const images = (i1: string) => ({ I1: { width: 1, height: 1, dataUrl: png(i1) }, I2: { width: 1, height: 1, dataUrl: png('TWO') } });
+    let session: any = { phase: 'reviewing', epoch: 2, sessionId: 'S', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1,
+      warningAt: '2026-09-21T00:30:00.000Z', expiresAt: '2026-09-21T01:00:00.000Z',
+      draft: { id: 'J1', revision: 3, images: images('ONE'), steps: [] } };
+    const tokens = createJourneyScreenshotTokens();
+    // Each state read: the tokens it named as held, and the screenshots its reply carried.
+    const reads: Array<{ held: number; sent: string[] }> = [];
+    let override: unknown;
+    runtime.sendMessage = async (message: { type: string; screenshots?: unknown; held?: unknown }) => {
+      if (message.type !== 'ANMERKO_JOURNEY_STATE') return { ok: true };
+      const reply = override ?? (Array.isArray(message.held) ? tokens(structuredClone(session), message.held) : structuredClone(session));
+      override = undefined;
+      reads.push({
+        held: Array.isArray(message.held) ? message.held.length : -1,
+        sent: (JSON.stringify(reply).match(/data:image\/png;base64,\w+/g) ?? []).map((url: string) => url.slice(22)),
+      });
+      return { ok: true, value: reply };
+    };
+    const shown = (state: any) => Object.fromEntries(Object.entries(state.draft.images).map(([id, image]: [string, any]) => [id, image.dataUrl.slice(22)]));
+    const client = createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 }));
+    const outcome: Record<string, unknown> = {};
+    outcome.first = shown(await client.read());
+    // A summary autosave or any other change: the view reads the review again.
+    session = { ...session, draft: { ...session.draft, revision: 4 } };
+    outcome.again = shown(await client.read());
+    // Another surface masks one screenshot: only it is fetched.
+    session = { ...session, draft: { ...session.draft, revision: 5, images: images('MASKED') } };
+    outcome.masked = shown(await client.read());
+    // A mask begun on the current pixels goes ahead without fetching them;
+    // one begun on pixels since replaced is refused.
+    const mask = (maskedFrom: string) => client.reviewImage('I1', { operation: 'replace', maskedFrom: png(maskedFrom), image: { dataUrl: png('NEW') } })
+      .then(() => 'applied', (error: { code?: string }) => error.code);
+    outcome.current = await mask('MASKED');
+    outcome.stale = await mask('ONE');
+    // A reply that leaves out a screenshot the view no longer holds is read again whole.
+    override = { state: { ...session, draft: { ...session.draft, images: { I1: { width: 1, height: 1 }, I2: { width: 1, height: 1, dataUrl: png('TWO') } } } },
+      tokens: { I1: 'unknown-token', I2: 'another-token' } };
+    outcome.recovered = shown(await client.read());
+    return { outcome, reads };
+  });
+  expect(result.outcome).toEqual({
+    first: { I1: 'ONE', I2: 'TWO' }, again: { I1: 'ONE', I2: 'TWO' }, masked: { I1: 'MASKED', I2: 'TWO' },
+    current: 'applied', stale: 'stale-review', recovered: { I1: 'MASKED', I2: 'TWO' },
+  });
+  expect(result.reads).toEqual([
+    { held: 0, sent: ['ONE', 'TWO'] },
+    { held: 2, sent: [] },
+    { held: 2, sent: ['MASKED'] },
+    // Each mask reads the review: nothing is fetched again.
+    { held: 2, sent: [] },
+    { held: 2, sent: [] },
+    { held: 2, sent: ['TWO'] },
+    { held: 0, sent: ['MASKED', 'TWO'] },
+  ]);
 });
 
 test('a summary write names its review and is refused once another review is current', async ({ page }) => {
@@ -361,7 +434,7 @@ test('binds fallback actions to one intent and authenticates change notification
   });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_START', intent: 'launch_nonce-1234567890', includeEnteredValues: true } },
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review' } },
+    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review', held: [] } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STOP', intent: 'launch_nonce-1234567890' } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_DISCARD' } },
   ]);
@@ -437,15 +510,94 @@ test('rejects invalid launch context before start and sanitizes failures', async
     catch (error) { return error instanceof Error ? error.message : String(error); }
   })).toBe('Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.');
 
-  await page.evaluate(() => {
+  // A start that failed for no reason the view can name says start, and can
+  // be tried again; so can one whose first screenshot failed. The view says how.
+  const startFailure = (response: unknown) => page.evaluate(async response => {
     const harness = (globalThis as HarnessWindow).surfaceHarness;
-    harness.response = { ok: false, code: '__proto__', error: 'private backend details' };
-    harness.pending = harness.client.start(false);
+    harness.response = response;
+    try { await harness.client.start(false); return 'no error'; }
+    catch (error) { return { message: (error as Error).message, code: (error as { code?: unknown }).code ?? null, retry: (error as { retry?: unknown }).retry ?? null }; }
+  }, response);
+  expect(await startFailure({ ok: false, code: '__proto__', error: 'private backend details' }))
+    .toEqual({ message: 'Could not start the journey.', code: '__proto__', retry: true });
+  expect(await startFailure({ ok: false, error: 'private backend details' }))
+    .toEqual({ message: 'Could not start the journey.', code: null, retry: true });
+  expect(await startFailure({ ok: false, code: 'initial-capture-failed', error: 'private backend details' }))
+    .toEqual({ message: 'The first journey screenshot failed.', code: 'initial-capture-failed', retry: true });
+  expect(await startFailure({ ok: false, code: 'busy', error: 'private backend details' }))
+    .toEqual({ message: 'Finish or discard the existing journey before starting another.', code: 'busy', retry: null });
+});
+
+// A launch link is spent by its first Start, even one that fails, so the tab
+// then offers no Start: its error says where to start again.
+for (const [code, error] of [
+  ['initial-capture-failed', 'The first journey screenshot failed. To try again, go to the website tab and choose Record journey again.'],
+  [undefined, 'Could not start the journey. To try again, go to the website tab and choose Record journey again.'],
+] as const) {
+  test(`a journey tab whose start failed (${code ?? 'no code'}) says where to start again, not to try again here`, async ({ page }) => {
+    await page.setContent('<!doctype html><html><head></head><body><main id="journey"></main></body></html>');
+    await page.evaluate(() => { location.hash = 'launch=valid_nonce-1234567890'; });
+    await page.addScriptTag({ content: pageBundle(true) });
+    const start = page.getByRole('button', { name: 'Start journey', exact: true });
+    await expect(start).toBeVisible();
+    await page.evaluate(code => {
+      const harness = (globalThis as HarnessWindow).surfaceHarness;
+      const idle = harness.response;
+      (globalThis as any).chrome.runtime.sendMessage = async (message: { type: string }) => {
+        harness.log.push({ kind: 'message', message: structuredClone(message) });
+        if (message.type !== 'ANMERKO_JOURNEY_START') return structuredClone(idle);
+        return { ok: false, error: 'private backend details', ...code ? { code } : {} };
+      };
+    }, code);
+    await start.click();
+    await expect(page.getByRole('alert')).toHaveText(error);
+    await expect(page.locator('#journey-start-error')).toHaveText(error);
+    await expect(start).toHaveCount(0);
+    await expect(page.getByText(/^To record a new journey, go to the website tab/)).toBeVisible();
+    await expect(page.locator('.journey-view')).not.toContainText('Try again');
   });
-  expect(await page.evaluate(async () => {
-    try { await (globalThis as HarnessWindow).surfaceHarness.pending; return 'no error'; }
-    catch (error) { return error instanceof Error ? error.message : String(error); }
-  })).toBe('Could not update the journey. Try again.');
+}
+
+test('the journey tab names each view in its title', async ({ page }) => {
+  await page.setContent('<!doctype html><html><head><title>anmerko journey</title></head><body><main id="journey"></main></body></html>');
+  await page.evaluate(() => { location.hash = 'launch=valid_nonce-1234567890'; });
+  await page.addScriptTag({ content: pageBundle(true) });
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  await expect(page).toHaveTitle('Record a journey – anmerko');
+  const draft = { id: 'J1', revision: 1, includeEnteredValues: false, stopReason: 'user', expected: '', actual: '', steps: [], images: {}, limitations: [] };
+  const owner = { epoch: 2, sessionId: 'S', journeyId: 'J1', ownerTabId: 1, ownerWindowId: 1 };
+  const views: Array<[unknown, string]> = [
+    [{ ...owner, phase: 'recording', documentToken: 'D', deadlineAt: '2099-01-01T00:00:00.000Z', documentCounters: {}, draft }, 'Recording journey – anmerko'],
+    [{ ...owner, phase: 'reviewing', warningAt: '2099-01-01T00:00:00.000Z', expiresAt: '2099-01-01T00:10:00.000Z', draft }, 'Review journey – anmerko'],
+    [{ ...owner, phase: 'saving', draft }, 'Saving journey – anmerko'],
+    [{ phase: 'saved', epoch: 3, journeyId: 'J1', revision: 2 }, 'Journey saved – anmerko'],
+  ];
+  for (const [state, title] of views) {
+    await page.evaluate(state => {
+      const harness = (globalThis as HarnessWindow).surfaceHarness;
+      harness.response = { ok: true, value: state };
+      for (const listener of harness.listeners) listener({ type: 'ANMERKO_JOURNEY_CHANGED' }, { id: 'test-extension' });
+    }, state);
+    await expect(page).toHaveTitle(title);
+  }
+});
+
+test('a spent journey link and an unavailable browser say so in the tab title too', async ({ page }) => {
+  await page.setContent('<!doctype html><html><head><title>anmerko journey</title></head><body><main id="journey"></main></body></html>');
+  await page.evaluate(() => { location.hash = 'launch=valid_nonce-1234567890'; });
+  await page.addScriptTag({ content: pageBundle(true) });
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    (globalThis as HarnessWindow).surfaceHarness.response = { ok: false, code: 'launch-expired', error: 'private backend details' };
+  });
+  await page.getByRole('button', { name: 'Start journey', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'This journey link already opened' })).toBeVisible();
+  await expect(page).toHaveTitle('Journey link already used – anmerko');
+
+  await page.setContent('<!doctype html><html><head><title>anmerko journey</title></head><body><main id="journey"></main></body></html>');
+  await page.addScriptTag({ content: pageBundle(false) });
+  await expect(page.getByRole('heading', { name: 'Journey recording unavailable' })).toBeVisible();
+  await expect(page).toHaveTitle('Journey recording unavailable – anmerko');
 });
 
 test('trusted page strictly parses launch intent and shares the journey UI only when enabled', async ({ page }) => {
@@ -456,7 +608,7 @@ test('trusted page strictly parses launch intent and shares the journey UI only 
   await expect(page.getByRole('checkbox', { name: 'Include entered values' })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'Include entered values' })).not.toBeChecked();
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
-    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review' } },
+    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review', held: [] } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_LIST' } },
   ]);
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();

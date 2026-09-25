@@ -9,12 +9,15 @@ type ReviewingSession = Extract<JourneySession, { phase: 'reviewing' }>;
 type JourneyResponse = { ok: true; value?: unknown } | { ok: false; code?: unknown; error?: unknown };
 
 const CLIENT_ERROR = 'Could not update the journey. Try again.';
+// A start that fails can be tried again; the view adds how, since a journey
+// tab whose link the start spent offers no Start of its own.
+const START_ERROR = 'Could not start the journey.';
 const LAUNCH_ERROR = 'Open anmerko from a website before starting a journey.';
 const INTENT_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const BACKEND_GUIDANCE: Record<string, string> = {
   busy: 'Finish or discard the existing journey before starting another.',
   'owner-unavailable': 'anmerko could not reach the website tab. On that tab, click anmerko in the browser toolbar or Extensions menu, then try again.',
-  'initial-capture-failed': 'The initial journey screenshot failed. Try again.',
+  'initial-capture-failed': 'The first journey screenshot failed.',
   'launch-expired': 'This journey link expired. On the website tab, choose Record journey again.',
   'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
   'stale-review': 'Another review tab changed this journey. Reload the review and try again.',
@@ -38,8 +41,23 @@ function staleError(): Error {
   return Object.assign(new Error(BACKEND_GUIDANCE['stale-review']), { code: 'stale-review' });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function errorCode(error: unknown): unknown {
   return (error as { code?: unknown } | null)?.code;
+}
+
+// A start that failed on its way or at its first screenshot is marked for
+// retry, and says start rather than update. Other refusals keep their guidance.
+function startFailed(error: unknown): unknown {
+  const code = errorCode(error);
+  if (code === 'initial-capture-failed') return Object.assign(new Error(BACKEND_GUIDANCE[code]), { code, retry: true });
+  if (!(error instanceof Error) || error.message === CLIENT_ERROR) {
+    return Object.assign(new Error(START_ERROR), typeof code === 'string' ? { code } : {}, { retry: true });
+  }
+  return error;
 }
 
 // Whether a session is, or is saving, the given review.
@@ -54,6 +72,9 @@ export function createJourneyClient(
 ): JourneyClient {
   const api = extensionApi();
   let actionGeneration = 0;
+  // The screenshots this view holds, by the token the background named each
+  // with (journey-screenshot-transfer): reads leave those out.
+  let heldScreenshots = new Map<string, string>();
 
   async function command(type: string, extra: Record<string, unknown> = {}): Promise<unknown> {
     let response: JourneyResponse;
@@ -71,12 +92,43 @@ export function createJourneyClient(
     return response.value;
   }
 
+  // The journey with the screenshots a review shows, each fetched only when
+  // this view does not hold it yet. Anything else a reply carries is a whole
+  // session, every screenshot included.
+  function withHeldScreenshots(reply: unknown): JourneySession | undefined {
+    if (!isRecord(reply) || !isRecord(reply.state) || !isRecord(reply.tokens)) return reply as JourneySession;
+    const state = reply.state as unknown as JourneySession;
+    const tokens = reply.tokens;
+    const held = new Map<string, string>();
+    if (!('draft' in state)) { heldScreenshots = held; return state; }
+    const images: Record<string, JourneyDraftImage> = {};
+    for (const [imageId, image] of Object.entries(state.draft.images)) {
+      const token = tokens[imageId];
+      const dataUrl = typeof token === 'string' ? image.dataUrl ?? heldScreenshots.get(token) : image.dataUrl;
+      // Left out as held, but no longer here: another read let it go.
+      if (typeof token === 'string' && dataUrl === undefined) return undefined;
+      if (typeof token === 'string' && dataUrl !== undefined) held.set(token, dataUrl);
+      images[imageId] = dataUrl === undefined ? image : { ...image, dataUrl };
+    }
+    heldScreenshots = held;
+    return { ...state, draft: { ...state.draft, images } };
+  }
+
+  async function readReview(): Promise<JourneySession> {
+    const current = withHeldScreenshots(await command('ANMERKO_JOURNEY_STATE', { screenshots: 'review', held: [...heldScreenshots.keys()] }));
+    if (current) return current;
+    heldScreenshots = new Map();
+    const whole = withHeldScreenshots(await command('ANMERKO_JOURNEY_STATE', { screenshots: 'review', held: [] }));
+    if (!whole) throw new Error(CLIENT_ERROR);
+    return whole;
+  }
+
   // review, when given, is the review the edit was made in: its journey and
   // the session that recorded or reopened it. Any other journey, or another
   // review of the same one, is refused as another tab's change, even while it
   // saves. Only a screenshot edit reads the screenshots.
   async function reviewing(review?: JourneyReviewTarget, screenshots = false): Promise<ReviewingSession> {
-    const current = await command('ANMERKO_JOURNEY_STATE', screenshots ? {} : { screenshots: false }) as JourneySession;
+    const current = screenshots ? await readReview() : await command('ANMERKO_JOURNEY_STATE', { screenshots: false }) as JourneySession;
     if (review !== undefined && current.phase !== 'idle' && (current.journeyId !== review.journeyId
       || ('sessionId' in current && current.sessionId !== review.sessionId))) throw staleError();
     if (current.phase === 'saving') throw savingError();
@@ -111,8 +163,9 @@ export function createJourneyClient(
     supportsEnteredValues: true,
     pageLoadsEndJourney: firefoxExtension(),
     // A journey view shows screenshots only in review. While recording it
-    // shows the step count, so each recorded step reads no screenshots.
-    read: async () => command('ANMERKO_JOURNEY_STATE', { screenshots: 'review' }) as Promise<JourneySession>,
+    // shows the step count, so each recorded step reads no screenshots, and
+    // in review each read fetches only screenshots the view does not hold.
+    read: readReview,
     updateSummary: async (expected: string, actual: string, review?: JourneyReviewTarget): Promise<void> => {
       await reviewEdit(await reviewing(review), 'ANMERKO_JOURNEY_UPDATE_SUMMARY', {
         updatedAt: new Date().toISOString(), expected, actual,
@@ -186,8 +239,10 @@ export function createJourneyClient(
       ++actionGeneration;
       // No optional permissions any more: a journey records the site it starts
       // on using activeTab, so Start goes straight to the background.
-      if (native) return command('ANMERKO_JOURNEY_START', { ...native, includeEnteredValues }) as Promise<void>;
-      return command('ANMERKO_JOURNEY_START', { intent: fallbackIntent, includeEnteredValues }) as Promise<void>;
+      const started = native
+        ? command('ANMERKO_JOURNEY_START', { ...native, includeEnteredValues })
+        : command('ANMERKO_JOURNEY_START', { intent: fallbackIntent, includeEnteredValues });
+      return started.then(() => undefined, error => { throw startFailed(error); });
     },
     stop(): Promise<void> {
       ++actionGeneration;

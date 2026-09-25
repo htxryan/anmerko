@@ -14,6 +14,7 @@ import {
   recordingSessionFits,
   removeJourneyStep,
   reviewSaveGating,
+  STOP_LIMITATIONS,
   stopJourney,
   supersedeJourneyImagesAfter,
   updateJourneySummary,
@@ -26,7 +27,7 @@ import {
 } from '../../src/journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch, type JourneyInputEvent } from '../../src/journey-events';
 import { formatJourneyMarkdown, journeyDraftToManifest, journeyPrompt } from '../../src/journey-export';
-import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS } from '../../src/journey-limits';
+import { JOURNEY_LIMITATIONS, JOURNEY_LIMITS, STOP_REASONS } from '../../src/journey-limits';
 import { applyJourneyImageReview } from '../../src/journey-review';
 
 const reviewed = (text: string) => ({ text, edited: false, redacted: false });
@@ -740,6 +741,113 @@ test('review value edits replace text without retaining originals', () => {
     ...reviewGuards(reviewing), revision: 99,
     stepId, value: { kind: 'text', value: 'stale', truncated: false },
   })).toBe(reviewing);
+});
+
+// A text field, a select, a checkbox and a radio button, each committed once.
+function reviewingWithEveryValueKind() {
+  type FieldEvent = Extract<JourneyInputEvent, { kind: 'field-change' }>;
+  const field = (id: string, elapsedMs: number, tag: string, role: string, enteredValue: FieldEvent['enteredValue']): JourneyInputEvent => ({
+    ...textFieldEvent(id, elapsedMs, '') as FieldEvent,
+    target: { tag, role, selectorPath: [tag], label: 'field', editable: true, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 0 } },
+    enteredValue,
+  });
+  const recorded = acceptJourneyEventBatch(recordingSession(), eventBatch(1, [
+    field('coupon', 1_000, 'input', 'textbox', { kind: 'text', value: 'SAVE10-private-2281', truncated: false }),
+    field('plan', 1_100, 'select', 'combobox', { kind: 'selection', values: ['plan-private-4417'], multiple: false, truncated: false }),
+    field('terms', 1_200, 'input', 'checkbox', { kind: 'checked', checked: true }),
+    field('size', 1_300, 'input', 'radio', { kind: 'checked', checked: true }),
+  ]));
+  const stopped = stopJourney(recorded, { epoch: 1, stoppedAt: '2026-09-20T12:01:00.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  return stopped;
+}
+
+test('removing a value of any kind keeps only its kind, marked removed, never a recorded state', () => {
+  let session: JourneySession = reviewingWithEveryValueKind();
+  const updatedAt = (index: number) => `2026-09-20T12:01:${String(10 + index).padStart(2, '0')}.000Z`;
+  ['coupon', 'plan', 'terms', 'size'].forEach((stepId, index) => {
+    if (session.phase !== 'reviewing') throw new Error('expected reviewing state');
+    const next = editJourneyValue(session, { ...reviewGuards(session), updatedAt: updatedAt(index), stepId, value: { removed: true } });
+    expect(next, stepId).not.toBe(session);
+    session = next;
+  });
+  if (session.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const values = Object.fromEntries(session.draft.steps.flatMap(step => step.kind === 'field-change' ? [[step.id, step.enteredValue]] : []));
+  expect(values).toEqual({
+    coupon: { kind: 'text', value: '', truncated: false, edited: true, removed: true },
+    plan: { kind: 'selection', values: [], multiple: false, truncated: false, edited: true, removed: true },
+    terms: { kind: 'checked', checked: false, edited: true, removed: true },
+    size: { kind: 'checked', checked: false, edited: true, removed: true },
+  });
+  // The saved snapshot is the validated draft: the markers survive it.
+  const validated = validateJourneyDraft(session.draft);
+  expect(validated.ok && validated.value.steps).toEqual(session.draft.steps);
+  expect(JSON.stringify(session)).not.toContain('private');
+  // An edit afterwards replaces the removal with the value entered in review.
+  const edited = editJourneyValue(session, {
+    ...reviewGuards(session), updatedAt: updatedAt(9), stepId: 'terms', value: { kind: 'checked', checked: true },
+  });
+  if (edited.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(edited.draft.steps.find(step => step.id === 'terms')).toMatchObject({ enteredValue: { kind: 'checked', checked: true, edited: true } });
+  expect(JSON.stringify(edited.draft.steps.find(step => step.id === 'terms'))).not.toContain('removed');
+  // Only { removed: true } removes.
+  for (const value of [{ removed: false }, { removed: 'yes' }, { kind: 'checked', checked: false, removed: 1 }]) {
+    expect(editJourneyValue(session, { ...reviewGuards(session), updatedAt: updatedAt(9), stepId: 'plan', value })).toBe(session);
+  }
+});
+
+test('drafts and manifests accept removal and redaction markers only on an empty value marked edited', () => {
+  const session = reviewingWithEveryValueKind();
+  const withValue = (enteredValue: unknown) => ({
+    ...session.draft,
+    steps: session.draft.steps.map(step => step.id === 'plan' ? { ...step, enteredValue } : step),
+  });
+  const draftErrors = (enteredValue: unknown) => {
+    const result = validateJourneyDraft(withValue(enteredValue));
+    return result.ok ? [] : result.errors;
+  };
+  expect(draftErrors({ kind: 'selection', values: [], multiple: false, truncated: false, edited: true, removed: true })).toEqual([]);
+  expect(draftErrors({ kind: 'checked', checked: false, edited: true, removed: true })).toEqual([]);
+  expect(draftErrors({ kind: 'text', value: '', truncated: false, edited: true, removed: true })).toEqual([]);
+  // A removed value keeps nothing, and says it was edited.
+  expect(draftErrors({ kind: 'selection', values: ['plan-private-4417'], multiple: false, truncated: false, edited: true, removed: true }))
+    .toContain('journey.steps[2].enteredValue.removed value must be empty');
+  expect(draftErrors({ kind: 'checked', checked: true, edited: true, removed: true })).toContain('journey.steps[2].enteredValue.removed value must be empty');
+  expect(draftErrors({ kind: 'text', value: 'x', truncated: false, edited: true, removed: true })).toContain('journey.steps[2].enteredValue.removed value must be empty');
+  expect(draftErrors({ kind: 'selection', values: [], multiple: false, truncated: true, edited: true, removed: true })).toContain('journey.steps[2].enteredValue.removed value must be empty');
+  expect(draftErrors({ kind: 'checked', checked: false, removed: true })).toContain('journey.steps[2].enteredValue.removed value must be marked edited');
+  expect(draftErrors({ kind: 'checked', checked: false, edited: true, removed: false })).toContain('journey.steps[2].enteredValue.removed must be true when present');
+  // Drafts remove; reviewed manifests redact.
+  expect(draftErrors({ kind: 'checked', checked: false, edited: true, redacted: true })).toContain('journey.steps[2].enteredValue.redacted is not allowed');
+
+  const manifest = validManifest();
+  const manifestErrors = (enteredValue: unknown) => {
+    const copy = structuredClone(manifest);
+    const step = copy.steps[3];
+    if (step.kind !== 'field-change') throw new Error('expected field step');
+    (step as { enteredValue: unknown }).enteredValue = enteredValue;
+    const result = validateJourneyManifest(copy);
+    return result.ok ? [] : result.errors;
+  };
+  expect(manifestErrors({ kind: 'checked', checked: false, edited: true, redacted: true })).toEqual([]);
+  expect(manifestErrors({ kind: 'checked', checked: true, edited: true })).toEqual([]);
+  expect(manifestErrors({ kind: 'selection', values: [], multiple: true, truncated: false, edited: true, redacted: true })).toEqual([]);
+  expect(manifestErrors({ kind: 'checked', checked: true, edited: true, redacted: true })).toContain('journey.steps[3].enteredValue.redacted value must be empty');
+  expect(manifestErrors({ kind: 'selection', values: [], multiple: true, truncated: false, redacted: true }))
+    .toContain('journey.steps[3].enteredValue.redacted value must be marked edited');
+  expect(manifestErrors({ kind: 'checked', checked: false, edited: true, removed: true })).toContain('journey.steps[3].enteredValue.removed is not allowed');
+  // Reviewed text is redacted through its text, as every other reviewed text is.
+  expect(manifestErrors({ kind: 'text', value: { text: '', edited: true, redacted: true }, truncated: false, redacted: true }))
+    .toContain('journey.steps[3].enteredValue.redacted is not allowed');
+});
+
+test('each lossy stop records the limitation review states in its notice', () => {
+  for (const reason of STOP_REASONS) {
+    const stopped = stopJourney(recordingSession(), { epoch: 1, stoppedAt: '2026-09-20T12:00:02.000Z', reason });
+    if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+    expect(stopped.draft.limitations, reason).toEqual(STOP_LIMITATIONS[reason] ? [STOP_LIMITATIONS[reason]] : []);
+  }
+  expect(Object.isFrozen(STOP_LIMITATIONS)).toBe(true);
 });
 
 test('review URL redaction keeps step and image association', () => {

@@ -7,6 +7,11 @@ import { extensionApi } from './platform';
 const root = document.querySelector<HTMLElement>('#journey');
 if (!root) throw new Error('Journey page root is missing.');
 
+// The tab's title names its view first, so tab strips show what differs.
+function setTitle(view: string): void {
+  document.title = `${view} – anmerko`;
+}
+
 function launchIntent(hash: string): string | undefined {
   const match = /^#launch=([A-Za-z0-9_-]{16,128})$/.exec(hash);
   return match?.[1];
@@ -76,6 +81,7 @@ followTheme(() => {
     const explanation = document.createElement('p');
     explanation.className = 'journey-help';
     heading.textContent = 'Journey recording unavailable';
+    setTitle(heading.textContent);
     explanation.textContent = 'Journeys are not available in this browser. They work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android, but not on iPhone or iPad. Comments still work on the website tab.';
     section.append(brand, heading, explanation);
     root.append(section);
@@ -112,7 +118,7 @@ followTheme(() => {
         }
       },
     };
-    const unmount = mountJourneyUI(root, client);
+    const unmount = mountJourneyUI(root, client, { title: setTitle });
     function showLaunchExpired(): void {
       unmount();
       if (!root) return;
@@ -127,6 +133,7 @@ followTheme(() => {
       const explanation = document.createElement('p');
       explanation.className = 'journey-help';
       heading.textContent = 'This journey link already opened';
+      setTitle('Journey link already used');
       explanation.textContent = 'Each journey link works once. Return to the website tab and choose Record journey to start a fresh journey.';
       section.append(brand, heading, explanation);
       root.append(section);

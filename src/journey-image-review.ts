@@ -207,10 +207,15 @@ export function reviewJourneyImage(
   drawing.setAttribute('aria-label', 'Draw mask region');
   stage.append(preview, selection, drawing);
 
+  // Keyboard users mask through these fields alone, so the dialog states the
+  // screenshot's size, each field's range, and in words what is out of range.
   const fields = element('fieldset', 'journey-image-review__fields');
   const legend = element('legend');
   legend.textContent = 'Mask region in image pixels';
-  fields.append(legend);
+  const bounds = element('p', 'journey-image-review__help');
+  bounds.id = 'journey-image-review-bounds';
+  bounds.textContent = `The screenshot is ${input.width} × ${input.height} pixels. X and Y count from its top-left corner.`;
+  fields.append(legend, bounds);
   const inputs = {} as Record<GeometryKey, HTMLInputElement>;
   for (const [key, labelText] of GEOMETRY_LABELS) {
     const label = element('label', 'journey-image-review__field');
@@ -221,11 +226,18 @@ export function reviewJourneyImage(
     control.inputMode = 'numeric';
     control.step = 'any';
     control.min = key === 'width' || key === 'height' ? '1' : '0';
+    control.max = String(key === 'x' ? input.width - 1 : key === 'y' ? input.height - 1 : key === 'width' ? input.width : input.height);
     control.setAttribute('aria-label', labelText);
+    control.setAttribute('aria-describedby', bounds.id);
     label.append(text, control);
     fields.append(label);
     inputs[key] = control;
   }
+  // Each field's problem is its own sentence, which describes that field. The
+  // line stays in place, empty when all is well, so each change is announced.
+  const problems = element('p', 'journey-image-review__error journey-image-review__problems');
+  problems.setAttribute('aria-live', 'polite');
+  fields.append(problems);
 
   const error = element('p', 'journey-image-review__error');
   error.setAttribute('role', 'alert');
@@ -271,14 +283,53 @@ export function reviewJourneyImage(
       height: inputs.height.valueAsNumber,
     });
 
+    // What is wrong with each entered field, in words. A field is judged on
+    // its own as soon as it holds a value, and against the image's edge once
+    // the position it adds to is valid too.
+    function fieldProblems(): Partial<Record<GeometryKey, string>> {
+      const found: Partial<Record<GeometryKey, string>> = {};
+      const entered = (key: GeometryKey): number | undefined => {
+        const control = inputs[key];
+        if (control.validity.badInput) return Number.NaN;
+        return control.value === '' ? undefined : control.valueAsNumber;
+      };
+      const axis = (start: 'x' | 'y', size: 'width' | 'height', startLabel: string, sizeLabel: string, extent: number) => {
+        const at = entered(start);
+        const length = entered(size);
+        if (at !== undefined && !(at >= 0 && at < extent)) found[start] = `${startLabel} must be a number from 0 to ${extent - 1}.`;
+        if (length === undefined) return;
+        if (!(length > 0 && length <= extent)) found[size] = `${sizeLabel} must be a number greater than 0 and at most ${extent}.`;
+        else if (at !== undefined && !found[start] && at + length > extent) found[size] = `${startLabel} plus ${sizeLabel} must be at most ${extent}.`;
+      };
+      axis('x', 'width', 'X', 'Width', input.width);
+      axis('y', 'height', 'Y', 'Height', input.height);
+      return found;
+    }
+
     function render() {
       const valid = validRect(draft, input);
       input.regionChanged?.(valid);
       apply.disabled = applying || !valid;
       view.setAttribute('aria-busy', applying ? 'true' : 'false');
-      for (const control of Object.values(inputs)) {
+      const found = valid ? {} : fieldProblems();
+      const sentences: HTMLElement[] = [];
+      for (const [key] of GEOMETRY_LABELS) {
+        const control = inputs[key];
         control.disabled = applying;
-        control.setAttribute('aria-invalid', valid || control.value === '' ? 'false' : 'true');
+        control.setAttribute('aria-invalid', found[key] ? 'true' : 'false');
+        const problemId = `journey-image-review-problem-${key}`;
+        control.setAttribute('aria-describedby', found[key] ? `${bounds.id} ${problemId}` : bounds.id);
+        if (found[key]) {
+          const sentence = element('span');
+          sentence.id = problemId;
+          sentence.textContent = found[key];
+          sentences.push(sentence);
+        }
+      }
+      // Only changed problems are rewritten, so the live line announces changes alone.
+      const text = sentences.map(sentence => sentence.textContent).join(' ');
+      if (problems.textContent !== text) {
+        problems.replaceChildren(...sentences.flatMap((sentence, index) => index ? [' ', sentence] : [sentence]));
       }
       selection.hidden = !completed;
       if (completed) Object.assign(selection.style, {
@@ -430,9 +481,10 @@ export function reviewJourneyImage(
       if (drag?.pointerId === event.pointerId) cancelGesture(true);
     }, { signal: listeners.signal });
 
+    // The preview shows the entered region only while it is valid.
     for (const control of Object.values(inputs)) control.addEventListener('input', () => {
       draft = currentDraft();
-      if (validRect(draft, input)) completed = { ...draft };
+      completed = validRect(draft, input) ? { ...draft } : null;
       error.hidden = true;
       render();
     }, { signal: listeners.signal });

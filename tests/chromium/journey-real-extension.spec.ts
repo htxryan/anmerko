@@ -19,12 +19,16 @@ const VALUE_SECRET = 'value-edited-away-5286';
 const LABEL_SECRET = 'label-redacted-away-3094';
 const REMOVED_SECRET = 'step-removed-away-8817';
 const URL_SECRET = 'url-redacted-away-6620';
+// A select option whose recorded value review removes.
+const PLAN_SECRET = 'plan-removed-away-3316';
 const EDITED_VALUE = 'SPRING-10';
 const shopHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Journey shop</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:rgb(255,200,0);font:16px sans-serif}main{padding:24px;display:grid;gap:12px;justify-items:start}</style></head>
 <body><main><h1 id="title">Shop</h1>
 <button id="add" type="button">Add to cart</button><output id="cart">Cart empty</output>
 <label>Coupon code <input id="coupon" autocomplete="off"></label>
+<label><input id="terms" type="checkbox"> Accept terms</label>
+<label>Plan <select id="plan"><option>Basic</option><option>${PLAN_SECRET}</option></select></label>
 <a id="pricing" href="/pricing">Pricing</a>
 <button id="annual" type="button">Annual plans</button>
 <button id="suggest" type="button">Show ${LABEL_SECRET}</button>
@@ -471,6 +475,27 @@ test('the native side panel records, masks, saves and exports a same-origin jour
   const retained = draft.steps.filter(step => step.image.status === 'retained');
   await expectShopScreenshots(review, page, draft);
 
+  // Each review read fetches only the screenshots the side panel lacks. Count
+  // the data URLs in every review read's reply from here on.
+  await dock.evaluate(`window.reviewReads = [];
+    const runtime = chrome.runtime;
+    const send = runtime.sendMessage.bind(runtime);
+    runtime.sendMessage = async message => {
+      const reply = await send(message);
+      if (message?.type === 'ANMERKO_JOURNEY_STATE' && message.screenshots === 'review') {
+        window.reviewReads.push((JSON.stringify(reply).match(/data:image\\/png/g) ?? []).length);
+      }
+      return reply;
+    };`);
+  const reviewReads = (): Promise<number[]> => dock.evaluate('return window.reviewReads');
+  // Typing a result autosaves it, and the side panel reads the review again:
+  // it already holds every screenshot, so none is sent.
+  await type(dock, '#journey-expected', 'The annual plan is in the cart.');
+  await expect.poll(async () => draftOf(await state())?.expected).toBe('The annual plan is in the cart.');
+  await expect.poll(async () => (await reviewReads()).length).toBeGreaterThan(0);
+  expect(await reviewReads()).toEqual((await reviewReads()).map(() => 0));
+  const readsBeforeMask = (await reviewReads()).length;
+
   // Mask part of the click's screenshot in the review.
   const click = essential[1];
   const imageId = click.image.status === 'retained' ? click.image.imageId : '';
@@ -484,6 +509,9 @@ test('the native side panel records, masks, saves and exports a same-origin jour
   const inside: [number, number] = [mask.x + mask.width / 2, mask.y + mask.height / 2];
   const outside: [number, number] = [mask.x - 20, mask.y + mask.height / 2];
   expect(await colors(page, originalPng, [inside, outside])).toMatchObject({ colors: ['yellow', 'yellow'] });
+  // Positive control: before the mask, copiesOf finds the original where the
+  // review keeps it, so the empty results below cannot pass by being blind.
+  expect(await copiesOf(journey, originalPng)).toEqual(expect.arrayContaining([expect.stringMatching(/ in storage\.session\./)]));
   const dialog = 'dialog.journey-image-review[open]';
   await dock.click(control(`mask-image-${click.id}`));
   await expect.poll(() => dock.evaluate(`return !!root.querySelector('${dialog}')`)).toBe(true);
@@ -496,6 +524,8 @@ test('the native side panel records, masks, saves and exports a same-origin jour
   await expect.poll(async () => imageOf(draftOf(await state())!, click)?.redacted).toBe(true);
   await expect.poll(() => dock.evaluate(`return !!root.querySelector('#journey-image-masked-${click.id}')`)).toBe(true);
   await expect.poll(() => shown(review, page, click, original, [inside, outside])).toEqual(['black', 'yellow']);
+  // Masking fetched the masked screenshot alone, once, and no other.
+  expect((await reviewReads()).slice(readsBeforeMask).reduce((total, sent) => total + sent, 0)).toBe(1);
   // The mask replaced the original in the review the extension keeps.
   expect(await copiesOf(journey, originalPng)).toEqual([]);
 
@@ -628,6 +658,17 @@ test('nothing review removes, redacts or edits reaches a saved or exported copy'
     expect((await comparePixels(page, png(imageOf(recorded, step)!.dataUrl!), removedPng)).differing).toBeGreaterThan(0);
   }
 
+  // Positive controls: before review changes anything, the walker finds each
+  // needle that recording stored, and the removed step's screenshot, where
+  // the review keeps them, so the empty results below cannot pass by being
+  // blind. The screenshot name exists only in exports.
+  const storedNeedles = [VALUE_SECRET, LABEL_SECRET, URL_SECRET, REMOVED_SECRET, removed.id, removedImageId];
+  const before = await held(storedNeedles);
+  for (const needle of storedNeedles) {
+    expect(before.found.filter(entry => entry.needle === needle && entry.where.startsWith('storage.session.')), needle).not.toEqual([]);
+  }
+  expect(await copiesOf(journey, removedPng)).toEqual(expect.arrayContaining([expect.stringMatching(/ in storage\.session\./)]));
+
   // Edit the entered value.
   await press(dock, `edit-value-${field.id}`);
   await expect.poll(() => dock.evaluate(`return root.querySelector('${control(`value-${field.id}`)}')?.value`)).toBe(VALUE_SECRET);
@@ -713,6 +754,69 @@ test('nothing review removes, redacts or edits reaches a saved or exported copy'
   }
   expect(names).toEqual(expectedNames);
   expect([...files.keys()].sort()).toEqual(['journeys.md', 'prompt.md', ...new Set(expectedNames.values())].sort());
+});
+
+test('a checkbox or select value removed in review is saved and exported as redacted, never as unchecked or unselected', async ({ journey }) => {
+  test.setTimeout(90_000);
+  const { page, state, held, saved, activate } = journey;
+  const dock = await activate();
+  await startJourney(dock, state, { enteredValues: true });
+  // Ticking the box commits its state at once; the select's change waits for
+  // the next click, like the coupon's text. Only trusted input is recorded,
+  // so the option is chosen by typing its first letter, not by selectOption.
+  await page.locator('#terms').check();
+  await page.locator('#plan').focus();
+  await page.keyboard.type('p');
+  await expect(page.locator('#plan')).toHaveValue(PLAN_SECRET);
+  await page.locator('#add').click();
+  await expect.poll(() => lastAction(state)).toBe('click Add to cart retained');
+  const fields = async () => draftOf(await state())?.steps.flatMap(step => step.kind === 'field-change' ? [step] : []) ?? [];
+  await expect.poll(async () => (await fields()).map(step => step.enteredValue.kind).sort()).toEqual(['checked', 'selection']);
+  await stopJourney(dock, state);
+  const [checkbox, select] = ['checked', 'selection'].map(kind => async () => (await fields()).find(step => step.enteredValue.kind === kind)!);
+  expect((await checkbox()).enteredValue).toEqual({ kind: 'checked', checked: true });
+  expect((await select()).enteredValue).toEqual({ kind: 'selection', values: [PLAN_SECRET], multiple: false, truncated: false });
+  // Positive control: the review holds the option until it is removed.
+  expect((await held([PLAN_SECRET])).found.map(entry => entry.where)).toEqual(expect.arrayContaining([expect.stringMatching(/^storage\.session\./)]));
+
+  for (const step of [await checkbox(), await select()]) {
+    await reviewEdit(dock, state, `remove-value-${step.id}`);
+    // The removed marker replaces the value and its Remove button.
+    await expect.poll(() => dock.evaluate(`const item = root.querySelector('${control(`step-${step.id}`)}').closest('li');
+      return [item.querySelector('.journey-value')?.textContent, item.querySelector('${control(`removed-value-${step.id}`)}')?.textContent,
+        !!item.querySelector('${control(`remove-value-${step.id}`)}')].join(' | ');`)).toBe('[redacted] | Value removed during review. | false');
+  }
+  expect((await checkbox()).enteredValue).toEqual({ kind: 'checked', checked: false, edited: true, removed: true });
+  expect((await select()).enteredValue).toEqual({ kind: 'selection', values: [], multiple: false, truncated: false, edited: true, removed: true });
+
+  const journeyId = draftOf(await state())!.id;
+  await saveReview(dock, state);
+  const snapshot = await saved(journeyId);
+  const prompt = await copyPrompt(journey, dock);
+  const { files } = await download(journey, dock);
+  const promptMd = files.get('prompt.md')!.toString('utf8');
+  const journeysMd = files.get('journeys.md')!.toString('utf8');
+
+  // The saved snapshot keeps each field's kind, emptied and marked removed.
+  const kept = snapshot.record!.draft.steps.flatMap(step => step.kind === 'field-change' ? [step.enteredValue] : []);
+  expect(kept).toEqual(expect.arrayContaining([
+    { kind: 'checked', checked: false, edited: true, removed: true },
+    { kind: 'selection', values: [], multiple: false, truncated: false, edited: true, removed: true },
+  ]));
+  // Copy Prompt and prompt.md name both as redacted; journeys.md marks them
+  // edited and redacted. None presents a state the reporter never chose.
+  for (const text of [prompt, promptMd]) {
+    expect(text).toContain(', checked state [redacted] ·');
+    expect(text).toContain(', selection [redacted] ·');
+    expect(text).not.toMatch(/unchecked|nothing selected/);
+  }
+  expect(promptMd).toContain(prompt.trim());
+  expect(journeysMd).toContain('Entered checked state: [redacted]\nEntered checked state review: Edited: Yes · Redacted: Yes\n');
+  expect(journeysMd).toContain('Entered selection review: Edited: Yes · Redacted: Yes\nEntered selection: [redacted]\n');
+  expect(journeysMd).not.toContain('Entered checked state: No');
+  // The removed option is gone from every output and from everything the extension keeps.
+  for (const text of [JSON.stringify(snapshot), prompt, promptMd, journeysMd]) expect(text).not.toContain(PLAN_SECRET);
+  expect((await held([PLAN_SECRET])).found).toEqual([]);
 });
 
 // The floating panel lives in the page and goes with it, so after a page load
