@@ -58,6 +58,9 @@ const REVIEW_EXPIRY_ALARM = 'anmerko-journey-review-expiry';
 const JOURNEY_ALARMS = [RECORDING_DEADLINE_ALARM, REVIEW_WARNING_ALARM, REVIEW_EXPIRY_ALARM] as const;
 const MAX_PENDING_WAKE_EVENTS = 16;
 const WEB_DOCUMENTS = { url: [{ schemes: ['http', 'https'] }] };
+const LISTENER_HINT_KEY = 'anmerko:journey-listeners:v1';
+// Firefox unloads an event page after 30 idle seconds; any API call restarts that count.
+const KEEP_AWAKE_INTERVAL_MS = 10_000;
 const MAX_CONCURRENT_NORMALIZATIONS = 1;
 const MAX_QUEUED_NORMALIZATIONS = 1;
 function success<T>(value?: T): { ok: true; value?: T } {
@@ -135,6 +138,41 @@ function sameIdentity(first: JourneyPageIdentity, second: JourneyPageIdentity): 
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
+interface ListenerHint {
+  // Whether the last journey phase needed the live-journey listeners, when known.
+  live?: boolean;
+  remember(live: boolean): void;
+}
+
+// Firefox wakes an unloaded event page only for the listeners it registered
+// while starting, and keeps waking it for them until a later start omits
+// them: removing a listener afterwards does not stop the wakes, and adding one
+// afterwards does not start them. Only Firefox has runtime.getBrowserInfo, and
+// its event page has synchronous localStorage, so every journey phase leaves a
+// hint there for the next start. A Chromium worker needs none.
+function firefoxListenerHint(runtime: typeof chrome.runtime): ListenerHint | undefined {
+  if (typeof (runtime as { getBrowserInfo?: unknown }).getBrowserInfo !== 'function') return;
+  let storage: Storage | undefined;
+  try { storage = globalThis.localStorage; } catch { /* Treated as unavailable below. */ }
+  if (!storage) return;
+  const hints = storage;
+  let stored: string | null = null;
+  try { stored = hints.getItem(LISTENER_HINT_KEY); } catch { /* An unknown hint registers every listener. */ }
+  const hint: ListenerHint = {
+    live: stored === 'live' ? true : stored === 'idle' ? false : undefined,
+    remember(live) {
+      if (live === hint.live) return;
+      hint.live = live;
+      try { hints.setItem(LISTENER_HINT_KEY, live ? 'live' : 'idle'); }
+      catch {
+        hint.live = undefined;
+        try { hints.removeItem(LISTENER_HINT_KEY); } catch { /* The next start reads the stale hint. */ }
+      }
+    },
+  };
+  return hint;
 }
 
 export function bindJourneyExtension(screenshotService: JourneyScreenshotService): JourneyExtensionBinding {
@@ -710,14 +748,19 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     });
   };
 
-  // Each of these listeners wakes an idle service worker or event page for
-  // its event in every tab. All are registered synchronously at startup, so
-  // the event that woke the background for a live journey still reaches it,
-  // and each is removed once the restored state shows nothing needs it.
+  // Each navigation and tab listener wakes an idle service worker or event
+  // page for its event in every tab, so each stays registered only while a
+  // journey phase needs it. A Chromium worker registers all of them
+  // synchronously at startup, so the event that woke it for a live journey
+  // still reaches it, and removes each once the restored state shows nothing
+  // needs it. A Firefox start registers them only when its hint says the last
+  // phase was live, or is unknown; the next start after a journey drops them.
+  const listenerHint = firefoxListenerHint(api.runtime);
+  const liveListenersAtStartup = listenerHint?.live ?? true;
   let navigationEvents: typeof chrome.webNavigation | undefined;
   let watchingOwner = false;
   let watchingRemovals = false;
-  let watchingAlarms = false;
+  let keepAwakeTimer: ReturnType<typeof setInterval> | undefined;
   const watchNavigation = (wanted: boolean) => {
     if (wanted && !navigationEvents) {
       const available = navigationApi();
@@ -757,29 +800,39 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     if (wanted) api.tabs.onRemoved.addListener(ownerRemoved);
     else api.tabs.onRemoved.removeListener(ownerRemoved);
   };
-  const watchAlarms = (wanted: boolean) => {
-    if (wanted === watchingAlarms) return;
-    watchingAlarms = wanted;
-    if (wanted) api.alarms.onAlarm.addListener(alarmFired);
-    else api.alarms.onAlarm.removeListener(alarmFired);
+  // Listeners a Firefox event page adds after starting never wake it once
+  // unloaded, so a journey that went live after a start without them keeps
+  // the page from idling until it ends. Recording lasts five minutes at most.
+  const keepAwake = (wanted: boolean) => {
+    if (wanted && keepAwakeTimer === undefined) {
+      keepAwakeTimer = setInterval(() => { void api.runtime.getPlatformInfo().catch(() => {}); }, KEEP_AWAKE_INTERVAL_MS);
+    } else if (!wanted && keepAwakeTimer !== undefined) {
+      clearInterval(keepAwakeTimer);
+      keepAwakeTimer = undefined;
+    }
   };
-  // Owner events matter only while a journey starts or records. A pending
-  // launch tab also needs its closing seen, or the unused intent would refuse
-  // Record journey until it expires. Alarms exist only for recording deadlines
-  // and review expiry. A review tab that closes unseen is replaced on demand.
+  // Owner and navigation events matter only while a journey starts or
+  // records. A pending launch tab also needs its closing seen, or the unused
+  // intent would refuse Record journey until it expires; the intent lives
+  // only in memory, so that listener never needs to wake the background. A
+  // review tab that closes unseen is replaced on demand.
   const syncListeners = () => {
     if (!initialized) return;
-    const state = controller.getState();
-    const live = !initializationError && activeState(state);
+    const live = !initializationError && activeState(controller.getState());
     watchNavigation(live);
     watchOwner(live);
     watchRemovals(live || launchIntents.size > 0);
-    watchAlarms(!initializationError && (state.phase === 'recording' || state.phase === 'reviewing'));
+    listenerHint?.remember(live);
+    keepAwake(live && !!listenerHint && !liveListenersAtStartup);
   };
-  watchNavigation(true);
-  watchOwner(true);
-  watchRemovals(true);
-  watchAlarms(true);
+  watchNavigation(liveListenersAtStartup);
+  watchOwner(liveListenersAtStartup);
+  watchRemovals(liveListenersAtStartup);
+  // Alarms fire only for the recording deadline and review expiry, which
+  // journeys schedule and clear themselves, so this listener never wakes an
+  // idle background. It stays registered from startup for every phase, which
+  // also lets a Firefox review started after a start expire on time.
+  api.alarms.onAlarm.addListener(alarmFired);
 
   const recordingUrl = (state: Extract<JourneySession, { phase: 'recording' }>): string | undefined => {
     const step = state.draft.steps.at(-1);

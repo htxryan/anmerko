@@ -1522,9 +1522,9 @@ test('fails closed without webNavigation and installs navigation listeners once 
   expect(facts.sequence).toContain('capture');
 });
 
-test('journey listeners register at startup and stay only while a journey phase needs them', async ({ page }) => {
-  // navigation (commit, history, fragment), owner (activated, updated, replaced, focus), removal, alarm
-  const listeners = () => page.evaluate(() => {
+// navigation (commit, history, fragment), owner (activated, updated, replaced, focus), removal, alarm
+function journeyListeners(page: Page) {
+  return page.evaluate(() => {
     const { events } = (globalThis as HarnessWindow).harness;
     return {
       navigation: [events.committed.count(), events.history.count(), events.fragment.count()],
@@ -1533,10 +1533,16 @@ test('journey listeners register at startup and stay only while a journey phase 
       alarm: events.alarm.count(),
     };
   });
-  const none = { navigation: [0, 0, 0], owner: [0, 0, 0, 0], removal: 0, alarm: 0 };
-  const all = { navigation: [1, 1, 1], owner: [1, 1, 1, 1], removal: 1, alarm: 1 };
-  const rebootSynchronously = () => page.evaluate(() => {
+}
+
+// Reads the listeners a background registered in its startup turn, before
+// its state is restored: the ones a browser would wake it for.
+function rebootSynchronously(page: Page) {
+  return page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
+    // The unloaded background's timers end with it.
+    const keepAwake = (globalThis as any).__keepAwake as Map<number, unknown> | undefined;
+    for (const id of keepAwake?.keys() ?? []) clearInterval(id);
     harness.reboot();
     const { events } = harness;
     return {
@@ -1547,21 +1553,45 @@ test('journey listeners register at startup and stay only while a journey phase 
       filters: [events.committed.filters(), events.history.filters(), events.fragment.filters()],
     };
   });
+}
+
+// Records the keep-awake intervals a background sets and clears.
+function trackKeepAwake(page: Page) {
+  return page.evaluate(() => {
+    const test = globalThis as any;
+    const set = setInterval, clear = clearInterval;
+    const keepAwake = new Map<number, () => void>();
+    test.__keepAwake = keepAwake;
+    test.setInterval = (callback: () => void, ms?: number) => {
+      const id = set(callback, ms);
+      if (ms === 10_000) keepAwake.set(id as unknown as number, callback);
+      return id;
+    };
+    test.clearInterval = (id: number) => { keepAwake.delete(id); clear(id); };
+  });
+}
+
+const IDLE_LISTENERS = { navigation: [0, 0, 0], owner: [0, 0, 0, 0], removal: 0, alarm: 1 };
+const LIVE_LISTENERS = { navigation: [1, 1, 1], owner: [1, 1, 1, 1], removal: 1, alarm: 1 };
+
+test('journey listeners register at startup and stay only while a journey phase needs them', async ({ page }) => {
+  const listeners = () => journeyListeners(page);
   const ready = () => page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  await trackKeepAwake(page);
 
-  // An idle background wakes for none of them.
+  // An idle background wakes for none of the navigation and tab events. The
+  // alarm listener fires only for alarms a journey scheduled.
   await ready();
-  expect(await listeners()).toEqual(none);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
 
-  const recording = async () => {
-    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
-    expect(await listeners()).toEqual(all);
-  };
-  await recording();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  // Chromium wakes a worker for listeners it added after starting too.
+  expect(await page.evaluate(() => (globalThis as any).__keepAwake.size)).toBe(0);
   // Every event is registered in the startup turn, so a waking event reaches
   // a journey that has not been restored yet.
-  const woken = await rebootSynchronously();
-  expect(woken).toMatchObject(all);
+  const woken = await rebootSynchronously(page);
+  expect(woken).toMatchObject(LIVE_LISTENERS);
   expect(woken.filters).toEqual([
     [undefined],
     [{ url: [{ schemes: ['http', 'https'] }] }],
@@ -1569,26 +1599,25 @@ test('journey listeners register at startup and stay only while a journey phase 
   ]);
   await ready();
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
-  expect(await listeners()).toEqual(all);
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
 
   // A review only waits for its warning and expiry alarms.
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
-  const reviewing = { ...none, alarm: 1 };
-  expect(await listeners()).toEqual(reviewing);
-  expect(await rebootSynchronously()).toMatchObject(all);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await rebootSynchronously(page)).toMatchObject(LIVE_LISTENERS);
   await ready();
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
-  expect(await listeners()).toEqual(reviewing);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
 
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
-  expect(await listeners()).toEqual(none);
-  expect(await rebootSynchronously()).toMatchObject(all);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await rebootSynchronously(page)).toMatchObject(LIVE_LISTENERS);
   await ready();
-  expect(await listeners()).toEqual(none);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
 
   // A pending launch tab is watched for closing, which releases its intent.
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
-  expect(await listeners()).toEqual({ ...none, removal: 1 });
+  expect(await listeners()).toEqual({ ...IDLE_LISTENERS, removal: 1 });
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
     const launchTab = Object.values(harness.tabs).find(tab => tab.url.includes('#launch='))!;
@@ -1596,7 +1625,7 @@ test('journey listeners register at startup and stay only while a journey phase 
     harness.tabs[1].active = true;
     harness.events.removed.emit(launchTab.id, { windowId: 7 });
   });
-  expect(await listeners()).toEqual(none);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
 
   // A start whose first screenshot fails leaves nothing registered.
@@ -1610,7 +1639,75 @@ test('journey listeners register at startup and stay only while a journey phase 
   });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 }))
     .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'initial-capture-failed' });
-  expect(await listeners()).toEqual(none);
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+});
+
+test('a Firefox event page registers journey listeners at startup only after a live phase and otherwise stays awake while live', async ({ page }) => {
+  const listeners = () => journeyListeners(page);
+  const ready = () => page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  const hint = () => page.evaluate(() => localStorage.getItem('anmerko:journey-listeners:v1'));
+  const keepAwake = () => page.evaluate(() => (globalThis as any).__keepAwake.size);
+  await trackKeepAwake(page);
+  await page.evaluate(() => {
+    const test = globalThis as any;
+    // Only Firefox has runtime.getBrowserInfo.
+    test.chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    test.__platformInfoCalls = 0;
+    test.chrome.runtime.getPlatformInfo = async () => { test.__platformInfoCalls += 1; return { os: 'mac' }; };
+  });
+
+  // A first start has no hint, so it registers every listener and removes them once idle.
+  expect(await hint()).toBeNull();
+  expect(await rebootSynchronously(page)).toMatchObject(LIVE_LISTENERS);
+  await ready();
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await hint()).toBe('idle');
+  // Firefox wakes an event page only for listeners registered while it
+  // started, so the next start leaves out every navigation and tab event.
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await keepAwake()).toBe(0);
+
+  // Listeners added now would not wake the unloaded page, so the journey
+  // keeps it from idling with a periodic API call.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  expect(await hint()).toBe('live');
+  expect(await keepAwake()).toBe(1);
+  expect(await page.evaluate(() => {
+    const test = globalThis as any;
+    for (const callback of test.__keepAwake.values()) callback();
+    return test.__platformInfoCalls;
+  })).toBe(1);
+
+  // A start during the journey registers them all and needs no keep-awake.
+  const woken = await rebootSynchronously(page);
+  expect(woken).toMatchObject(LIVE_LISTENERS);
+  expect(woken.filters[1]).toEqual([{ url: [{ schemes: ['http', 'https'] }] }]);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  expect(await keepAwake()).toBe(0);
+
+  // A journey restored by a start that left them out (a lost hint) is kept awake too.
+  await page.evaluate(() => localStorage.setItem('anmerko:journey-listeners:v1', 'idle'));
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  expect(await hint()).toBe('live');
+  expect(await keepAwake()).toBe(1);
+
+  // Ending the journey releases the page and tells the next start to leave them out.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await hint()).toBe('idle');
+  expect(await keepAwake()).toBe(0);
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
 });
 
 test('observes ordered top-frame owner navigations and injects the idle observer only for new documents', async ({ page }) => {
