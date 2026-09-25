@@ -56,6 +56,7 @@ const REVIEW_WARNING_ALARM = 'anmerko-journey-review-warning';
 const REVIEW_EXPIRY_ALARM = 'anmerko-journey-review-expiry';
 const JOURNEY_ALARMS = [RECORDING_DEADLINE_ALARM, REVIEW_WARNING_ALARM, REVIEW_EXPIRY_ALARM] as const;
 const MAX_PENDING_WAKE_EVENTS = 16;
+const WEB_DOCUMENTS = { url: [{ schemes: ['http', 'https'] }] };
 const MAX_CONCURRENT_NORMALIZATIONS = 1;
 const MAX_QUEUED_NORMALIZATIONS = 1;
 function success<T>(value?: T): { ok: true; value?: T } {
@@ -151,7 +152,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let launchOpening = false;
   let reviewTabId: number | undefined;
   let reviewOpening: Promise<void> | undefined;
-  let navigationListenersInstalled = false;
   let controller: JourneyController;
   let ready: Promise<void>;
   let initializationError: unknown;
@@ -543,6 +543,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }).catch(() => {});
     }
     void persistState(state).catch(() => {});
+    syncListeners();
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
@@ -636,18 +637,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const fragmentUpdated = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
     routeNavigation(details, 'same-document');
   };
-  const installNavigationListeners = (): boolean => {
-    if (navigationListenersInstalled) return true;
+  const navigationApi = () => {
     const available = api.webNavigation;
-    if (!available?.onCommitted || !available.onHistoryStateUpdated || !available.onReferenceFragmentUpdated) return false;
-    available.onCommitted.addListener(committed);
-    available.onHistoryStateUpdated.addListener(historyUpdated);
-    available.onReferenceFragmentUpdated.addListener(fragmentUpdated);
-    navigationListenersInstalled = true;
-    return true;
+    return available?.onCommitted && available.onHistoryStateUpdated && available.onReferenceFragmentUpdated
+      ? available : undefined;
   };
   const ensureJourneySupport = (): void => {
-    if (!installNavigationListeners()) throw new Error(GENERIC_ERROR);
+    if (!navigationApi()) throw new Error(GENERIC_ERROR);
   };
 
   const ownerActivated = (info: { tabId: number; windowId: number }) => {
@@ -678,6 +674,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const ownerRemoved = (tabId: number) => {
     if (tabId === reviewTabId) reviewTabId = undefined;
     for (const [id, intent] of launchIntents) if (intent.launchTabId === tabId) launchIntents.delete(id);
+    syncListeners();
     enqueueRoutedEvent(async () => {
       const state = controller.getState();
       if (activeState(state) && tabId === state.ownerTabId) await controller.stop('tab-lost');
@@ -689,13 +686,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (activeState(state) && windowId !== state.ownerWindowId) await controller.stop('focus-lost');
     });
   };
-  api.tabs.onActivated.addListener(ownerActivated);
-  api.tabs.onUpdated.addListener(ownerUpdated);
-  api.tabs.onRemoved.addListener(ownerRemoved);
-  api.tabs.onReplaced?.addListener(ownerReplaced);
-  windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
-
-  api.alarms.onAlarm.addListener(alarm => {
+  const alarmFired = (alarm: chrome.alarms.Alarm) => {
     if (!JOURNEY_ALARMS.includes(alarm.name as typeof JOURNEY_ALARMS[number])) return;
     enqueueRoutedEvent(async () => {
       const state = controller.getState();
@@ -710,7 +701,78 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await controller.discard();
       }
     });
-  });
+  };
+
+  // Each of these listeners wakes an idle service worker or event page for
+  // its event in every tab. All are registered synchronously at startup, so
+  // the event that woke the background for a live journey still reaches it,
+  // and each is removed once the restored state shows nothing needs it.
+  let navigationEvents: typeof chrome.webNavigation | undefined;
+  let watchingOwner = false;
+  let watchingRemovals = false;
+  let watchingAlarms = false;
+  const watchNavigation = (wanted: boolean) => {
+    if (wanted && !navigationEvents) {
+      const available = navigationApi();
+      if (!available) return;
+      // Same-document updates only matter on the journey's HTTP(S) document.
+      // Commits stay unfiltered: an owner tab that opens a browser page must
+      // still stop the journey as protected-page.
+      available.onCommitted.addListener(committed);
+      available.onHistoryStateUpdated.addListener(historyUpdated, WEB_DOCUMENTS);
+      available.onReferenceFragmentUpdated.addListener(fragmentUpdated, WEB_DOCUMENTS);
+      navigationEvents = available;
+    } else if (!wanted && navigationEvents) {
+      navigationEvents.onCommitted.removeListener(committed);
+      navigationEvents.onHistoryStateUpdated.removeListener(historyUpdated);
+      navigationEvents.onReferenceFragmentUpdated.removeListener(fragmentUpdated);
+      navigationEvents = undefined;
+    }
+  };
+  const watchOwner = (wanted: boolean) => {
+    if (wanted === watchingOwner) return;
+    watchingOwner = wanted;
+    if (wanted) {
+      api.tabs.onActivated.addListener(ownerActivated);
+      api.tabs.onUpdated.addListener(ownerUpdated);
+      api.tabs.onReplaced?.addListener(ownerReplaced);
+      windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
+    } else {
+      api.tabs.onActivated.removeListener(ownerActivated);
+      api.tabs.onUpdated.removeListener(ownerUpdated);
+      api.tabs.onReplaced?.removeListener(ownerReplaced);
+      windowsApi?.onFocusChanged?.removeListener(ownerFocusChanged);
+    }
+  };
+  const watchRemovals = (wanted: boolean) => {
+    if (wanted === watchingRemovals) return;
+    watchingRemovals = wanted;
+    if (wanted) api.tabs.onRemoved.addListener(ownerRemoved);
+    else api.tabs.onRemoved.removeListener(ownerRemoved);
+  };
+  const watchAlarms = (wanted: boolean) => {
+    if (wanted === watchingAlarms) return;
+    watchingAlarms = wanted;
+    if (wanted) api.alarms.onAlarm.addListener(alarmFired);
+    else api.alarms.onAlarm.removeListener(alarmFired);
+  };
+  // Owner events matter only while a journey starts or records. A pending
+  // launch tab also needs its closing seen, or the unused intent would refuse
+  // Record journey until it expires. Alarms exist only for recording deadlines
+  // and review expiry. A review tab that closes unseen is replaced on demand.
+  const syncListeners = () => {
+    if (!initialized) return;
+    const state = controller.getState();
+    const live = !initializationError && activeState(state);
+    watchNavigation(live);
+    watchOwner(live);
+    watchRemovals(live || launchIntents.size > 0);
+    watchAlarms(!initializationError && (state.phase === 'recording' || state.phase === 'reviewing'));
+  };
+  watchNavigation(true);
+  watchOwner(true);
+  watchRemovals(true);
+  watchAlarms(true);
 
   const recordingUrl = (state: Extract<JourneySession, { phase: 'recording' }>): string | undefined => {
     const step = state.draft.steps.at(-1);
@@ -864,6 +926,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     const current = controller.getState();
     if (current.phase === 'reviewing' && Date.now() >= Date.parse(current.warningAt)) showReviewWarning(current);
     initialized = true;
+    syncListeners();
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
@@ -876,6 +939,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     initializationError = undefined;
     discardPendingWakeEvents();
     decorateForState(idle);
+    syncListeners();
     await Promise.all(Array.from(connectedEventPorts.values(), candidate => (
       stopStalePageRecorder(candidate.tabId, candidate.windowId)
     )));
@@ -886,7 +950,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     operation: Promise<unknown>,
     respond: (response: unknown) => void,
   ) => {
-    operation.then(value => respond(success(value)), error => respond(failure(error)));
+    operation.then(value => respond(success(value)), error => respond(failure(error)))
+      .finally(syncListeners);
     return true;
   };
 
@@ -930,6 +995,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         expiresAt: Date.now() + LAUNCH_TTL_MS,
       };
       launchIntents.set(id, intent);
+      syncListeners();
       let created: chrome.tabs.Tab;
       try {
         created = await api.tabs.create({ url: `${journeyUrl}#launch=${id}` });
@@ -1310,13 +1376,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   });
 
-  installNavigationListeners();
   ready = initialize().catch(async error => {
     initializationError = error;
     initialized = true;
     discardPendingWakeEvents();
     if (activeState(controller.getState())) await controller.stop('session-storage-limit');
     await clearJourneyAlarms();
+    syncListeners();
   });
 
   return {

@@ -51,15 +51,15 @@ type Harness = {
   releaseTabCreate?: () => void;
   captureMode: 'normal' | 'away-and-back' | 'throw';
   events: {
-    activated: { emit(value: unknown): void };
-    updated: { emit(...values: unknown[]): void };
-    removed: { emit(...values: unknown[]): void };
-    replaced: { emit(...values: unknown[]): void };
-    focused: { emit(value: unknown): void };
-    alarm: { emit(value: unknown): void };
-    committed: { emit(value: unknown): void; count(): number };
-    history: { emit(value: unknown): void; count(): number };
-    fragment: { emit(value: unknown): void; count(): number };
+    activated: { emit(value: unknown): void; count(): number };
+    updated: { emit(...values: unknown[]): void; count(): number };
+    removed: { emit(...values: unknown[]): void; count(): number };
+    replaced: { emit(...values: unknown[]): void; count(): number };
+    focused: { emit(value: unknown): void; count(): number };
+    alarm: { emit(value: unknown): void; count(): number };
+    committed: { emit(value: unknown): void; count(): number; filters(): unknown[] };
+    history: { emit(value: unknown): void; count(): number; filters(): unknown[] };
+    fragment: { emit(value: unknown): void; count(): number; filters(): unknown[] };
   };
   control: { ready: Promise<void>; stopIfRecording(): boolean; openReviewIfAvailable(): boolean };
   reboot(): void;
@@ -183,15 +183,18 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => {
     function extensionEvent() {
       const listeners: Array<(...values: any[]) => void> = [];
+      const filters: unknown[] = [];
       return {
-        addListener(listener: (...values: any[]) => void) { listeners.push(listener); },
+        addListener(listener: (...values: any[]) => void, filter?: unknown) { listeners.push(listener); filters.push(filter); },
         removeListener(listener: (...values: any[]) => void) {
           const index = listeners.indexOf(listener);
-          if (index >= 0) listeners.splice(index, 1);
+          if (index >= 0) { listeners.splice(index, 1); filters.splice(index, 1); }
         },
-        emit(...values: any[]) { for (const listener of listeners) listener(...values); },
+        // Browsers dispatch to the listeners registered when the event fired.
+        emit(...values: any[]) { for (const listener of listeners.slice()) listener(...values); },
         count() { return listeners.length; },
-        clear() { listeners.length = 0; },
+        filters() { return structuredClone(filters); },
+        clear() { listeners.length = 0; filters.length = 0; },
       };
     }
     const runtimeMessage = extensionEvent();
@@ -1373,6 +1376,97 @@ test('fails closed without webNavigation and installs navigation listeners once 
   expect(facts.sequence).toContain('capture');
 });
 
+test('journey listeners register at startup and stay only while a journey phase needs them', async ({ page }) => {
+  // navigation (commit, history, fragment), owner (activated, updated, replaced, focus), removal, alarm
+  const listeners = () => page.evaluate(() => {
+    const { events } = (globalThis as HarnessWindow).harness;
+    return {
+      navigation: [events.committed.count(), events.history.count(), events.fragment.count()],
+      owner: [events.activated.count(), events.updated.count(), events.replaced.count(), events.focused.count()],
+      removal: events.removed.count(),
+      alarm: events.alarm.count(),
+    };
+  });
+  const none = { navigation: [0, 0, 0], owner: [0, 0, 0, 0], removal: 0, alarm: 0 };
+  const all = { navigation: [1, 1, 1], owner: [1, 1, 1, 1], removal: 1, alarm: 1 };
+  const rebootSynchronously = () => page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.reboot();
+    const { events } = harness;
+    return {
+      navigation: [events.committed.count(), events.history.count(), events.fragment.count()],
+      owner: [events.activated.count(), events.updated.count(), events.replaced.count(), events.focused.count()],
+      removal: events.removed.count(),
+      alarm: events.alarm.count(),
+      filters: [events.committed.filters(), events.history.filters(), events.fragment.filters()],
+    };
+  });
+  const ready = () => page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+
+  // An idle background wakes for none of them.
+  await ready();
+  expect(await listeners()).toEqual(none);
+
+  const recording = async () => {
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+    expect(await listeners()).toEqual(all);
+  };
+  await recording();
+  // Every event is registered in the startup turn, so a waking event reaches
+  // a journey that has not been restored yet.
+  const woken = await rebootSynchronously();
+  expect(woken).toMatchObject(all);
+  expect(woken.filters).toEqual([
+    [undefined],
+    [{ url: [{ schemes: ['http', 'https'] }] }],
+    [{ url: [{ schemes: ['http', 'https'] }] }],
+  ]);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await listeners()).toEqual(all);
+
+  // A review only waits for its warning and expiry alarms.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const reviewing = { ...none, alarm: 1 };
+  expect(await listeners()).toEqual(reviewing);
+  expect(await rebootSynchronously()).toMatchObject(all);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await listeners()).toEqual(reviewing);
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(none);
+  expect(await rebootSynchronously()).toMatchObject(all);
+  await ready();
+  expect(await listeners()).toEqual(none);
+
+  // A pending launch tab is watched for closing, which releases its intent.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  expect(await listeners()).toEqual({ ...none, removal: 1 });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const launchTab = Object.values(harness.tabs).find(tab => tab.url.includes('#launch='))!;
+    delete harness.tabs[launchTab.id];
+    harness.tabs[1].active = true;
+    harness.events.removed.emit(launchTab.id, { windowId: 7 });
+  });
+  expect(await listeners()).toEqual(none);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+
+  // A start whose first screenshot fails leaves nothing registered.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const launchTab = Object.values(harness.tabs).find(tab => tab.url.includes('#launch='))!;
+    delete harness.tabs[launchTab.id];
+    harness.tabs[1].active = true;
+    harness.events.removed.emit(launchTab.id, { windowId: 7 });
+    harness.captureMode = 'throw';
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'initial-capture-failed' });
+  expect(await listeners()).toEqual(none);
+});
+
 test('observes ordered top-frame owner navigations and injects the idle observer only for new documents', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => {
@@ -1478,15 +1572,17 @@ test('stops on protected owner destinations and tab replacement without followin
   }));
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'protected-page' } });
-  // A protected-page stop preserves the installed navigation listeners.
-  expect(await page.evaluate(() => [
+  const navigationListeners = () => page.evaluate(() => [
     (globalThis as HarnessWindow).harness.events.committed.count(),
     (globalThis as HarnessWindow).harness.events.history.count(),
     (globalThis as HarnessWindow).harness.events.fragment.count(),
-  ])).toEqual([1, 1, 1]);
+  ]);
+  // The review needs no navigation events; the next journey registers them again.
+  expect(await navigationListeners()).toEqual([0, 0, 0]);
 
   await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' });
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  expect(await navigationListeners()).toEqual([1, 1, 1]);
   await page.evaluate(() => (globalThis as HarnessWindow).harness.events.replaced.emit(9, 1));
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'tab-lost' } });

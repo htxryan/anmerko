@@ -38,6 +38,8 @@ A journey records the origin it starts on and holds no host permissions: `active
 
 Chrome, Edge, and Firefox builds include journeys and request `webNavigation` and `alarms`; `scripts/extension/browser-targets.mjs` excludes both from Orion builds, whose background bundle omits the journey runtime. `npm run test:firefox` proves the Firefox reload stop headlessly.
 
+Every journey listener wakes an idle service worker or Firefox event page for its event in every tab, so the background keeps them only while a journey needs them. `bindJourneyExtension` registers them synchronously at startup, which delivers the event that woke the background for a live journey, then removes each one the restored state does not need: navigation, owner-tab, and window-focus events only while a journey starts or records, tab removal while a launch tab is pending, and alarms while recording or reviewing. Same-document navigation listeners are filtered to HTTP(S); commits stay unfiltered so an owner tab that opens a browser page still stops as `protected-page`.
+
 `tasks/journey-left-site.mjs` proves that boundary live, `tasks/journey-firefox-smoke.mjs` proves the Firefox flow including event-page suspension, and `tasks/journey-lifecycle-auto.sh <chrome|edge>` runs the full lifecycle. Firefox needs no doorhanger: required permissions are granted at temporary install. Headless windows still deny capture in some environments, so keep lifecycle runs headed.
 
 Cold-wake harness tests must derive synthetic event timestamps from observed state (for example, the predecessor step's `elapsedMs`). Fixed constants flip with browser warmup timing: a fast recovery can commit a navigation with a smaller `elapsedMs` than the constant, silently changing which branch the test exercises.
