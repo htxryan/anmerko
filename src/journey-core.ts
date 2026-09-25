@@ -1169,6 +1169,19 @@ export function resumeSavingReview(state: SavingJourneySession): ReviewingJourne
   return { ...state, phase: 'reviewing', ...journeyReviewWindow(Date.parse(state.draft.updatedAt)) };
 }
 
+// Session storage failed after recording stopped. The draft in memory still
+// holds every step and edit, so nothing recorded is missing, but its stop
+// reason now names the storage failure so review urges an immediate save.
+// The limitation says so, and that the original reason was replaced; a
+// journey saved from this draft never shows that stop without an entry.
+export function markJourneyReviewStorageFailure<T extends ReviewingJourneySession | SavingJourneySession>(state: T): T {
+  if (state.draft.stopReason === 'session-storage-limit') return state;
+  const relabeled = { ...state.draft, stopReason: 'session-storage-limit' as const };
+  const draft = { ...relabeled, limitations: withLimitation(state.draft.limitations, JOURNEY_LIMITATIONS.reviewStorage) };
+  // A draft already at its size limit keeps its steps saveable instead.
+  return { ...state, draft: validateJourneyDraft(draft).ok ? draft : relabeled };
+}
+
 export type ReviewBlockReason = 'summaries-required' | 'retained-step-required' | 'images-pending' | 'invalid-draft';
 
 export function reviewSaveGating(state: JourneySession): { ready: boolean; reasons: ReviewBlockReason[] } {

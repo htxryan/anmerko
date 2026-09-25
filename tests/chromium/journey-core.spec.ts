@@ -6,6 +6,7 @@ import {
   commitJourneyNavigation,
   createJourneySession,
   editJourneyValue,
+  markJourneyReviewStorageFailure,
   redactJourneyLabel,
   redactJourneyUrl,
   reopenJourneySnapshot,
@@ -1217,6 +1218,46 @@ test('lossy stops record what is missing once, and ordinary stops record nothing
   expect(overflowed.draft.limitations).toEqual([JOURNEY_LIMITATIONS.sessionStorage]);
   expect(Buffer.byteLength(JSON.stringify(overflowed)))
     .toBeLessThanOrEqual(JOURNEY_LIMITS.maxSessionBytes - JOURNEY_LIMITS.sessionMetadataReserveBytes);
+});
+
+test('a storage failure during review records why the stop reason changed, so a saved journey never shows it unexplained', () => {
+  const recording = recordingSession();
+  const stopped = stopJourney(recording, { epoch: 1, stoppedAt: '2026-09-20T12:00:02.000Z', reason: 'user' });
+  if (stopped.phase !== 'reviewing') throw new Error('expected reviewing state');
+  const summarized = updateJourneySummary(stopped, { ...reviewGuards(stopped), expected: 'The order saves.', actual: 'It spins.' });
+  if (summarized.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(summarized.draft.limitations).toEqual([]);
+
+  const marked = markJourneyReviewStorageFailure(summarized);
+  expect(marked.draft.stopReason).toBe('session-storage-limit');
+  expect(marked.draft.limitations).toEqual([JOURNEY_LIMITATIONS.reviewStorage]);
+  // Every step and edit is still there; only the stop reason changed.
+  expect({ ...marked.draft, stopReason: 'user', limitations: [] }).toEqual(summarized.draft);
+  expect(validateJourneyDraft(marked.draft).ok).toBe(true);
+  expect(reviewSaveGating(marked)).toEqual({ ready: true, reasons: [] });
+  const markdown = formatJourneyMarkdown(journeyDraftToManifest(marked.draft));
+  expect(markdown).toContain('Stop reason: `session-storage-limit`');
+  expect(markdown).toContain(JOURNEY_LIMITATIONS.reviewStorage);
+  expect(markdown).not.toContain('None recorded.');
+
+  // A second failure changes nothing, and one after a storage stop during
+  // recording keeps that stop's own limitation alone.
+  expect(markJourneyReviewStorageFailure(marked)).toBe(marked);
+  const storageStop = stopJourney(recording, { epoch: 1, stoppedAt: '2026-09-20T12:00:02.000Z', reason: 'session-storage-limit' });
+  if (storageStop.phase !== 'reviewing') throw new Error('expected reviewing state');
+  expect(markJourneyReviewStorageFailure(storageStop)).toBe(storageStop);
+  expect(storageStop.draft.limitations).toEqual([JOURNEY_LIMITATIONS.sessionStorage]);
+
+  // Earlier limitations stay first, and a saving session is marked the same way.
+  const saving = {
+    phase: 'saving' as const, sessionId: summarized.sessionId, journeyId: summarized.journeyId, epoch: summarized.epoch,
+    ownerTabId: summarized.ownerTabId, ownerWindowId: summarized.ownerWindowId,
+    draft: { ...summarized.draft, limitations: [JOURNEY_LIMITATIONS.enteredValuesTruncated] },
+  };
+  expect(markJourneyReviewStorageFailure(saving)).toMatchObject({
+    phase: 'saving',
+    draft: { stopReason: 'session-storage-limit', limitations: [JOURNEY_LIMITATIONS.enteredValuesTruncated, JOURNEY_LIMITATIONS.reviewStorage] },
+  });
 });
 
 test('every accepted review edit restarts the idle window from its own time', () => {

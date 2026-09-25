@@ -62,6 +62,7 @@ export type StopReason = typeof STOP_REASONS[number];
 export const JOURNEY_LIMITATIONS = {
   enteredValuesTruncated: `Some entered values were too long to keep in full. Each value keeps up to ${JOURNEY_LIMITS.maxFieldValueCharacters.toLocaleString('en-US')} characters and a journey up to ${JOURNEY_LIMITS.maxJourneyFieldTextBytes / 1_024} KB of entered text; shortened or emptied values are marked truncated.`,
   sessionStorage: 'Temporary journey storage filled up or failed, so recording stopped early. The latest action or screenshot may be missing.',
+  reviewStorage: 'Temporary journey storage failed after recording had stopped, so the stop reason shows that failure rather than why recording ended. The recorded steps were not affected.',
   pageAccessLost: 'The browser withdrew page access when a new page loaded, so recording stopped there. That page has no screenshot, and nothing done on it was recorded.',
   imageBudget: `Screenshots reached the journey's ${JOURNEY_LIMITS.maxJourneyImageBytes / (1_024 * 1_024)} MB storage limit, so recording stopped and the last screenshot was not kept.`,
   captureFailed: 'anmerko lost track of the page after it changed, so recording stopped early. The latest page change or action may be missing.',

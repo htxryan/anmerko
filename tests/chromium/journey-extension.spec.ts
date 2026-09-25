@@ -1615,6 +1615,25 @@ test('does not report recovery ready before a fail-closed stop is durably writte
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'capture-failed' } });
 });
 
+test('a review whose storage fails says why its stop reason changed and that no recorded step was lost', async ({ page }) => {
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toMatchObject({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.draft).toMatchObject({ stopReason: 'user', limitations: [] });
+
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.failStorageSet = true; });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: reviewing.epoch, journeyId: reviewing.journeyId,
+    revision: reviewing.draft.revision, updatedAt: new Date().toISOString(),
+    expected: 'The draft is kept.', actual: 'Storage failed.',
+  })).toMatchObject({ ok: false, code: 'session-storage-failed' });
+  const marked = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(marked).toMatchObject({ phase: 'reviewing', draft: { stopReason: 'session-storage-limit', expected: 'The draft is kept.' } });
+  expect(marked.draft.limitations).toStrictEqual([JOURNEY_LIMITATIONS.reviewStorage]);
+  expect(marked.draft.limitations[0]).toContain('after recording had stopped');
+  expect(marked.draft.steps).toEqual(reviewing.draft.steps);
+});
+
 test('keeps toolbar Stop synchronous and opens a warned review when persistence fails', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const immediate = await page.evaluate(() => {

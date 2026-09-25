@@ -6,7 +6,7 @@ import {
   type JourneyControllerAdapter,
   type JourneyPageIdentity,
 } from './journey-controller';
-import type { JourneyDraftImage, JourneySession } from './journey-core';
+import { markJourneyReviewStorageFailure, type JourneyDraftImage, type JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
 import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
 import type { StopReason } from './journey-limits';
@@ -605,12 +605,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       && current.sessionId === failedState.sessionId && current.epoch === failedState.epoch) {
       // Recording had already finished, and the draft in memory still holds
       // every step and edit; only the stored copy is behind. The storage stop
-      // reason makes review urge an immediate save, but no limitation is
-      // added: nothing is missing from a journey saved from this draft.
-      const marked = {
-        ...current,
-        draft: { ...current.draft, stopReason: 'session-storage-limit' as const },
-      };
+      // reason makes review urge an immediate save, and its limitation says
+      // the original reason was replaced while no recorded step was lost.
+      const marked = markJourneyReviewStorageFailure(current);
       controller = makeController(marked);
       publishedState = marked;
       void api.action.setBadgeText({ tabId: marked.ownerTabId, text: '!' }).catch(() => {});
