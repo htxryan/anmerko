@@ -217,6 +217,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   let confirmingDeleteAll = false;
   let deletingAll = false;
   let deleteStatus = '';
+  // A save refused for lack of room lists the other saved journeys under
+  // Save, so the reader can delete some and save again without losing this one.
+  let makingRoom = false;
   let acknowledged = false;
   let acknowledgedFor = '';
   let rendering = false;
@@ -301,7 +304,10 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       // a failed save returns to review with it, a completed one reports it lost.
       const heldBySaving = next.phase === 'saving' && next.draft.id === acknowledgedFor;
       if (next.phase === 'reviewing') {
-        if (acknowledgedFor !== '' && acknowledgedFor !== next.draft.id) acknowledged = false;
+        if (acknowledgedFor !== '' && acknowledgedFor !== next.draft.id) {
+          acknowledged = false;
+          makingRoom = false;
+        }
         acknowledgedFor = next.draft.id;
         if (confirmingDiscard !== null && confirmingDiscard !== next.draft.id) confirmingDiscard = null;
         if (confirmingRemove !== null && !next.draft.steps.some(step => step.id === confirmingRemove)) confirmingRemove = null;
@@ -315,6 +321,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
           && (summaryPending !== null || heldImageChange !== null || imageEditor !== null)) error = LOST_EDITS;
         acknowledged = false;
         acknowledgedFor = '';
+        makingRoom = false;
         summaryPending = null;
         summaryHeld = false;
         heldImageChange = null;
@@ -346,7 +353,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         pendingFocus = viewer.returnTo;
         viewer.abort.abort();
       }
-      if (next.phase !== 'idle') {
+      if (next.phase !== 'idle' && !(next.phase === 'reviewing' && makingRoom)) {
         confirmingDelete = null;
         deletingJourney = null;
         confirmingDeleteAll = false;
@@ -1158,6 +1165,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         error = '';
       }).catch(caught => {
         error = message(caught, 'Could not save this journey. Try again.');
+        if ((caught as { code?: unknown }).code === 'saved-journeys-full') makingRoom = true;
       }).finally(() => {
         saveBusy = false;
         if (alive) void refresh();
@@ -1358,7 +1366,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return [remove];
   }
 
-  function renderDeleteAll(total: number): HTMLElement {
+  function renderDeleteAll(items: JourneySavedSummary[]): HTMLElement {
+    const total = items.length;
     const wrap = node('div', undefined, 'journey-saved-delete-all');
     const idle = deletingJourney === null && !deletingAll && !busy;
     if (confirmingDeleteAll) {
@@ -1388,7 +1397,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         error = '';
         pendingFocus = ['delete-all', 'journey-saved-heading'];
         render();
-        const snapshot = (savedJourneys ?? []).map(item => ({ journeyId: item.journeyId, revision: item.revision, title: savedJourneyTitle(item) }));
+        const snapshot = items.map(item => ({ journeyId: item.journeyId, revision: item.revision, title: savedJourneyTitle(item) }));
         const failed: string[] = [];
         let deleted = 0;
         void (async () => {
@@ -1433,20 +1442,24 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return wrap;
   }
 
-  function renderSavedList(): HTMLElement | null {
+  // While reviewing, the list only makes room: the reviewed journey replaces
+  // its own saved copy, so it is left out, and Reopen would leave the review.
+  function renderSavedList(reviewing?: JourneyDraftV1): HTMLElement | null {
     if (savedJourneys === null) return null;
+    const saved = reviewing ? savedJourneys.filter(item => item.journeyId !== reviewing.id) : savedJourneys;
     const section = node('section', undefined, 'journey-saved-list');
     section.setAttribute('aria-label', 'Saved journeys');
     const title = node('h2', 'Saved journeys');
     title.tabIndex = -1;
     title.setAttribute('data-focus-id', 'journey-saved-heading');
     section.append(title);
-    if (savedJourneys.length === 0) {
-      section.append(node('p', 'No saved journeys yet.', 'journey-help'));
+    if (saved.length === 0) {
+      section.append(node('p', reviewing ? 'No other saved journeys.' : 'No saved journeys yet.', 'journey-help'));
     } else {
-      const names = savedJourneyNames(savedJourneys);
+      if (reviewing) section.append(node('p', 'Delete journeys you no longer need, then save this one again.', 'journey-help'));
+      const names = savedJourneyNames(saved);
       const list = node('ul', undefined, 'journey-saved-items');
-      savedJourneys.forEach((item, index, items) => {
+      saved.forEach((item, index, items) => {
         const name = names.get(item.journeyId) ?? savedJourneyTitle(item);
         const row = node('li', undefined, 'journey-saved-item');
         row.append(node('p', savedJourneyTitle(item), 'journey-saved-title'));
@@ -1457,7 +1470,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
         if (item.spansPages === true) meta.append(' · ', node('span', 'Spans pages', 'journey-saved-spans'));
         row.append(meta);
         const actions = node('div', undefined, 'journey-saved-actions');
-        if (typeof (client as Partial<JourneyClient>).reopen === 'function') {
+        if (!reviewing && typeof (client as Partial<JourneyClient>).reopen === 'function') {
           const reopen = action('Reopen', () => client.reopen(item.journeyId), 'secondary', false, `reopen-${item.journeyId}`);
           reopen.setAttribute('aria-label', `Reopen journey: ${name}`);
           actions.append(reopen);
@@ -1470,7 +1483,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       });
       section.append(list);
       if (typeof (client as Partial<JourneyClient>).deleteSnapshot === 'function') {
-        section.append(renderDeleteAll(savedJourneys.length));
+        section.append(renderDeleteAll(saved));
       }
     }
     if (deleteStatus) {
@@ -1601,10 +1614,12 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     const limitations: unknown = draft.limitations;
     if (!Array.isArray(limitations) || limitations.length === 0) return null;
     const section = node('section', undefined, 'journey-notice journey-limitations');
-    section.setAttribute('aria-label', 'Limitations');
+    const title = node('h2', 'Limitations');
+    title.id = 'journey-limitations-heading';
+    section.setAttribute('aria-labelledby', title.id);
     const list = node('ul');
     for (const limitation of limitations) list.append(node('li', String(limitation)));
-    section.append(node('h2', 'Limitations'), list);
+    section.append(title, list);
     return section;
   }
 
@@ -1687,6 +1702,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       const list = node('ol', undefined, 'journey-steps');
       for (const step of draft.steps) list.append(renderStep(step, draft, sharedSteps));
       view.append(list, renderSave(draft));
+      const room = makingRoom ? renderSavedList(draft) : null;
+      if (room) view.append(room);
       renderedSaved = draftIsSaved(draft);
       const sharing = renderExport({ journeyId: draft.id, revision: draft.revision }, renderedSaved);
       if (sharing) view.append(sharing);
