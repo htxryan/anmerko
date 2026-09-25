@@ -5,6 +5,7 @@ import path from 'node:path';
 import { sidebar } from '../shared/chromium-sidebar';
 import { archiveEntries } from '../shared/expected-feedback';
 import type { JourneyDraftStep, JourneyDraftV1, JourneySession } from '../../src/journey-core';
+import { journeyArchiveName, journeyImageFilename } from '../../src/journey-export';
 
 // The other journey specs drive src modules against a chrome mock. These load
 // an unmodified copy of the production Chrome build, which has no host
@@ -315,19 +316,26 @@ test('the native side panel records, masks, saves and exports a same-origin jour
   });
   await dock.click(control('journey-download'));
   const files = archiveEntries(await readFile(path.join(downloads, await downloaded)));
-  expect(filename).toMatch(/^(anmerko-)?journey-[\w.~-]+\.zip$/);
-  // journeys.md, the prompt as its own document, and the PNGs journeys.md names.
+  // The archive is named for the journey, not as a comments export.
+  expect(filename).toMatch(/^anmerko-journey-[\w.~-]{1,8}\.zip$/);
+  expect(filename).toBe(journeyArchiveName(draft.id));
+  // journeys.md, prompt.md (the copied prompt), and the PNGs journeys.md names.
   const journeysMd = files.get('journeys.md')!.toString('utf8');
   const names = screenshotNames(journeysMd);
   const pngs = new Set(names.values());
   expect([...names.keys()].sort()).toEqual(retained.map(step => step.id).sort());
   const documents = [...files.keys()].filter(name => !pngs.has(name));
-  expect(documents).toHaveLength(2);
-  expect(documents).toContain('journeys.md');
-  const promptDocument = documents.find(name => name !== 'journeys.md')!;
-  expect(promptDocument).toMatch(/^\w+\.md$/);
-  expect(files.get(promptDocument)!.toString('utf8')).toContain(prompt.trim());
+  expect(documents.sort()).toEqual(['journeys.md', 'prompt.md']);
+  expect(files.get('prompt.md')!.toString('utf8')).toContain(prompt.trim());
   expect(files.size).toBe(documents.length + pngs.size);
+  // Each screenshot is named for the journey and the first step that kept it,
+  // as the prompt and journeys.md number the steps.
+  for (const step of retained) {
+    const first = retained.find(candidate => candidate.image.status === 'retained' && step.image.status === 'retained'
+      && candidate.image.imageId === step.image.imageId)!;
+    expect(names.get(step.id)).toBe(journeyImageFilename(draft.id, first.seq));
+    expect(prompt).toContain(names.get(step.id)!);
+  }
   expect(journeysMd).toContain(`${SHOP}/pricing/annual`);
   expect(journeysMd).toContain('Add to cart');
   expect(journeysMd).not.toContain(SECRET);
@@ -398,10 +406,15 @@ test('a floating panel journey records past a page load and is reviewed in a jou
   await expect(strip).toBeVisible();
   await page.locator('#add').click();
   await expect.poll(() => lastStep(state)).toBe(`click ${SHOP}/pricing retained`);
+  // The website tab records in front; the journey tab waits behind it.
+  const tabActive = () => tab.evaluate(async () => (await chrome.tabs.getCurrent())?.active);
+  expect(await tabActive()).toBe(false);
   // Stop is the strip's last control, inside a closed shadow root.
   const box = (await strip.boundingBox())!;
   await page.mouse.click(box.x + box.width - 30, box.y + box.height / 2);
   await expect.poll(async () => { const current = await state(); return current?.phase === 'reviewing' && current.draft.stopReason; }).toBe('user');
+  // No side panel shows this journey, so its end brings the journey tab forward as the review.
+  await expect.poll(tabActive).toBe(true);
 
   // The journey tab reviews every step with its screenshot.
   const draft = draftOf(await state())!;
