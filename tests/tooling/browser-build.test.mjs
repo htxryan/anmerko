@@ -96,12 +96,23 @@ test('supported browser targets build clean resources and reject development hel
     for (const marker of [/\bfunction bindJourneyExtension\(/, /\.webNavigation\b/, /\.alarms\.onAlarm\b/]) {
       assert.equal(marker.test(background), target.journeys, `${target.name}: ${marker}`);
     }
+    const files = await readdir(join(root, outdir));
     for (const name of ['content.js', 'background.js', 'popup.js', 'sidebar.html', 'unavailable.html', 'icons']) {
-      assert.ok((await readdir(join(root, outdir))).includes(name), `${target.name}: ${name}`);
+      assert.ok(files.includes(name), `${target.name}: ${name}`);
+    }
+    // Orion ships no journey page or scripts, and its content script carries no
+    // journey launch, review offer, saved list, recording strip or view.
+    const journeyFiles = ['journey.html', 'journey.js', 'journey-observer.js'];
+    for (const name of journeyFiles) assert.equal(files.includes(name), target.journeys, `${target.name}: ${name}`);
+    const content = await readFile(join(root, outdir, 'content.js'), 'utf8');
+    for (const marker of ['ANMERKO_JOURNEY_OPEN', 'ANMERKO_JOURNEY_PENDING', 'Record journey', 'Review journey', 'Saved journeys',
+      'anmerko journey recording', 'anmerko-journey-strip', '.journey-view', 'function attachJourneyPanel(', 'function mountJourneyUI(',
+      'function createJourneyClient(', 'function bindJourneyPage(']) {
+      assert.equal(content.includes(marker), target.journeys, `${target.name}: content.js ${marker}`);
     }
     // Every bundle reads the capability from the build: an unreplaced define
     // would silently leave journeys out.
-    for (const name of ['content.js', 'background.js', 'popup.js', 'journey.js', 'journey-observer.js']) {
+    for (const name of ['content.js', 'background.js', 'popup.js', ...target.journeys ? ['journey.js', 'journey-observer.js'] : []]) {
       assert.doesNotMatch(await readFile(join(root, outdir, name), 'utf8'), /__TARGET_JOURNEYS__|ANMERKO_JOURNEYS/, `${target.name}: ${name}`);
     }
     await pack();

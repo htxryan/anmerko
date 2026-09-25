@@ -2,6 +2,7 @@ import { stripUrlCredentials, type JourneyEventBatchV1 } from './journey-events'
 import { isJourneyBackgroundSender, JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { attachJourneyRecorder } from './journey-recorder';
 import { attachJourneyFields, type JourneyFieldCommit } from './journey-fields';
+import { journeysAvailable } from './journey-feature';
 import { extensionApi } from './platform';
 import type { Runtime } from './runtime';
 import { createUuid } from './uuid';
@@ -49,6 +50,8 @@ type JourneyStrip = {
 };
 
 type RecordingSignal = { recording: boolean; listeners: Set<(recording: boolean) => void> };
+
+type JourneyPageGlobal = typeof globalThis & { __anmerkoJourneyPage?: () => void };
 
 type Message = Record<string, unknown> & { type?: unknown };
 
@@ -555,5 +558,19 @@ export function bindJourneyPage(onDispose?: () => void): () => void {
   };
   api.runtime.onMessage.addListener(listener);
   window.addEventListener('pagehide', dispose, { once: true });
+  return dispose;
+}
+
+// Binds this document once. The content script and the injected observer
+// share the content-script global, so whichever runs first owns the binding.
+export function ensureJourneyPage(): (() => void) | undefined {
+  if (!journeysAvailable() || window.top !== window) return;
+  const global = globalThis as JourneyPageGlobal;
+  if (global.__anmerkoJourneyPage) return global.__anmerkoJourneyPage;
+  let dispose: () => void;
+  dispose = bindJourneyPage(() => {
+    if (global.__anmerkoJourneyPage === dispose) delete global.__anmerkoJourneyPage;
+  });
+  global.__anmerkoJourneyPage = dispose;
   return dispose;
 }
