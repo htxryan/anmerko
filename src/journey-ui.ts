@@ -49,7 +49,10 @@ export interface JourneyClient {
   // Called directly from the Start click, so the adapter can request optional
   // permissions before crossing an asynchronous boundary.
   start(includeEnteredValues: boolean): Promise<void>;
-  stop(): Promise<void>;
+  // Stop journey and Cancel start name the journey their view showed, so one
+  // pressed after that journey ended never stops another. A Cancel start
+  // pressed before its journey exists names none.
+  stop(target?: JourneyReviewTarget): Promise<void>;
   // Without a target, discards whatever journey is current: the storage reset.
   discard(expected?: JourneyDiscardTarget): Promise<void>;
   // An autosave can land after the review moved on, so it names the review
@@ -2131,7 +2134,8 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
       view.append(heading(recording ? 'Recording journey' : 'Taking the first screenshot…'));
       const status = node('p', recording ? `${count(state.draft.steps.length, 'step')} recorded. Continue in the original tab.` : 'Recording begins after the first screenshot succeeds.', 'journey-help');
       status.setAttribute('role', 'status');
-      view.append(status, action(recording ? 'Stop journey' : 'Cancel start', () => client.stop(), 'primary', true, 'journey-stop'));
+      const shown = { journeyId: state.journeyId, sessionId: state.sessionId };
+      view.append(status, action(recording ? 'Stop journey' : 'Cancel start', () => client.stop(shown), 'primary', true, 'journey-stop'));
     } else if (state.phase === 'reviewing') {
       const draft = state.draft;
       view.append(heading('Review journey'));

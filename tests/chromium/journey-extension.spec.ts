@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
 import { JOURNEY_LIMITATIONS } from '../../src/journey-limits';
 
-type Sender = { id?: string; url?: string; frameId?: number; tab?: { id?: number; windowId: number; active?: boolean; url?: string } };
+type Sender = { id?: string; url?: string; frameId?: number; tab?: { id?: number; windowId: number; active?: boolean; url?: string; incognito?: boolean } };
 type Harness = {
   dispatch(message: unknown, sender: Sender): Promise<any>;
   connectPort(name: string, sender: Sender): number;
@@ -30,7 +30,7 @@ type Harness = {
   releaseStorageSet?: () => void;
   failPageStopCount: number;
   sequence: string[];
-  tabs: Record<number, { id: number; windowId: number; active: boolean; url: string }>;
+  tabs: Record<number, { id: number; windowId: number; active: boolean; url: string; incognito?: boolean }>;
   identity: { documentToken: string; url: string; viewport: { width: number; height: number }; scroll: { x: number; y: number }; generation: number; visible: boolean;
     recording?: { sessionId: string; epoch: number } };
   focusedWindowId: number;
@@ -64,7 +64,8 @@ type Harness = {
     history: { emit(value: unknown): void; count(): number; filters(): unknown[] };
     fragment: { emit(value: unknown): void; count(): number; filters(): unknown[] };
   };
-  control: { ready: Promise<void>; stopIfRecording(): boolean; openReviewIfAvailable(): boolean };
+  control: { ready: Promise<void>; stopIfRecording(): boolean; openReviewIfAvailable(privateWindow?: boolean): boolean;
+    handleToolbarClick(privateWindow?: boolean): Promise<boolean> };
   reboot(): void;
 };
 type HarnessWindow = typeof globalThis & { journeyExtension: { bindJourneyExtension(service: { capture(windowId: number): Promise<string>; waitMs(): number }): Harness['control'] }; harness: Harness };
@@ -85,6 +86,16 @@ const ownerPage = { id: 'test-extension', url: 'https://example.test/path?item=1
 
 async function dispatch(page: Page, message: unknown, sender: Sender = sidebar) {
   return page.evaluate(({ message, sender }) => (globalThis as HarnessWindow).harness.dispatch(message, sender), { message, sender });
+}
+
+// The launch link a journey tab was last opened on or switched to, and that tab as a sender.
+function launchLink(page: Page) {
+  return page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const url = harness.launches.at(-1)!;
+    const tab = structuredClone(Object.values(harness.tabs).find(item => item.url === url)!);
+    return { intent: url.slice(url.indexOf('#launch=') + 8), sender: { id: 'test-extension', url, frameId: 0, tab } };
+  });
 }
 
 type MaskRect = { x: number; y: number; width: number; height: number };
@@ -532,7 +543,7 @@ test('a review edit restarts the idle window and its alarms, so the review outli
   const editMs = Date.parse(stopped.expiresAt) - 60_000;
   await page.evaluate(ms => { Date.now = () => ms; }, editMs);
   expect(await dispatch(page, {
-    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId,
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId, sessionId: stopped.sessionId,
     revision: stopped.draft.revision, updatedAt: new Date(editMs).toISOString(),
     expected: 'The review stays open.', actual: 'It was discarded mid-edit.',
   })).toEqual({ ok: true });
@@ -824,12 +835,12 @@ test('a save into a full saved-journey store keeps the review and evicts nothing
   }, 100);
   const stopped = await reviewWithClickScreenshot(page);
   expect(await dispatch(page, {
-    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId,
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId, sessionId: stopped.sessionId,
     revision: stopped.draft.revision, updatedAt: new Date().toISOString(),
     expected: 'The journey is saved.', actual: 'Storage is full.',
   })).toEqual({ ok: true });
 
-  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }))
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: stopped.journeyId, sessionId: stopped.sessionId }))
     .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'saved-journeys-full' });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({
     phase: 'reviewing', journeyId: stopped.journeyId, draft: { expected: 'The journey is saved.' },
@@ -862,11 +873,11 @@ test('review summaries and step removal apply with revision guards', async ({ pa
   let reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(reviewing.phase).toBe('reviewing');
 
-  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }))
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId }))
     .toEqual({ ok: false, error: 'Journey command unavailable.' });
 
   const guards = {
-    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId, revision: reviewing.draft.revision,
     updatedAt: new Date().toISOString(),
   };
   expect(await dispatch(page, {
@@ -896,7 +907,7 @@ test('review summaries and step removal apply with revision guards', async ({ pa
 
   const initialId = reviewing.draft.steps[0].id;
   const redactGuards = {
-    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId, revision: reviewing.draft.revision,
     updatedAt: new Date().toISOString(),
   };
   expect(await dispatch(page, {
@@ -922,12 +933,12 @@ test('review summaries and step removal apply with revision guards', async ({ pa
 
   expect(await dispatch(page, {
     type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY',
-    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId, revision: reviewing.draft.revision,
     updatedAt: new Date().toISOString(), expected: 'The cart keeps its item.', actual: 'Checkout is empty.',
   })).toEqual({ ok: true });
-  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: false }))
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: false, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId }))
     .toEqual({ ok: false, error: 'Journey command unavailable.' });
-  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId });
   expect(saved).toMatchObject({ ok: true });
   expect(typeof (saved as any).value?.journeyId).toBe('string');
   const done = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
@@ -961,12 +972,12 @@ test('review summaries and step removal apply with revision guards', async ({ pa
   expect(again.draft.steps).toHaveLength(1);
   expect(await dispatch(page, {
     type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY',
-    epoch: 1, journeyId: again.journeyId, revision: again.draft.revision,
+    epoch: 1, journeyId: again.journeyId, sessionId: again.sessionId, revision: again.draft.revision,
     updatedAt: new Date().toISOString(), expected: 'Edited after reopen.', actual: 'Checkout is empty.',
   })).toEqual({ ok: true });
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.expected).toBe('Edited after reopen.');
 
-  const resaved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  const resaved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: again.journeyId, sessionId: again.sessionId });
   expect(resaved).toMatchObject({ ok: true });
   const savedRevision = (resaved as any).value.revision;
   expect(await dispatch(page, {
@@ -989,7 +1000,7 @@ test('screenshot review authenticates its sender and rejects malformed, mismatch
   const rect = { x: 0, y: 0, width: 3, height: 2 };
   const replace = {
     type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace',
-    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision, imageId,
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId, revision: reviewing.draft.revision, imageId,
     dataUrl: await maskedPng(page, original, rect),
   };
 
@@ -1051,7 +1062,7 @@ test('masked and removed screenshots persist through save, reopen, and export', 
   expect(clickId).not.toBe(initialId);
   const first = { x: 0, y: 0, width: 3, height: 2 };
   const guards = (current: any) => ({
-    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId, revision: current.draft.revision,
   });
   expect(await dispatch(page, {
     type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId: initialId,
@@ -1062,7 +1073,7 @@ test('masked and removed screenshots persist through save, reopen, and export', 
     type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state), updatedAt: new Date().toISOString(),
     expected: 'Card details stay private.', actual: 'The card number was visible.',
   })).toEqual({ ok: true });
-  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: state.journeyId, sessionId: state.sessionId });
   expect(saved).toMatchObject({ ok: true });
   let snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
   expect(snapshot.images[initialId].redacted).toBe(true);
@@ -1090,7 +1101,7 @@ test('masked and removed screenshots persist through save, reopen, and export', 
   state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
   expect(state.draft.steps[1].image).toEqual({ status: 'removed' });
   expect(Object.keys(state.draft.images)).toEqual([initialId]);
-  const resaved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewPage);
+  const resaved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: state.journeyId, sessionId: state.sessionId }, reviewPage);
   expect(resaved.value.revision).toBeGreaterThan(saved.value.revision);
 
   snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
@@ -1143,13 +1154,13 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
   const original = state.draft.images[imageId].dataUrl;
   const rect = { x: 0, y: 0, width: 3, height: 2 };
   const guards = (current: any) => ({
-    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId, revision: current.draft.revision,
   });
   const race = (first: unknown, second: unknown, sender: Sender) => page.evaluate(({ first, second, sender }) => {
     const harness = (globalThis as HarnessWindow).harness;
     return Promise.all([harness.dispatch(first, sender), harness.dispatch(second, sender)]);
   }, { first, second, sender });
-  const save = { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true };
+  const save = (current: any) => ({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: current.journeyId, sessionId: current.sessionId });
   expect(await dispatch(page, {
     type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state), updatedAt: new Date().toISOString(),
     expected: 'Card details stay private.', actual: 'The card number was visible.',
@@ -1157,7 +1168,7 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
   state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
 
   // A save already in flight turns away a screenshot change instead of saving over it.
-  const [saved, refusedMask] = await race(save, {
+  const [saved, refusedMask] = await race(save(state), {
     type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId,
     dataUrl: await maskedPng(page, original, rect),
   }, sidebar);
@@ -1180,7 +1191,7 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
   const [masked, refusedSave] = await race({
     type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'replace', ...guards(state), imageId,
     dataUrl: await maskedPng(page, state.draft.images[imageId].dataUrl, rect),
-  }, save, reviewPage);
+  }, save(state), reviewPage);
   expect(masked).toEqual({ ok: true });
   expect(refusedSave).toEqual(staleReview);
   state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, reviewPage)).value;
@@ -1190,7 +1201,7 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
   expect(snapshot.draft.revision).toBe(saved.value.revision);
   expect(snapshot.images[imageId].redacted).toBeUndefined();
 
-  const resaved = await dispatch(page, save, reviewPage);
+  const resaved = await dispatch(page, save(state), reviewPage);
   expect(resaved.value.revision).toBeGreaterThan(saved.value.revision);
   snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
   expect(snapshot.images[imageId].redacted).toBe(true);
@@ -1200,7 +1211,7 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
 test('a review edit racing a save is refused as stale and the snapshot is exactly the saved review', async ({ page }) => {
   let state = await reviewWithClickScreenshot(page);
   const guards = (current: any) => ({
-    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId, revision: current.draft.revision,
     updatedAt: new Date().toISOString(),
   });
   expect(await dispatch(page, {
@@ -1214,7 +1225,7 @@ test('a review edit racing a save is refused as stale and the snapshot is exactl
   const [saved, ...refused] = await page.evaluate(({ edits, reviewSender }) => {
     const harness = (globalThis as HarnessWindow).harness;
     return Promise.all([
-      harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewSender),
+      harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: edits[0].journeyId, sessionId: edits[0].sessionId }, reviewSender),
       ...edits.map(edit => harness.dispatch(edit, reviewSender)),
     ]);
   }, { reviewSender: reviewPage, edits: [
@@ -1236,7 +1247,7 @@ test('a review edit racing a save is refused as stale and the snapshot is exactl
 test('saving never copies the reviewed screenshots into session storage again', async ({ page }) => {
   const state = await reviewWithClickScreenshot(page);
   expect(await dispatch(page, {
-    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId,
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId, sessionId: state.sessionId,
     revision: state.draft.revision, updatedAt: new Date().toISOString(),
     expected: 'The receipt lists the order.', actual: 'The receipt is blank.',
   })).toEqual({ ok: true });
@@ -1251,7 +1262,7 @@ test('saving never copies the reviewed screenshots into session storage again', 
       return set(items);
     };
   });
-  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: state.journeyId, sessionId: state.sessionId });
   expect(saved).toMatchObject({ ok: true });
   const writes = (await page.evaluate(() => (globalThis as any).__sessionWrites)).flat();
   // Only the small saved confirmation is written: the review already holds
@@ -1264,7 +1275,7 @@ test('saving never copies the reviewed screenshots into session storage again', 
 test('a controller replaced by a storage failure during its save cannot publish the late saved state', async ({ page }) => {
   let state = await reviewWithClickScreenshot(page);
   const summary = (current: any, actual: string) => ({
-    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: current.epoch, journeyId: current.journeyId,
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId,
     revision: current.draft.revision, updatedAt: new Date().toISOString(), expected: 'The receipt lists the order.', actual,
   });
   expect(await dispatch(page, summary(state, 'The receipt is blank.'))).toEqual({ ok: true });
@@ -1293,7 +1304,7 @@ test('a controller replaced by a storage failure during its save cannot publish 
     return new Promise(resolve => {
       const saveWhenHeld = () => {
         if (!(globalThis as any).__failAlarm) { setTimeout(saveWhenHeld, 5); return; }
-        const saving = harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true },
+        const saving = harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: edit.journeyId, sessionId: edit.sessionId },
           { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' });
         resolve(Promise.all([edited, saving]));
       };
@@ -1334,11 +1345,11 @@ test('a saved journey never blocks Record journey from the floating panel or a n
       };
     });
     expect(await dispatch(page, {
-      type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId,
+      type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId, sessionId: state.sessionId,
       revision: state.draft.revision, updatedAt: new Date().toISOString(),
       expected: 'The order is confirmed.', actual: 'The confirmation never appears.',
     }, reviewPage)).toEqual({ ok: true });
-    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewPage)).toMatchObject({ ok: true });
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: state.journeyId, sessionId: state.sessionId }, reviewPage)).toMatchObject({ ok: true });
     // The reporter closes the journey tab on its saved confirmation.
     await page.evaluate(() => {
       const harness = (globalThis as HarnessWindow).harness;
@@ -1382,7 +1393,7 @@ test('a saved journey never blocks Record journey from the floating panel or a n
 test('removing a screenshot or step whose URLs were redacted succeeds through the command channel', async ({ page }) => {
   let state = await reviewWithClickScreenshot(page);
   const guards = (current: any) => ({
-    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId, revision: current.draft.revision,
     updatedAt: new Date().toISOString(),
   });
   const click = state.draft.steps[1];
@@ -1395,7 +1406,7 @@ test('removing a screenshot or step whose URLs were redacted succeeds through th
 
   expect(await dispatch(page, {
     type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'remove',
-    epoch: state.epoch, journeyId: state.journeyId, revision: state.draft.revision, imageId: click.image.imageId,
+    epoch: state.epoch, journeyId: state.journeyId, sessionId: state.sessionId, revision: state.draft.revision, imageId: click.image.imageId,
   })).toEqual({ ok: true });
   state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(state.draft.steps[1].image).toEqual({ status: 'removed' });
@@ -1511,7 +1522,7 @@ test('review commands and discards name their review, so one sent after another 
 test('a click label redacted through the command channel stays redacted in the saved journey', async ({ page }) => {
   let state = await reviewWithClickScreenshot(page);
   const guards = (current: any) => ({
-    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    epoch: current.epoch, journeyId: current.journeyId, sessionId: current.sessionId, revision: current.draft.revision,
     updatedAt: new Date().toISOString(),
   });
   const [initial, click] = state.draft.steps;
@@ -1531,7 +1542,7 @@ test('a click label redacted through the command channel stays redacted in the s
   expect(await dispatch(page, {
     type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state), expected: 'Paying opens checkout.', actual: 'Nothing happens.',
   })).toEqual({ ok: true });
-  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: state.journeyId, sessionId: state.sessionId });
   expect(saved.ok).toBe(true);
   const snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: saved.value.journeyId })).value;
   expect(snapshot.draft.steps[1].target.label).toBe('[redacted]');
@@ -1725,7 +1736,7 @@ test('a review whose storage fails says why its stop reason changed and that no 
 
   await page.evaluate(() => { (globalThis as HarnessWindow).harness.failStorageSet = true; });
   expect(await dispatch(page, {
-    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: reviewing.epoch, journeyId: reviewing.journeyId,
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId,
     revision: reviewing.draft.revision, updatedAt: new Date().toISOString(),
     expected: 'The draft is kept.', actual: 'Storage failed.',
   })).toMatchObject({ ok: false, code: 'session-storage-failed' });
@@ -2221,7 +2232,7 @@ test('review redacts a navigation destination through the command channel', asyn
   expect(reviewing.phase).toBe('reviewing');
   const navigation = reviewing.draft.steps.at(-1);
   const guards = {
-    epoch: reviewing.epoch, journeyId: reviewing.journeyId, revision: reviewing.draft.revision,
+    epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId, revision: reviewing.draft.revision,
     updatedAt: new Date().toISOString(),
   };
 
@@ -2743,19 +2754,85 @@ test('authorizes exact trusted journey surfaces and consumes a fallback launch o
   expect(facts.sequence).toContain('capture');
 });
 
-test('expires an unconsumed launch intent when the background restarts', async ({ page }) => {
-  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
-  const launch = await page.evaluate(() => {
+// An idle worker or event page stops about 30 seconds after its last event,
+// and a journey tab waiting for its Start keeps neither awake.
+test('a launch link outlives a background restart, starts once, and still expires', async ({ page }) => {
+  const stored = () => page.evaluate(() => (globalThis as HarnessWindow).harness.sessionStorage['anmerko:journey-launch-intents:v1']);
+  const reboot = () => page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
-    const url = harness.createdTabs[0].url as string;
-    const tab = Object.values(harness.tabs).find(item => item.url === url)!;
     harness.reboot();
-    return { intent: url.slice(url.indexOf('#launch=') + 8), sender: { id: 'test-extension', url, frameId: 0, tab } };
+    return harness.control.ready;
   });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  let launch = await launchLink(page);
+  expect(Object.keys(await stored() as object)).toEqual([launch.intent]);
+  await reboot();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_LAUNCH_PENDING', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: true, value: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  // Spent for every background that follows.
+  expect(await stored()).toBeUndefined();
+  await reboot();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'launch-expired' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_LAUNCH_PENDING', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: true, value: false });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+
+  // A restart never extends a link past its five minutes.
+  await backOnWebsite(page);
+  await page.evaluate(() => { Date.now = () => 1_000_000; });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  launch = await launchLink(page);
+  await page.evaluate(() => { Date.now = () => 1_300_001; });
+  await reboot();
+  expect(await stored()).toBeUndefined();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_LAUNCH_PENDING', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: true, value: false });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
     .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'launch-expired' });
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sequence.filter(item => item === 'capture')))
-    .toHaveLength(0);
+    .toHaveLength(1);
+});
+
+test('a launch link is spent by its first start, even one that fails or that a restart cuts short', async ({ page }) => {
+  const reboot = () => page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.reboot();
+    return harness.control.ready;
+  });
+  // A start that fails spends the link across a restart too.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  let launch = await launchLink(page);
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.identity.documentToken = 'document-2'; });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'owner-unavailable' });
+  await reboot();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'launch-expired' });
+
+  // So does one the background never finished: its use was stored first.
+  await backOnWebsite(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  launch = await launchLink(page);
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.deferTabUpdate = true; });
+  const cutShort = dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender);
+  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releaseTabUpdate))).toBe(true);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sessionStorage['anmerko:journey-launch-intents:v1']))
+    .toBeUndefined();
+  await reboot();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'launch-expired' });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sequence)).not.toContain('capture');
+  // The stopped background's start goes nowhere; let it settle.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.deferTabUpdate = false;
+    harness.releaseTabUpdate?.();
+  });
+  await cutShort;
 });
 
 test('rejects forged, changed-owner, missing-owner, and expired fallback intents', async ({ page }) => {
@@ -3313,11 +3390,11 @@ for (const browser of ['Chromium', 'Firefox'] as const) {
     await expect.poll(() => tabActivations(page)).toEqual([first.launchTabId]);
     const reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' }, second.launch.sender)).value;
     expect(await dispatch(page, {
-      type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: reviewing.epoch, journeyId: reviewing.journeyId,
+      type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: reviewing.epoch, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId,
       revision: reviewing.draft.revision, updatedAt: new Date().toISOString(),
       expected: 'The order is confirmed.', actual: 'The confirmation never appears.',
     }, second.launch.sender)).toEqual({ ok: true });
-    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, second.launch.sender)).toMatchObject({ ok: true });
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId }, second.launch.sender)).toMatchObject({ ok: true });
     expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('saved');
 
     // A background that restarted since has forgotten the tab, and still
@@ -3349,8 +3426,8 @@ test('a new launch that cannot switch a spent journey tab opens one, and one can
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
 
-  // The spent tab refuses the new link, as a tab closing at that moment would:
-  // a new tab takes the launch instead.
+  // The spent tab refuses the new link without closing, so a new tab takes
+  // the launch instead. One that closes as it switches is covered separately.
   await backOnWebsite(page);
   await page.evaluate(() => {
     const api = (globalThis as any).chrome;
@@ -3534,4 +3611,263 @@ test.describe('T07 slice 2 shared capture scheduling and bounded normalization',
     expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sequence
       .filter(item => item === 'capture'))).toHaveLength(1);
   });
+});
+
+test('a Firefox event page that unloads while a journey tab waits still starts that tab\'s journey', async ({ page }) => {
+  const ready = () => page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  await trackKeepAwake(page);
+  await page.evaluate(() => {
+    const test = globalThis as any;
+    // Only Firefox has runtime.getBrowserInfo.
+    test.chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    test.chrome.runtime.getPlatformInfo = async () => ({ os: 'android' });
+  });
+  // An idle start leaves out every tab and navigation listener.
+  await rebootSynchronously(page);
+  await ready();
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const launch = await launchLink(page);
+  // The waiting journey tab keeps nothing awake, so the page unloads, and the
+  // Start it sends wakes a page that registered none of them.
+  expect(await page.evaluate(() => (globalThis as any).__keepAwake.size)).toBe(0);
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({ phase: 'recording', ownerTabId: 1 });
+  expect(await journeyListeners(page)).toEqual(LIVE_LISTENERS);
+  expect(await page.evaluate(() => (globalThis as any).__keepAwake.size)).toBe(1);
+});
+
+test('a recording whose deadline passes while the background sleeps ends on waking as a live stop does', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const toolbar = (tabId: number) => page.evaluate(tabId => {
+    const shown: Record<string, string> = {};
+    for (const { method, details } of (globalThis as HarnessWindow).harness.actions) {
+      if (details.tabId === tabId) shown[method] = method === 'badge' ? details.text : details.title;
+    }
+    return shown;
+  }, tabId);
+  const sleepPastDeadline = (deadlineAt: string) => page.evaluate(deadlineAt => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabUpdates.length = 0;
+    // The deadline alarm wakes the background after its deadline.
+    const test = globalThis as any;
+    test.__realNow ??= Date.now;
+    Date.now = () => Date.parse(deadlineAt) + 1_000;
+    harness.reboot();
+    return harness.control.ready;
+  }, deadlineAt);
+
+  // A journey tab's recording brings that tab forward for review.
+  const { launchTabId, recording } = await recordFromLaunchTab(page);
+  expect(await toolbar(1)).toEqual({ badge: 'REC', title: 'Stop journey recording' });
+  await sleepPastDeadline(recording.deadlineAt);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+    .toMatchObject({ phase: 'reviewing', sessionId: recording.sessionId, draft: { stopReason: 'duration-limit' } });
+  expect(await toolbar(1)).toEqual({ badge: '', title: 'Annotate with anmerko' });
+  await expect.poll(() => tabActivations(page)).toEqual([launchTabId]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.broadcasts.at(-1))).toEqual({ type: 'ANMERKO_JOURNEY_CHANGED' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+
+  // The native side panel's recording reviews there, as for any stop.
+  await page.evaluate(() => { Date.now = (globalThis as any).__realNow; });
+  await backOnWebsite(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  const native = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await toolbar(1)).toEqual({ badge: 'REC', title: 'Stop journey recording' });
+  await sleepPastDeadline(native.deadlineAt);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+    .toMatchObject({ phase: 'reviewing', sessionId: native.sessionId, draft: { stopReason: 'duration-limit' } });
+  expect(await toolbar(1)).toEqual({ badge: '', title: 'Annotate with anmerko' });
+  await page.waitForTimeout(50);
+  expect(await tabActivations(page)).toEqual([]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs)).toHaveLength(1);
+});
+
+test('journeys are unavailable in private windows, and a regular window\'s journey stays out of them', async ({ page }) => {
+  const privatePage = { id: 'test-extension', url: 'https://private.test/', frameId: 0,
+    tab: { id: 3, windowId: 9, active: true, url: 'https://private.test/', incognito: true } };
+  const privateJourneyTab = { ...reviewPage, tab: { ...reviewPage.tab, id: 90, windowId: 9, incognito: true } };
+  const refused = { ok: false, error: 'Journey command unavailable.', code: 'private-window' };
+  const inPrivateWindow = () => page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[3] = { id: 3, windowId: 9, active: true, url: 'https://private.test/', incognito: true };
+    harness.focusedWindowId = 9;
+  });
+  await inPrivateWindow();
+
+  // Record journey in a private window says why instead of opening a journey tab.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, privatePage)).toEqual(refused);
+  // The native side panel's Start refuses a private tab.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 3, ownerWindowId: 9 })).toEqual(refused);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toEqual({ phase: 'idle', epoch: 0 });
+
+  // A launch link whose website tab is private starts nothing.
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.focusedWindowId = 7; });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const launch = await launchLink(page);
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[1].incognito = true;
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual(refused);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sequence)).not.toContain('capture');
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    delete harness.tabs[1].incognito;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1 || tab.id === 3;
+  });
+
+  // A review from a regular window is neither offered nor brought forward in a private one.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  const reviewing = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(reviewing.phase).toBe('reviewing');
+  await inPrivateWindow();
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.tabUpdates.length = 0; });
+  const created = await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.length);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, ownerPage)).toEqual({ ok: true, value: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_PENDING' }, privatePage)).toEqual({ ok: true, value: false });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, privatePage)).toEqual(refused);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.control.openReviewIfAvailable(true))).toBe(false);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.control.handleToolbarClick(true))).toBe(false);
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.tabUpdates)).toEqual([]);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.length)).toBe(created);
+
+  // A journey tab in a private window neither reads nor changes it.
+  for (const message of [
+    { type: 'ANMERKO_JOURNEY_STATE' }, { type: 'ANMERKO_JOURNEY_PHASE' }, { type: 'ANMERKO_JOURNEY_LIST' },
+    { type: 'ANMERKO_JOURNEY_DISCARD' },
+    { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: reviewing.journeyId, sessionId: reviewing.sessionId },
+  ]) expect(await dispatch(page, message, privateJourneyTab), message.type).toEqual(refused);
+  // Nor does a side panel reopen a saved journey for a private tab.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    (globalThis as any).chrome.tabs.query = async () => [structuredClone(harness.tabs[3])];
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REOPEN', journeyId: reviewing.journeyId })).toEqual(refused);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('idle');
+});
+
+test('review commands and Save must name their journey and session', async ({ page }) => {
+  const state = await reviewWithClickScreenshot(page);
+  const edit = { epoch: state.epoch, revision: state.draft.revision, updatedAt: new Date().toISOString() };
+  const summary = { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...edit, expected: 'Paying opens checkout.', actual: 'Nothing happens.' };
+  for (const unnamed of [
+    { ...summary, journeyId: state.journeyId },
+    { ...summary, journeyId: state.journeyId, sessionId: 7 },
+    { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...edit, journeyId: state.journeyId, stepId: state.draft.steps[1].id },
+    { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true },
+    { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, sessionId: state.sessionId },
+    { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: state.journeyId },
+  ]) expect(await dispatch(page, unnamed, reviewPage), JSON.stringify(unnamed)).toEqual(unavailable);
+  expect(await dispatch(page, { ...summary, journeyId: 'journey-other', sessionId: state.sessionId }, reviewPage)).toEqual(staleReview);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, journeyId: 'journey-other', sessionId: state.sessionId }, reviewPage))
+    .toEqual(staleReview);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.revision).toBe(state.draft.revision);
+  const named = { journeyId: state.journeyId, sessionId: state.sessionId };
+  expect(await dispatch(page, { ...summary, ...named }, reviewPage)).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true, ...named }, reviewPage)).toMatchObject({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('saved');
+});
+
+test('Stop journey and Cancel start stop only the journey their view showed', async ({ page }) => {
+  // A Stop pressed on a recording that has since ended stops nothing else.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  const first = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  const shown = { journeyId: first.journeyId, sessionId: first.sessionId };
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', ...shown })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  const second = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', ...shown })).toEqual(staleReview);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', journeyId: first.journeyId })).toEqual(unavailable);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({ phase: 'recording', sessionId: second.sessionId });
+  // Its own Stop, the strip's and the toolbar's still stop it.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', journeyId: second.journeyId, sessionId: second.sessionId }))
+    .toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  // Pressed again once it has ended, it has nothing left to stop.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', journeyId: second.journeyId, sessionId: second.sessionId }))
+    .toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  const third = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP', sessionId: third.sessionId, epoch: third.epoch }, ownerPage))
+    .toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.control.stopIfRecording())).toBe(true);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+
+  // A Cancel start pressed before its journey exists names none and cancels the start in flight.
+  await page.evaluate(() => { (globalThis as HarnessWindow).harness.deferOwnerCheck = true; });
+  const pending = dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  await expect.poll(() => page.evaluate(() => Boolean((globalThis as HarnessWindow).harness.releaseOwnerCheck))).toBe(true);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.deferOwnerCheck = false;
+    harness.releaseOwnerCheck?.();
+  });
+  expect(await pending).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('idle');
+});
+
+test('a spent journey tab that closes as Record journey switches it gives the link to a new tab', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  const first = await recordFromLaunchTab(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  await backOnWebsite(page);
+  // The reader closes the spent tab just as it would take the new link.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const api = (globalThis as any).chrome;
+    const update = api.tabs.update;
+    api.tabs.update = async (tabId: number, details: { url?: string }) => {
+      if (details.url === undefined) return update(tabId, details);
+      api.tabs.update = update;
+      delete harness.tabs[tabId];
+      harness.events.removed.emit(tabId, { windowId: 7 });
+      throw new Error(`No tab with id: ${tabId}.`);
+    };
+  });
+  const second = await recordFromLaunchTab(page);
+  expect(second.launchTabId).not.toBe(first.launchTabId);
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.createdTabs.length)).toBe(2);
+});
+
+test('Record journey from another window closes a pending launch tab there and opens one here', async ({ page }) => {
+  await hideExtensionTabUrls(page);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const pending = await launchLink(page);
+  // The pending journey tab was moved to another window, and the website
+  // tab has since loaded a new document.
+  await page.evaluate(tabId => {
+    const harness = (globalThis as HarnessWindow).harness;
+    harness.tabs[tabId].windowId = 9;
+    harness.tabs[tabId].active = true;
+    harness.tabs[1].active = true;
+    harness.identity.documentToken = 'document-2';
+  }, pending.sender.tab.id);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  const launch = await launchLink(page);
+  const facts = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    return { removed: harness.removedTabs, created: harness.createdTabs.length };
+  });
+  expect(facts).toEqual({ removed: [pending.sender.tab.id], created: 2 });
+  expect(launch.sender.tab).toMatchObject({ windowId: 7 });
+  expect(launch.intent).not.toBe(pending.intent);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: pending.intent }, pending.sender))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'launch-expired' });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
 });

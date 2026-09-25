@@ -276,8 +276,17 @@ function storedAs(state: JourneySession, committed: JourneySession | undefined):
     && state.ownerWindowId === committed.ownerWindowId;
 }
 
+// What a read restored, and whether it ended a recording on the way: one
+// whose deadline passed while nothing ran is stopped as it is read, so the
+// caller learns of that stop only here.
+export interface JourneySessionRestore {
+  state: JourneySession;
+  endedRecording: boolean;
+}
+
 export function createJourneySessionStore(storage: JourneySessionStorageAdapter): {
   read(now: number): Promise<JourneySession>;
+  restore(now: number): Promise<JourneySessionRestore>;
   write(state: JourneySession): Promise<void>;
 } {
   let queue: Promise<void> = Promise.resolve();
@@ -349,14 +358,16 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     return { phase: 'idle', epoch };
   };
 
-  const read = (now: number): Promise<JourneySession> => enqueue(async () => {
+  const restore = (now: number): Promise<JourneySessionRestore> => enqueue(async () => {
     committed = undefined;
-    const restored = await readCommitted(now);
+    let endedRecording = false;
+    const restored = await readCommitted(now, () => { endedRecording = true; });
     if (restored.phase !== 'idle') committed = restored;
-    return restored;
+    return { state: restored, endedRecording };
   });
+  const read = async (now: number): Promise<JourneySession> => (await restore(now)).state;
 
-  const readCommitted = async (now: number): Promise<JourneySession> => {
+  const readCommitted = async (now: number, recordingEnded: () => void): Promise<JourneySession> => {
     if (!Number.isFinite(now) || now < 0 || now > MAX_DATE_MS) {
       throw new JourneySessionStorageError('invalid-session');
     }
@@ -411,6 +422,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
       const validStopped = validateJourneySession(stopped);
       if (!validStopped || validStopped.phase !== 'reviewing') return purgedIdle(state.epoch + 1);
       await persist(validStopped);
+      recordingEnded();
       return validStopped;
     }
 
@@ -458,5 +470,5 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     committed = state;
   });
 
-  return { read, write };
+  return { read, restore, write };
 }

@@ -19,6 +19,7 @@ const BACKEND_GUIDANCE: Record<string, string> = {
   'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
   'stale-review': 'Another review tab changed this journey. Reload the review and try again.',
   'saved-journeys-full': 'Saved journeys are full. Delete saved journeys to make room for this one, then save again.',
+  'private-window': "Journeys aren't available in private windows.",
 };
 
 function validOwner(value: JourneyOwner | undefined): value is { ownerTabId: number; ownerWindowId: number } {
@@ -189,9 +190,13 @@ export function createJourneyClient(
       if (native) return command('ANMERKO_JOURNEY_START', { ...native, includeEnteredValues }) as Promise<void>;
       return command('ANMERKO_JOURNEY_START', { intent: fallbackIntent, includeEnteredValues }) as Promise<void>;
     },
-    stop(): Promise<void> {
+    // A stop names the journey its view showed, when it knows it.
+    stop(target?: JourneyReviewTarget): Promise<void> {
       ++actionGeneration;
-      return command('ANMERKO_JOURNEY_STOP', !owner && validIntent(intent) ? { intent } : {}) as Promise<void>;
+      return command('ANMERKO_JOURNEY_STOP', {
+        ...!owner && validIntent(intent) ? { intent } : {},
+        ...target ? { journeyId: target.journeyId, sessionId: target.sessionId } : {},
+      }) as Promise<void>;
     },
     // A targeted discard is refused as stale once its view no longer shows the
     // current journey; one that finds this review saving says so instead.

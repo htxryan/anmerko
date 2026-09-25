@@ -77,6 +77,8 @@ export interface Runtime {
   // The journey session's phase alone, so the native side panel can follow it
   // without reading every screenshot on each change.
   journeyPhase?: () => Promise<JourneySession['phase']>;
+  // Whether the native side panel shows a private window, where journeys are unavailable.
+  journeyPrivateWindow?: () => Promise<boolean>;
   // Reports when this page records a journey, so a floating panel can step aside.
   watchJourneyRecording?: (listener: (recording: boolean) => void) => () => void;
   onDispose?: () => void;

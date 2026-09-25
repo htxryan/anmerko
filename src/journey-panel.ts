@@ -5,6 +5,7 @@ import type { Runtime } from './runtime';
 
 type JourneyPhase = JourneySession['phase'];
 
+const PRIVATE_WINDOW = "Journeys aren't available in private windows.";
 // Record journey from a page panel asks the background for a journey tab.
 // Each refusal says what to do next on this page.
 const OPEN_GUIDANCE: Record<string, string> = {
@@ -15,6 +16,7 @@ const OPEN_GUIDANCE: Record<string, string> = {
   'session-storage-failed': 'Journey storage failed. Choose Record journey again to open the journey tab and reset journey storage.',
   'stale-review': 'The journey changed in another anmerko view. Choose Review journey to see the latest version.',
   unreachable: 'anmerko could not reach the extension. Reload this page, then try again.',
+  'private-window': PRIVATE_WINDOW,
 };
 const OPEN_ERROR = 'Could not open the journey tab. Try again.';
 const REOPEN_BUSY = 'Finish or discard the current journey before reopening a saved one.';
@@ -98,6 +100,12 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
   let saved: { note: HTMLElement; reopens: HTMLButtonElement[]; manage?: HTMLButtonElement } | undefined;
   const pendingReopens = new Set<HTMLButtonElement>();
   let managing = false;
+  let opening = false;
+  // A native side panel in a private window offers no journey: Record
+  // journey says why instead, and no review is offered there.
+  const privateWindow = runtime.journeyPrivateWindow
+    ? runtime.journeyPrivateWindow().catch(() => false) : Promise.resolve(false);
+  const privateError = () => Object.assign(new Error(PRIVATE_WINDOW), { code: 'private-window' });
 
   // A draft or a capture in progress holds the panel.
   const busy = () => { const { draft, capturing } = host.state(); return draft || capturing; };
@@ -127,7 +135,7 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
 
   function refreshReview() {
     const version = ++reviewVersion;
-    void readPhase().catch(() => undefined).then(value => {
+    void privateWindow.then(isPrivate => isPrivate ? undefined : readPhase()).catch(() => undefined).then(value => {
       if (!host.state().alive || version !== reviewVersion) return;
       phase = value;
       render();
@@ -183,7 +191,24 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
   const start = (event: Event) => {
     if (!event.isTrusted || busy()) return;
     host.closeMenu();
-    openJourney();
+    if (!client) {
+      openJourney();
+      return;
+    }
+    if (opening) return;
+    opening = true;
+    void (async () => {
+      if (await privateWindow) throw privateError();
+      // Record journey starts afresh, as the floating panel's does: a save's
+      // confirmation closes first, and its snapshot stays in Saved journeys.
+      // The phase alone decides, so no screenshot is read, and a discard
+      // naming the saved phase never ends an unsaved review.
+      if (await readPhase().catch(() => undefined) === 'saved') await client.discard({ phase: 'saved' }).catch(() => {});
+    })().then(() => {
+      if (host.state().alive) openJourney();
+    }, error => {
+      if (host.state().alive) host.status(errorCode(error) === 'private-window' ? PRIVATE_WINDOW : OPEN_ERROR, true);
+    }).finally(() => { opening = false; });
   };
   record.addEventListener('click', start, { signal });
   review.addEventListener('click', start, { signal });
@@ -294,18 +319,15 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
         managing = true;
         render();
         void (async () => {
+          if (await privateWindow) throw privateError();
           // An unreadable session still opens the view, which offers its reset.
           const current = await readPhase().catch(() => undefined);
           if (inProgress(current)) throw Object.assign(new Error(SAVED_HELD), { code: 'busy' });
           // The view lists saved journeys once no journey is in progress, so a
-          // save's confirmation closes first; the snapshot stays saved. The
-          // discard names that confirmation's journey, so a journey another
-          // view reopened or started since is refused as stale.
-          if (current === 'saved') {
-            const session = await client.read();
-            if (inProgress(session.phase)) throw Object.assign(new Error(SAVED_HELD), { code: 'busy' });
-            if (session.phase === 'saved') await client.discard({ phase: 'saved', journeyId: session.journeyId });
-          }
+          // save's confirmation closes first; the snapshot stays saved. That
+          // one phase read is enough: the discard names the saved phase, so a
+          // journey another view reopened or started since is refused as stale.
+          if (current === 'saved') await client.discard({ phase: 'saved' });
         })().then(() => {
           managing = false;
           if (!host.state().alive) return;
@@ -315,7 +337,8 @@ export function attachJourneyPanel(host: JourneyPanelHost): JourneyPanel {
           managing = false;
           if (!host.state().alive) return;
           // A refused discard means another journey is now in progress.
-          host.status(errorCode(error) === 'busy' || errorCode(error) === 'stale-review' ? SAVED_HELD : MANAGE_ERROR, true);
+          host.status(errorCode(error) === 'private-window' ? PRIVATE_WINDOW
+            : errorCode(error) === 'busy' || errorCode(error) === 'stale-review' ? SAVED_HELD : MANAGE_ERROR, true);
           refreshReview();
           render();
         });

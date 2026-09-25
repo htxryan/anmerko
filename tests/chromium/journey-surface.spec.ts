@@ -457,6 +457,8 @@ test('trusted page strictly parses launch intent and shares the journey UI only 
   await expect(page.getByRole('checkbox', { name: 'Include entered values' })).not.toBeChecked();
   expect(await page.evaluate(() => (globalThis as HarnessWindow).surfaceHarness.log)).toEqual([
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_STATE', screenshots: 'review' } },
+    // The tab asks once whether its link is still pending before it offers Start.
+    { kind: 'message', message: { type: 'ANMERKO_JOURNEY_LAUNCH_PENDING', intent: 'valid_nonce-1234567890' } },
     { kind: 'message', message: { type: 'ANMERKO_JOURNEY_LIST' } },
   ]);
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();
