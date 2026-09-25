@@ -7,7 +7,9 @@ import {
 import { selectComponentContext } from './component-context-dispatch';
 
 export const COMPONENT_CONTEXT_MESSAGE_TYPE = 'ANMERKO_COMPONENT_CONTEXT';
-export const COMPONENT_CONTEXT_DEADLINE_MS = 750;
+// Hints apply asynchronously, so a slow lookup only delays one. The first
+// lookup on a busy machine can take about a second to reach the worker.
+export const COMPONENT_CONTEXT_DEADLINE_MS = 2_000;
 export const COMPONENT_CONTEXT_PROBE_FAILURE = 'ANMERKO_COMPONENT_CONTEXT_PROBE_FAILED';
 export const COMPONENT_CONTEXT_MAX_SELECTOR_SEGMENTS = 8;
 export const COMPONENT_CONTEXT_MAX_SELECTOR_SEGMENT_LENGTH = 1_024;
