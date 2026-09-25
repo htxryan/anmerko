@@ -29,9 +29,9 @@ The sidebar follows the active tab. Activate anmerko from the toolbar on each ne
 
 ## Record a journey
 
-A journey captures a problem that takes several actions to reproduce: ordered clicks, page changes, a screenshot per step, and your expected and actual results for a coding agent. Journeys are kept separately from comments. They aren't available on iPhone or iPad (Edge or Orion).
+A journey captures a problem that takes several actions to reproduce: ordered clicks, page changes, a screenshot per step, and your expected and actual results for a coding agent. Journeys are kept separately from comments. They aren't available on iPhone or iPad (Edge or Orion), or in private or incognito windows, even if you allow anmerko to run there.
 
-Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access you granted when you activated anmerko there. In the sidebar, the journey opens in the sidebar. With the floating panel, and always on Android, it opens in a journey tab; choose **Start journey** there and anmerko returns to the website tab and minimizes the panel until recording ends. Each journey tab starts one journey at a time: after you save or discard it, the next **Record journey** reuses that tab instead of opening another.
+Choose **Record journey** from **More Comment Options** on a website. No permission prompt appears: the journey uses the access you granted when you activated anmerko there. In the sidebar, the journey opens in the sidebar. With the floating panel, and always on Android, it opens in a journey tab; choose **Start journey** there and anmerko returns to the website tab and minimizes the panel until recording ends. Each journey tab starts one journey at a time: after you save or discard it, the next **Record journey** in the same window reuses that tab instead of opening another. In a different window, anmerko opens a new journey tab there and leaves the other one open.
 
 Recording starts after the first screenshot succeeds. Wait for the **Recording** strip at the bottom of the page before you click. The strip moves to the top while an on-screen keyboard is open or the field you're typing in would sit under it, unless that field is at the top. To finish, choose **Stop** on the strip, **Stop journey** in the sidebar, or anmerko in the browser toolbar. With the floating panel, switching to the journey tab also stops recording.
 
@@ -41,7 +41,7 @@ Recording starts after the first screenshot succeeds. Wait for the **Recording**
 
 A journey records one tab on the website address where it started: the same domain, subdomain, port, and `http` or `https`. It stops after 5 minutes or 30 steps, counting the starting view, or when its screenshots reach their storage limit.
 
-- Single-page app route changes and `#` changes keep recording in every browser.
+- Single-page app route changes and `#` changes keep recording in every browser. A history update that doesn't change the URL isn't recorded as a step.
 - In Chrome and Edge, reloads and links to other pages at the same address keep recording and add a navigation step.
 - Firefox withdraws anmerko's page access whenever a new page loads, even at the same address. A reload or link ends the journey there; the navigation step and earlier steps are kept, but the new page has no screenshot. The Firefox journey view says so before you start.
 - Going to a different domain, subdomain, or port, or switching between `http` and `https`, ends the journey. The click that left is recorded; the new page is not.
@@ -56,7 +56,7 @@ Enter an **Expected result** and an **Actual result**, up to 4,000 characters ea
 - **Remove step** asks for confirmation. Other steps keep their numbers, and you can't remove the only remaining step; discard the journey instead.
 - **Mask screenshot** covers a region you drag or enter with an opaque block. Masks flatten the image and cannot be undone. **Remove screenshot** asks for confirmation on the step; in the mask editor it removes the screenshot at once. When steps share a screenshot, the change applies to all of them. Tall screenshots fit whole; **Enlarge screenshot** shows one wider. **View full-size screenshot** opens it at actual size; scroll or use the arrow keys to move around, choose **Fit to window** to see all of it, and **Close** or Esc to return.
 - **Redact** replaces a source, destination, or screenshot URL, or a click's label, with `[redacted]`, and a note names what was redacted. A click label comes from the page's text and can repeat what you typed, such as a search suggestion, even with entered values off. Clicks on fields are labelled only by field type, such as “text field”, so they offer no label redaction.
-- **Edit value** or **Remove value** changes an entered value. The original leaves the journey, and the value is marked as edited.
+- **Edit value** or **Remove value** changes an entered value, including a checkbox, radio button, or menu choice. The original leaves the journey, and every export marks the value as edited or removed.
 
 To save, enter both results, keep at least one screenshot, wait for pending screenshots, and confirm that the journey retains full URLs, entered values, and kept screenshots. Then choose **Save journey**. **Discard journey** asks for confirmation before deleting unsaved steps and screenshots.
 

@@ -8,9 +8,9 @@ Collect website comments and screenshots with anmerko, then copy or export them 
 
 ## Common problems
 
-- **Will not open:** settings, extension stores, and PDF viewers are protected. Refresh websites after updating anmerko.
+- **Will not open:** settings, extension stores, and PDF viewers are protected. Refresh websites after updating anmerko. If Chrome or Edge turned anmerko off after an update, open the browser's Extensions page and accept the new permission to turn it back on.
 - **Missing comments:** try **All pages** and the original browser profile/installation. Page scope matches the exact URL.
-- **Copy fails or images are missing:** download **Markdown + Images**, extract the ZIP, and copy from `comments.md`. Attach PNGs separately.
+- **Copy fails or images are missing:** download **Markdown + Images**, extract the ZIP, and copy from `comments.md`, or `prompt.md` for a journey. Attach PNGs separately.
 - **Save fails:** keep the draft open, export saved feedback, free storage by deleting comments, and retry.
 
 Export before uninstalling or changing installations.

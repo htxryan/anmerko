@@ -23,6 +23,10 @@ Download **Markdown + Images**, extract the ZIP, and copy from `comments.md`, or
 
 Keep the draft open. Export saved feedback before deleting comments to free storage, then retry. Save successfully before closing or refreshing.
 
+## Journeys aren't available
+
+Journeys work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android. They aren't available on iPhone or iPad. They also aren't available in private or incognito windows, even if you allow anmerko to run there; open the website in a normal window to record one. Comments still work in both cases.
+
 ## A journey review is gone or won't save
 
 Unsaved reviews are deleted after 30 minutes without changes, and when the browser closes or anmerko updates; save to keep a journey. If review says saved journeys are full, delete some from the list under **Save journey**, then save again.
