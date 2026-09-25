@@ -119,6 +119,16 @@ test('reviewed URL text may be replaced or irreversibly redacted without retaini
   expect(validateJourneyManifest(replaced)).toEqual({ ok: true, value: replaced });
 });
 
+test('snapshots keep validating with earlier stop reasons and accept page-access-lost', () => {
+  // Reasons that shipped before page-access-lost must keep loading unchanged.
+  const earlier = ['user', 'duration-limit', 'step-limit', 'image-budget', 'session-storage-limit',
+    'left-site', 'focus-lost', 'tab-lost', 'protected-page', 'capture-failed'] as const;
+  for (const stopReason of [...earlier, 'page-access-lost'] as const) {
+    expect(validateJourneyManifest({ ...validManifest(), stopReason }).ok, stopReason).toBe(true);
+  }
+  expect(validateJourneyManifest({ ...validManifest(), stopReason: 'site-left' as never }).ok).toBe(false);
+});
+
 test('reviewed manifest rejects unknown versions and fields from another union member', () => {
   const unknownVersion = { ...validManifest(), schemaVersion: 2 };
   const invalidUnion = validManifest();

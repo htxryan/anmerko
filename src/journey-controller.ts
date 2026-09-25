@@ -54,6 +54,9 @@ export interface JourneyControllerAdapter {
     includeEnteredValues: boolean;
   }): Promise<void>;
   end(tabId: number, input: { sessionId: string; epoch: number; documentToken?: string }): Promise<void>;
+  // Whether the browser withdrew page access to the owner tab. Firefox ties
+  // activeTab to one document, so any document load in the tab revokes it.
+  pageAccessLost?(tabId: number): Promise<boolean>;
   changed(state: JourneySession): void;
   saveSnapshot?(input: { draft: JourneyDraftV1; images: Record<string, JourneyDraftImage> }): Promise<{ journeyId: string; revision: number }>;
   now?(): number;
@@ -254,10 +257,10 @@ export function createJourneyController(
       void stop('capture-failed');
       return;
     }
-    // A journey records one site: the site it started on. activeTab only covers
-    // that origin, so leaving it ends the journey rather than silently losing
-    // steps. Cross-site capture would need host access to every site.
-    if (!sameSite(toUrl, siteOrigin(state))) {
+    // A journey records one origin: the one it started on. activeTab only
+    // covers that origin, so leaving it ends the journey rather than silently
+    // losing steps. Cross-origin capture would need host access to every site.
+    if (!sameOrigin(toUrl, startingUrl(state))) {
       void stop('left-site');
       return;
     }
@@ -346,15 +349,15 @@ export function createJourneyController(
     const timeout = delay(Math.max(0, windowEndMs - settledMs), input.signal).then(() => 'timeout' as const);
     const work = performNavigation(input, minimum).then(() => 'complete' as const, error => {
       if (isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
-        settleCapture(input.captureId, captureFailureFromError(error));
-        if (input.handshake && !input.handshakeReady) void stop('capture-failed');
+        if (input.handshake && !input.handshakeReady) void stopAfterFailedHandshake(input.captureId, captureFailureFromError(error));
+        else settleCapture(input.captureId, captureFailureFromError(error));
       }
       return 'complete' as const;
     });
     const result = await Promise.race([work, timeout]);
     if (result === 'timeout' && isCurrentNavigation(input.generation, input.captureId, input.toUrl)) {
-      settleCapture(input.captureId, 'navigation-timeout');
-      if (input.handshake && !input.handshakeReady) void stop('capture-failed');
+      if (input.handshake && !input.handshakeReady) void stopAfterFailedHandshake(input.captureId, 'navigation-timeout');
+      else settleCapture(input.captureId, 'navigation-timeout');
     }
     if (navigationAbort?.signal === input.signal) {
       navigationAbort.abort();
@@ -530,6 +533,21 @@ export function createJourneyController(
     } catch (error) {
       if (isCurrentRecording(generation, captureId)) settleCapture(captureId, captureFailureFromError(error));
     }
+  }
+
+  // The new document never connected, so recording cannot continue. Name a
+  // withdrawn page grant (Firefox, on every document load) instead of a
+  // generic failure; the navigation step and earlier steps are kept.
+  async function stopAfterFailedHandshake(captureId: string, failure: CaptureFailure): Promise<void> {
+    if (state.phase !== 'recording') return;
+    const ownerTabId = state.ownerTabId;
+    const generation = invalidateWork();
+    let accessLost = false;
+    try { accessLost = await adapter.pageAccessLost?.(ownerTabId) ?? false; }
+    catch { /* Keep the generic capture failure. */ }
+    if (generation !== workGeneration) return;
+    settleCapture(captureId, accessLost ? 'capture-denied' : failure);
+    await stop(accessLost ? 'page-access-lost' : 'capture-failed');
   }
 
   function settleCapture(captureId: string, reason: CaptureFailure): void {
@@ -728,12 +746,13 @@ function committedUrl(state: RecordingJourneySession): string | undefined {
   return step.kind === 'navigation' ? step.navigation.toUrl : step.sourceUrl;
 }
 
-function siteOrigin(state: RecordingJourneySession): string | undefined {
+function startingUrl(state: RecordingJourneySession): string | undefined {
   const first = state.draft.steps[0];
   return first?.sourceUrl;
 }
 
-function sameSite(first: string, second: string | undefined): boolean {
+// Exact origin, not registrable site: another subdomain, port, or scheme leaves.
+function sameOrigin(first: string, second: string | undefined): boolean {
   if (!second) return true;
   try {
     return new URL(first).origin === new URL(second).origin;

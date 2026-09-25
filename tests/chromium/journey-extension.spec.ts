@@ -1115,7 +1115,7 @@ test('stops on protected owner destinations and tab replacement without followin
     .some((call: any) => call.target.tabId === 9))).toBe(false);
 });
 
-test('stops with left-site when an owner navigation leaves the starting site', async ({ page }) => {
+test('stops with left-site when an owner navigation leaves the starting origin', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
@@ -1132,14 +1132,14 @@ test('stops with left-site when an owner navigation leaves the starting site', a
   expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.scriptingCalls)).toEqual([]);
 });
 
-test('keeps recording across same-site path changes and same-URL reloads', async ({ page }) => {
+test('keeps recording across same-origin path changes and same-URL reloads', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   const pathUrl = 'https://example.test/next?item=2#section';
   await page.evaluate(url => {
     const harness = (globalThis as HarnessWindow).harness;
     harness.tabs[1].url = url;
-    harness.identity = { ...harness.identity, documentToken: 'same-site-document', url, generation: 0 };
+    harness.identity = { ...harness.identity, documentToken: 'same-origin-document', url, generation: 0 };
     harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
   }, pathUrl);
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.at(-1)?.navigation?.toUrl)
@@ -1147,7 +1147,7 @@ test('keeps recording across same-site path changes and same-URL reloads', async
 
   await page.evaluate(url => {
     const harness = (globalThis as HarnessWindow).harness;
-    harness.identity = { ...harness.identity, documentToken: 'same-site-reload', url, generation: 0 };
+    harness.identity = { ...harness.identity, documentToken: 'same-origin-reload', url, generation: 0 };
     harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
   }, pathUrl);
   await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.steps.length)
@@ -1156,10 +1156,92 @@ test('keeps recording across same-site path changes and same-URL reloads', async
   const state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
   expect(state.phase).toBe('recording');
   expect(state.draft.stopReason).toBeUndefined();
-  expect(state.documentToken).toBe('same-site-reload');
+  expect(state.documentToken).toBe('same-origin-reload');
   expect(state.draft.steps.slice(-2).map((step: any) => step.kind)).toEqual(['navigation', 'navigation']);
   expect(state.draft.steps.at(-2)).toMatchObject({ navigation: { toUrl: pathUrl } });
   expect(state.draft.steps.at(-1)).toMatchObject({ navigation: { toUrl: pathUrl } });
+});
+
+test('stops with page-access-lost when a same-origin document load hides the owner tab URL', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const url = 'https://example.test/path?item=1#top';
+  await page.evaluate(url => {
+    const harness = (globalThis as HarnessWindow).harness;
+    // Firefox withdraws activeTab with the old document: tabs.get hides the URL.
+    delete (harness.tabs[1] as { url?: string }).url;
+    harness.identity = { ...harness.identity, documentToken: 'reloaded-document', url, generation: 0 };
+    delete harness.identity.recording;
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+  }, url);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.stopReason)
+    .toBe('page-access-lost');
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped.phase).toBe('reviewing');
+  expect(stopped.draft.steps.map((step: any) => step.kind)).toEqual(['initial', 'navigation']);
+  expect(stopped.draft.steps[0].image.status).toBe('retained');
+  expect(stopped.draft.steps[1]).toMatchObject({
+    navigation: { toUrl: url }, image: { status: 'unavailable', reason: 'capture-denied' },
+  });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.scriptingCalls)).toEqual([]);
+});
+
+test('names withdrawn page access when injection into a reloaded document is refused', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const url = 'https://example.test/path?item=1#top';
+  await page.evaluate(url => {
+    const harness = (globalThis as HarnessWindow).harness;
+    (globalThis as any).chrome.scripting.executeScript = async (details: unknown) => {
+      harness.scriptingCalls.push(structuredClone(details));
+      delete (harness.tabs[1] as { url?: string }).url;
+      throw new Error('Missing host permission for the tab');
+    };
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+  }, url);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.stopReason)
+    .toBe('page-access-lost');
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.scriptingCalls)).toHaveLength(1);
+});
+
+test('stops waiting for a new document observer as soon as page access is withdrawn', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  const url = 'https://example.test/path?item=1#top';
+  const started = Date.now();
+  await page.evaluate(url => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const tabs = (globalThis as any).chrome.tabs;
+    const sendMessage = tabs.sendMessage;
+    let injected = false;
+    (globalThis as any).chrome.scripting.executeScript = async (details: unknown) => {
+      harness.scriptingCalls.push(structuredClone(details));
+      injected = true;
+      return [{ frameId: 0, result: undefined }];
+    };
+    // The observer never answers in the new document, and the grant is gone.
+    tabs.sendMessage = async (tabId: number, message: any, options?: unknown) => {
+      if (injected && message.type === 'ANMERKO_JOURNEY_PAGE_IDENTIFY') {
+        delete (harness.tabs[1] as { url?: string }).url;
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }
+      return sendMessage(tabId, message, options);
+    };
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url, documentLifecycle: 'active' });
+  }, url);
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.stopReason)
+    .toBe('page-access-lost');
+  // Well inside the five-second observer connection timeout.
+  expect(Date.now() - started).toBeLessThan(3_000);
+});
+
+test('recovery names withdrawn page access when the owner tab URL is hidden after a wake', async ({ page }) => {
+  await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    delete (harness.tabs[1] as { url?: string }).url;
+    harness.reboot();
+  });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+    .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'page-access-lost' } });
 });
 
 test('routes matching event ports and stop commands without exposing state or raw replies to pages', async ({ page }) => {

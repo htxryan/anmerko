@@ -390,7 +390,19 @@ test('a cross-origin navigation stops the journey as left-site without recording
   expect(fixture.calls.end).toHaveLength(1);
 });
 
-test('same-origin path changes and same-URL reloads keep recording instead of leaving the site', async () => {
+test('another subdomain, port, or scheme leaves the starting origin', async () => {
+  for (const url of ['https://shop.example.com/start', 'https://example.com:8443/start', 'http://example.com/start']) {
+    const fixture = navigationFixture();
+    const controller = createJourneyController(fixture.adapter);
+    await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+    controller.observeNavigation({ ownerTabId: 42, url, kind: 'document' });
+    const stopped = controller.getState();
+    expect(stopped.phase, url).toBe('reviewing');
+    if (stopped.phase === 'reviewing') expect(stopped.draft.stopReason, url).toBe('left-site');
+  }
+});
+
+test('same-origin path changes and same-URL reloads keep recording instead of leaving the origin', async () => {
   const fixture = navigationFixture();
   const controller = createJourneyController(fixture.adapter);
   await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
@@ -437,6 +449,74 @@ test('an idle same-origin reload gets its own window to reconnect and keeps reco
   expect(fixture.calls.begin.at(-1)?.input).toMatchObject({ documentToken: 'document-reload', expectedUrl: START_URL });
   // The late destination is not captured only to be discarded.
   expect(fixture.calls.capture).toHaveLength(1);
+});
+
+test('a same-origin document load that withdraws page access stops promptly as page-access-lost', async () => {
+  let accessLost = false;
+  const fixture = navigationFixture({
+    connect: async () => { throw new Error('Missing host permission for the tab'); },
+    pageAccessLost: async () => accessLost,
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  // Firefox ties activeTab to one document: a reload keeps the origin but not access.
+  accessLost = true;
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: START_URL, kind: 'document' });
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
+  expect(stopped.draft.stopReason).toBe('page-access-lost');
+  expect(stopped.draft.steps.map(step => step.kind)).toEqual(['initial', 'navigation']);
+  expect(stopped.draft.steps[0].image.status).toBe('retained');
+  expect(stopped.draft.steps[1]).toMatchObject({
+    sourceUrl: START_URL, navigation: { toUrl: START_URL },
+    image: { status: 'unavailable', reason: 'capture-denied' },
+  });
+  // Detected from the failed handshake: neither navigation timer had to fire.
+  expect(fixture.pendingDelays()).toEqual([0, 5_000]);
+  expect(fixture.calls.begin).toHaveLength(1);
+  expect(fixture.calls.end).toHaveLength(1);
+});
+
+test('a document handshake that times out after page access was withdrawn stops as page-access-lost', async () => {
+  const connect = deferred<JourneyPageIdentity>();
+  const fixture = navigationFixture({ connect: () => connect.promise, pageAccessLost: async () => true });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+  fixture.nowMs = START_MS + 6_000;
+  fixture.resolveDelay(5_000, 0);
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after losing page access');
+  expect(stopped.draft.stopReason).toBe('page-access-lost');
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'capture-denied' });
+
+  connect.resolve(identity('document-late', 'https://example.com/next', 2));
+  await Promise.resolve();
+  expect(fixture.calls.begin).toHaveLength(1);
+});
+
+test('a failed document handshake with page access intact still stops as capture-failed', async () => {
+  const fixture = navigationFixture({
+    connect: async () => { throw new Error('private injection failure'); },
+    pageAccessLost: async () => false,
+  });
+  const controller = createJourneyController(fixture.adapter);
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+
+  fixture.nowMs = START_MS + 1_000;
+  controller.observeNavigation({ ownerTabId: 42, url: 'https://example.com/next', kind: 'document' });
+  await eventually(() => expect(controller.getState().phase).toBe('reviewing'));
+  const stopped = controller.getState();
+  if (stopped.phase !== 'reviewing') throw new Error('Expected review after a failed handshake');
+  expect(stopped.draft.stopReason).toBe('capture-failed');
+  expect(stopped.draft.steps.at(-1)?.image).toEqual({ status: 'unavailable', reason: 'capture-error' });
 });
 
 test('navigation while the initial recorder begin is pending cannot publish the old document', async () => {
@@ -596,6 +676,7 @@ function navigationFixture(overrides: Partial<JourneyControllerAdapter> = {}) {
       await overrides.end?.(tabId, input);
     },
     changed: next => { calls.changed.push(next); overrides.changed?.(next); },
+    ...(overrides.pageAccessLost ? { pageAccessLost: overrides.pageAccessLost } : {}),
   };
   return fixture;
 }

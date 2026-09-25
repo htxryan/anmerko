@@ -285,6 +285,20 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     return identity;
   };
 
+  // Firefox ties activeTab to the document it was granted on: after any
+  // document load in the owner tab, even on the same origin, the tab URL is
+  // hidden and injection is refused. Chrome and Edge keep same-origin access.
+  const pageAccessLost = async (tabId: number): Promise<boolean> => {
+    const state = controller.getState();
+    if (!activeState(state) || state.ownerTabId !== tabId) return false;
+    try {
+      const tab = await api.tabs.get(tabId);
+      return tab.id === tabId && tab.windowId === state.ownerWindowId && tab.url === undefined;
+    } catch {
+      return false;
+    }
+  };
+
   const connect = async (tabId: number, expectedUrl: string): Promise<JourneyPageIdentity> => {
     const sanitizedUrl = normalizedUrl(expectedUrl);
     if (sanitizedUrl !== expectedUrl) throw new Error(GENERIC_ERROR);
@@ -298,9 +312,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     };
     await focusedOwnerTab(tabId, snapshot.ownerWindowId, sanitizedUrl);
     if (!stillCurrent()) throw new Error(GENERIC_ERROR);
-    // activeTab covers the journey's own site; injection failing here means the
-    // tab left that site or became protected, and the controller stops the
-    // journey with an explicit reason.
+    // activeTab covers the journey's origin; injection failing here means the
+    // page became protected or, in Firefox, the grant ended with the previous
+    // document. The controller stops the journey with an explicit reason.
     if (!api.scripting?.executeScript) throw new Error(GENERIC_ERROR);
     await api.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -316,6 +330,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       try {
         response = await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_IDENTIFY' });
       } catch {
+        // A withdrawn grant never returns; fail now rather than at the timeout.
+        if (await pageAccessLost(tabId)) throw new Error(GENERIC_ERROR);
         await delay(OBSERVER_RETRY_MS);
         continue;
       }
@@ -558,6 +574,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       async end(tabId, input) {
         await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
       },
+      pageAccessLost,
       changed,
       async saveSnapshot(input) {
         return saveJourneySnapshot(input);
@@ -747,7 +764,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       let tabUrl: string;
       try { tabUrl = normalizedUrl(tab.url); }
       catch {
-        await controller.stop('protected-page');
+        // A hidden URL means the browser withdrew page access (Firefox does
+        // on every document load); a visible non-HTTP URL is protected.
+        await controller.stop(tab.url === undefined ? 'page-access-lost' : 'protected-page');
         return;
       }
       const expectedUrl = recordingUrl(state);
