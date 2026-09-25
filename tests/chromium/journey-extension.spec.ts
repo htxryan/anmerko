@@ -1646,16 +1646,38 @@ test('stops waiting for a new document observer as soon as page access is withdr
   expect(Date.now() - started).toBeLessThan(3_000);
 });
 
-test('recovery names withdrawn page access when the owner tab URL is hidden after a wake', async ({ page }) => {
+for (const platform of [
+  { name: 'Chromium', firefox: false, reason: 'left-site' },
+  { name: 'Firefox', firefox: true, reason: 'page-access-lost' },
+]) {
+  test(`recovery names a hidden owner tab URL after a wake as ${platform.reason} on ${platform.name}`, async ({ page }) => {
+    await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+    await page.evaluate(firefox => {
+      const harness = (globalThis as HarnessWindow).harness;
+      // Only Firefox has runtime.getBrowserInfo; its grant ends with every document.
+      if (firefox) (globalThis as any).chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+      delete (harness.tabs[1] as { url?: string }).url;
+      harness.reboot();
+    }, platform.firefox);
+    await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+    expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+      .toMatchObject({ phase: 'reviewing', draft: { stopReason: platform.reason } });
+  });
+}
+
+test('a queued cross-origin commit explains a hidden owner URL after a wake as left-site in Firefox too', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => {
     const harness = (globalThis as HarnessWindow).harness;
+    (globalThis as any).chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
     delete (harness.tabs[1] as { url?: string }).url;
     harness.reboot();
+    harness.events.committed.emit({ tabId: 1, frameId: 0, url: 'https://other.test/away', documentLifecycle: 'active' });
   });
   await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
-  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
-    .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'page-access-lost' } });
+  const stopped = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(stopped).toMatchObject({ phase: 'reviewing', draft: { stopReason: 'left-site' } });
+  expect(stopped.draft.steps.map((step: any) => step.kind)).toEqual(['initial']);
 });
 
 test('routes matching event ports and stop commands without exposing state or raw replies to pages', async ({ page }) => {

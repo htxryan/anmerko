@@ -8,6 +8,7 @@ import {
 import type { JourneyDraftImage, JourneySession } from './journey-core';
 import { stripUrlCredentials } from './journey-events';
 import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourneyPng } from './journey-image';
+import type { StopReason } from './journey-limits';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
 import { deleteJourneySnapshot, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
@@ -722,6 +723,20 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
+  // The owner tab URL is hidden once activeTab no longer covers the tab. A
+  // queued navigation that explains it has already stopped the journey with
+  // its exact reason (left-site for another origin, or page-access-lost from
+  // the failed new-document handshake), so this answers only for a document
+  // change that no queued event describes. Chromium keeps the grant across
+  // same-origin documents, so the tab left the starting origin: that is
+  // left-site, although a browser-protected page hides its URL the same way.
+  // Firefox (the only engine with runtime.getBrowserInfo) withdraws the grant
+  // on every document load, so page-access-lost is true either way; whether
+  // that load also left the site is unknowable without the URL.
+  const hiddenOwnerUrlReason = (): StopReason => (
+    typeof (api.runtime as { getBrowserInfo?: unknown }).getBrowserInfo === 'function' ? 'page-access-lost' : 'left-site'
+  );
+
   const recoverRecordingOwner = async (): Promise<void> => {
     let state = controller.getState();
     if (state.phase !== 'recording') return;
@@ -780,9 +795,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       let tabUrl: string;
       try { tabUrl = normalizedUrl(tab.url); }
       catch {
-        // A hidden URL means the browser withdrew page access (Firefox does
-        // on every document load); a visible non-HTTP URL is protected.
-        await controller.stop(tab.url === undefined ? 'page-access-lost' : 'protected-page');
+        await controller.stop(tab.url === undefined ? hiddenOwnerUrlReason() : 'protected-page');
         return;
       }
       const expectedUrl = recordingUrl(state);
