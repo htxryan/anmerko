@@ -6,8 +6,12 @@ export function extensionApi(): typeof chrome {
   return api;
 }
 
-// Firefox manifests declare sidebar_action; Chromium manifests use side_panel.
-export function firefoxExtension(): boolean {
-  try { return 'sidebar_action' in extensionApi().runtime.getManifest(); }
-  catch { return false; }
+// Only Firefox, on desktop and Android alike, implements runtime.getBrowserInfo
+// and serves extension pages from moz-extension: URLs. Manifest keys are no
+// signal: Firefox for Android does not support sidebar_action and may drop it.
+export function firefoxExtension(api?: typeof chrome): boolean {
+  try {
+    const runtime = (api ?? extensionApi()).runtime as typeof chrome.runtime & { getBrowserInfo?: unknown };
+    return typeof runtime.getBrowserInfo === 'function' || runtime.getURL('').startsWith('moz-extension:');
+  } catch { return false; }
 }

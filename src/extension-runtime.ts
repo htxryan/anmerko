@@ -3,7 +3,7 @@ import { requestComponentContext } from './component-context-bridge';
 import styles from './panel.css';
 import type { DraftTargetIdentity, Presentation, Runtime } from './runtime';
 
-import { extensionApi } from './platform';
+import { extensionApi, firefoxExtension } from './platform';
 import type { Store } from './runtime';
 import { journeysEnabled } from './journey-feature';
 import { createJourneyClient } from './journey-client';
@@ -61,7 +61,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   }
   const presentation: Presentation = {
     native,
-    dockViaToolbar: 'sidebar_action' in api.runtime.getManifest(),
+    // Firefox opens its sidebar only from the toolbar gesture.
+    dockViaToolbar: firefoxExtension(api),
     async sync(state, remote) {
       if (native) {
         // Settings remain usable while disconnected, but an empty page identity

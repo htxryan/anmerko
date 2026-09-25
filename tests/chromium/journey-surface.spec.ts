@@ -83,16 +83,33 @@ test('performs a native start without requesting optional access', async ({ page
     .some(entry => entry.kind === 'permission'))).toBe(false);
 });
 
-test('the client says page loads end a journey only under a Firefox manifest', async ({ page }) => {
+test('the client says page loads end a journey only in Firefox, on desktop or Android', async ({ page }) => {
   await page.addScriptTag({ content: clientBundle });
   expect(await page.evaluate(() => {
     const { clientModule, surfaceHarness } = globalThis as HarnessWindow;
-    const owner = () => ({ ownerTabId: 1, ownerWindowId: 1 });
-    const chromium = clientModule.createJourneyClient(owner).pageLoadsEndJourney;
+    const runtime = (globalThis as any).chrome.runtime;
+    const loadsEnd = () => clientModule.createJourneyClient(() => ({ ownerTabId: 1, ownerWindowId: 1 })).pageLoadsEndJourney;
+    const chromium = loadsEnd();
+    // A manifest key is no browser signal.
     surfaceHarness.manifest = { background: { scripts: ['background.js'] }, sidebar_action: { default_panel: 'sidebar.html' } };
-    const firefox = clientModule.createJourneyClient(owner).pageLoadsEndJourney;
-    return { chromium, firefox };
-  })).toEqual({ chromium: false, firefox: true });
+    const chromiumWithSidebarAction = loadsEnd();
+    // Firefox implements getBrowserInfo and serves moz-extension: pages.
+    runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    runtime.getURL = (path: string) => `moz-extension://0b5e4b36-5f6d-4c2e-9b7a-1e2f3a4b5c6d/${path}`;
+    const firefoxDesktop = loadsEnd();
+    // Firefox for Android does not support sidebar_action, so its manifest may lack it.
+    surfaceHarness.manifest = { background: { scripts: ['background.js'] } };
+    const firefoxAndroid = loadsEnd();
+    delete runtime.getBrowserInfo;
+    const mozExtensionPageOnly = loadsEnd();
+    runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    runtime.getURL = (path: string) => `chrome-extension://test-extension/${path}`;
+    const browserInfoOnly = loadsEnd();
+    return { chromium, chromiumWithSidebarAction, firefoxDesktop, firefoxAndroid, mozExtensionPageOnly, browserInfoOnly };
+  })).toEqual({
+    chromium: false, chromiumWithSidebarAction: false, firefoxDesktop: true, firefoxAndroid: true,
+    mozExtensionPageOnly: true, browserInfoOnly: true,
+  });
 });
 
 test('binds fallback actions to one intent and authenticates change notifications', async ({ page }) => {
