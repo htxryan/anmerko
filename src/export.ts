@@ -3,6 +3,13 @@ import { JOURNEY_LIMITS } from './journey-limits';
 import { journeyArchiveFiles, journeyDraftToManifest, journeyExportByteLength, journeyPromptSection } from './journey-export';
 import type { JourneyDraftV1 } from './journey-core';
 
+declare const __TARGET_JOURNEYS__: boolean;
+
+// Orion builds define __TARGET_JOURNEYS__ false, which folds journey export out
+// of their content script; esbuild folds the define only within this module.
+const journeyExport = typeof __TARGET_JOURNEYS__ === 'undefined' || __TARGET_JOURNEYS__
+  ? { JOURNEY_LIMITS, journeyArchiveFiles, journeyDraftToManifest, journeyExportByteLength, journeyPromptSection } : undefined;
+
 // Store-only ZIP: PNG is already compressed. Keeps the export entirely local
 // and interoperable without a runtime dependency or a background upload.
 export function feedbackArchive(
@@ -11,19 +18,19 @@ export function feedbackArchive(
   journeys: JourneyDraftV1[] = [],
 ): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
-  const prompt = journeys.length > 0
-    ? `${buildPrompt(notes, preamble)}\n${journeyPromptSection(journeys.map(draft => journeyDraftToManifest(draft)))}`
+  const prompt = journeyExport && journeys.length > 0
+    ? `${buildPrompt(notes, preamble)}\n${journeyExport.journeyPromptSection(journeys.map(draft => journeyExport.journeyDraftToManifest(draft)))}`
     : buildPrompt(notes, preamble);
   const files: Array<{ name: string; data: Uint8Array }> = [{ name: 'comments.md', data: encoder.encode(prompt) },
     ...notes.filter(note => note.screenshot).map(note => ({
       name: screenshotFilename(note),
       data: Uint8Array.from(atob(note.screenshot!.dataUrl.split(',')[1]), char => char.charCodeAt(0)),
     }))];
-  if (journeys.length > 0) {
-    if (journeyExportByteLength(journeys, encoder.encode(prompt).length) > JOURNEY_LIMITS.maxExportBytes) {
+  if (journeyExport && journeys.length > 0) {
+    if (journeyExport.journeyExportByteLength(journeys, encoder.encode(prompt).length) > journeyExport.JOURNEY_LIMITS.maxExportBytes) {
       throw new Error('Journey export exceeds the export size limit.');
     }
-    files.push(...journeyArchiveFiles(journeys));
+    files.push(...journeyExport.journeyArchiveFiles(journeys));
   }
   const parts: Uint8Array[] = [];
   const directory: Uint8Array[] = [];

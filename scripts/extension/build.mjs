@@ -18,7 +18,9 @@ const manifest = browserManifest(JSON.parse(await readFile('public/manifest.json
 await writeFile(`${outdir}/manifest.json`, JSON.stringify(manifest, null, 2) + '\n');
 const journeyEntryPoints = target.journeys ? { 'journey-observer': 'src/journey-observer.ts', journey: 'src/journey-page.ts' } : {};
 // Without journeys, the define leaves journey modules imported but unused.
-// Declaring them free of side effects lets esbuild drop them whole.
+// Declaring them free of side effects lets esbuild drop them whole. It keeps
+// any it still uses, but drops the top-level code of those it does not, so
+// code that Orion needs at load time belongs outside journey-* modules.
 const unusedJourneyModules = {
   name: 'unused-journey-modules',
   setup(build) {

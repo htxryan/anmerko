@@ -13,10 +13,10 @@ import { pageJourneyCommands } from './journey-page-bridge';
 declare const __TARGET_JOURNEYS__: boolean;
 
 // Orion builds define __TARGET_JOURNEYS__ false, which folds the journey client,
-// styles, and page commands out of their content script; esbuild folds the
-// define only within this module.
+// availability check, styles, and panel commands out of their content script;
+// esbuild folds the define only within this module.
 const journeyParts = typeof __TARGET_JOURNEYS__ === 'undefined' || __TARGET_JOURNEYS__
-  ? { createJourneyClient, journeySurfaceStyles, pageJourneyCommands } : undefined;
+  ? { createJourneyClient, currentPlatform, journeysAvailable, journeySurfaceStyles, pageJourneyCommands } : undefined;
 
 function draftTargetIdentity(value: unknown): DraftTargetIdentity | undefined {
   if (!value || typeof value !== 'object' || Object.keys(value).length !== 5) return;
@@ -51,7 +51,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   // The sidebar checks this browser itself. A page overlay trusts the
   // background's verdict: it cannot see the journey APIs, and its page may be
   // emulating another device.
-  const journeys = !!journeyParts && journeysAvailable(native ? { platform: currentPlatform(), api } : undefined);
+  const journeys = !!journeyParts && journeyParts.journeysAvailable(native ? { platform: journeyParts.currentPlatform(), api } : undefined);
   let targetTab: number | undefined;
   let windowId: number | undefined;
   let connectionVersion = 0;

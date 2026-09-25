@@ -101,13 +101,15 @@ test('supported browser targets build clean resources and reject development hel
       assert.ok(files.includes(name), `${target.name}: ${name}`);
     }
     // Orion ships no journey page or scripts, and its content script carries no
-    // journey launch, review offer, saved list, recording strip or view.
+    // journey launch, review offer, saved list, recording strip or view, and no
+    // journey model, limits, export or availability check behind them.
     const journeyFiles = ['journey.html', 'journey.js', 'journey-observer.js'];
     for (const name of journeyFiles) assert.equal(files.includes(name), target.journeys, `${target.name}: ${name}`);
     const content = await readFile(join(root, outdir, 'content.js'), 'utf8');
     for (const marker of ['ANMERKO_JOURNEY_OPEN', 'ANMERKO_JOURNEY_PENDING', 'Record journey', 'Review journey', 'Saved journeys',
       'anmerko journey recording', 'anmerko-journey-strip', '.journey-view', 'function attachJourneyPanel(', 'function mountJourneyUI(',
-      'function createJourneyClient(', 'function bindJourneyPage(']) {
+      'function createJourneyClient(', 'function bindJourneyPage(', 'function validateJourneyDraft(', 'var JOURNEY_LIMITS =',
+      'function journeyArchiveFiles(', 'function journeyPromptSection(', 'function journeysAvailable(', 'function stripUrlCredentials(']) {
       assert.equal(content.includes(marker), target.journeys, `${target.name}: content.js ${marker}`);
     }
     // Every bundle reads the capability from the build: an unreplaced define
