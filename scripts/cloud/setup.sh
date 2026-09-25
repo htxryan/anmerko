@@ -20,8 +20,8 @@ exec 9>"$state/setup.lock"
 flock 9
 
 log() { printf '[anmerko-cloud %(%H:%M:%S)T] %s\n' -1 "$*"; }
-fingerprint() { cat "$@" | sha256sum | cut -c1-16; }
-current() { [[ -f "$state/$1" && "$(cat "$state/$1")" == "$2" ]]; }
+# Stamps live beside what they describe; npm ci removes a stale one.
+current() { [[ -f "$1" && "$(cat "$1")" == "$2" ]]; }
 
 if [[ $(id -u) -ne 0 || $(uname -m) != x86_64 ]]; then
   echo 'Run as root on x86_64 Linux: branded Chrome and Edge ship only for x86_64.' >&2
@@ -49,16 +49,17 @@ install_fixtures() {
   # Tracked blobs plus uncommitted edits, so fixture source changes rebuild.
   key=$(cd "$root" && { git ls-files -s tests/fixtures/component-context; git diff HEAD -- tests/fixtures/component-context; } \
     | sha256sum | cut -c1-16)
-  current fixtures "$key" && return
+  local stamp="$root/tests/fixtures/component-context/node_modules/.anmerko-cloud"
+  current "$stamp" "$key" && return
   log 'Installing and building component-context fixtures'
   (cd "$root" && npm run test:context-fixtures:setup >/dev/null)
-  echo "$key" >"$state/fixtures"
+  echo "$key" >"$stamp"
 }
 
 install_browsers() {
   local key
   key=$(cd "$root" && node -p "require('@playwright/test/package.json').version")
-  if ! current browsers "$key"; then
+  if ! current "$state/browsers" "$key"; then
     # Stable Chrome and Edge install through apt. CI also forces them because
     # runner-bundled channels can hang during extension startup.
     log "Installing Playwright $key Chromium, stable Chrome and stable Edge"
@@ -77,11 +78,11 @@ install_browsers() {
 install_packages & apt_job=$!
 install_node
 wait "$apt_job"
-key=$(fingerprint "$root/package-lock.json")
-if ! current npm "$key" || [[ ! -d "$root/node_modules" ]]; then
+key=$({ echo "$node_version"; cat "$root/package-lock.json"; } | sha256sum | cut -c1-16)
+if ! current "$root/node_modules/.anmerko-cloud" "$key"; then
   log 'Installing npm dependencies'
   (cd "$root" && npm ci --no-audit --no-fund >/dev/null)
-  echo "$key" >"$state/npm"
+  echo "$key" >"$root/node_modules/.anmerko-cloud"
 fi
 install_fixtures & fixtures_job=$!
 install_browsers
