@@ -87,7 +87,7 @@ test('requires one direct data marker and never borrows an ancestor Fiber', asyn
   await page.locator('#react-nested-button').evaluate(element => Object.defineProperty(element, '__reactFiber$trap', {
     get() { throw new Error('private getter'); },
   }));
-  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.not.toThrow('private getter');
 });
 
@@ -100,7 +100,7 @@ test('fails closed on cycles, accessors and exhausted traversal', async ({ page 
     const fiber = (element as any)[key];
     Object.defineProperty(fiber, 'return', { configurable: true, get() { throw new Error('return secret'); } });
   });
-  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('never invokes optional wrapper displayName accessors', async ({ page }) => {
@@ -144,7 +144,7 @@ test('treats a malformed React type as indeterminate beside valid Vue metadata',
     } });
   }, probeTarget);
 
-  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
   const vueValue = JSON.parse((await page.evaluate(vueComponentContextProbe, probeTarget))!);
   expect(selectComponentContext([
     { kind: 'indeterminate' }, { kind: 'valid', value: vueValue }, { kind: 'none' },
@@ -194,7 +194,7 @@ test('enforces the clock during final serialization', async ({ page }) => {
       return serialized;
     } });
   });
-  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('keeps the nearest eight names and rejects more than 64 Fiber links', async ({ page }) => {
@@ -224,7 +224,7 @@ test('keeps the nearest eight names and rejects more than 64 Fiber links', async
     const selected = document.querySelector('#selected')! as any;
     selected.__reactFiber$fixture.return = (window as any).__makeReactChain(65);
   });
-  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).rejects.toThrow(FAILURE_TOKEN);
+  await expect(page.evaluate(reactComponentContextProbe, probeTarget)).resolves.toBe(FAILURE_TOKEN);
 });
 
 test('deduplicates only an identity-equal memo tag14 wrapper and inner Fiber', async ({ page }) => {
