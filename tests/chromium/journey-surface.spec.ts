@@ -240,6 +240,20 @@ test('every review surface styles the screenshot mask dialog', async ({ page }) 
   await page.addScriptTag({ content: sidebarBundle });
   await expect(page.getByRole('complementary', { name: 'anmerko feedback panel' })).toBeVisible();
   expect(await page.evaluate(maskDialogRadius)).toBe('12px');
+
+  // A dark sidebar keeps the dialog's warning text on theme tokens, readable on its dark surface.
+  expect(await page.evaluate(() => {
+    const app = Array.from(document.documentElement.children)
+      .map(element => element.shadowRoot?.querySelector('.app')).find(Boolean)!;
+    app.setAttribute('data-theme', 'dark');
+    const dialog = app.querySelector('.journey-image-review')!;
+    const danger = document.createElement('button');
+    danger.className = 'journey-image-review__button journey-image-review__button--danger';
+    const error = document.createElement('p');
+    error.className = 'journey-image-review__error';
+    dialog.append(danger, error);
+    return [getComputedStyle(dialog).backgroundColor, getComputedStyle(danger).color, getComputedStyle(error).color];
+  })).toEqual(['rgb(28, 37, 53)', 'rgb(255, 170, 165)', 'rgb(255, 170, 165)']);
 });
 
 test('feature-off page renders an unavailable message without contacting the background', async ({ page }) => {

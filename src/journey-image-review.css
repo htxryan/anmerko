@@ -102,11 +102,11 @@
 }
 
 .journey-image-review__field input[aria-invalid='true'] {
-  border-color: #b42318;
+  border-color: var(--danger, #b42318);
 }
 
 .journey-image-review__error {
-  color: #b42318;
+  color: var(--danger, #b42318);
 }
 
 .journey-image-review__actions {
@@ -133,12 +133,12 @@
 }
 
 .journey-image-review__button--danger {
-  color: #b42318;
+  color: var(--danger, #b42318);
   margin-right: auto;
 }
 
 .journey-image-review__button--primary {
-  background: #175cd3;
+  background: var(--primary, #175cd3);
   color: #fff;
 }
 
