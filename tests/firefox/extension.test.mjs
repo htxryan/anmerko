@@ -678,9 +678,9 @@ test('Firefox production extension covers the shared component-context fixture m
       await driver.wait(async () => await contextPath() === scenario.expectedPath.join(' → '), 5000,
         `component path should match for ${scenario.id}`);
     } else {
-      // Keep the draft open beyond the broker's 750 ms deadline so a wrong
+      // Keep the draft open beyond the broker's 2,000 ms deadline so a wrong
       // late result cannot pass an early absence assertion.
-      await driver.sleep(850);
+      await driver.sleep(2_100);
       assert.equal(await contextPath(), null, `ambiguous or unsupported metadata should fall back: ${scenario.id}`);
     }
     if (scenario.privacy) assert.ok(Object.values(await privacyReads()).every(value => value === 0));

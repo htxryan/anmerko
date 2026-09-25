@@ -30,13 +30,13 @@ const react = JSON.stringify({ version: 1, framework: 'react', provenance: 'reac
 const vue = JSON.stringify({ version: 1, framework: 'vue', provenance: 'vue3-instance-debug', path: ['App'], truncated: false });
 const probes = [(() => null), (() => null), (() => null), (() => null)] as const satisfies readonly [ComponentContextProbe, ComponentContextProbe, ComponentContextProbe, ComponentContextProbe];
 
-function broker(runProbe: ComponentContextProbeRunner, readPreference: () => Promise<unknown> = async () => true, deadlineMs = 750) {
+function broker(runProbe: ComponentContextProbeRunner, readPreference: () => Promise<unknown> = async () => true, deadlineMs = COMPONENT_CONTEXT_DEADLINE_MS) {
   return createComponentContextBroker({ extensionId: 'extension-id', probes, runProbe, readPreference, deadlineMs });
 }
 
 test('publishes one fixed protocol, deadline, and sanitized failure token', () => {
   expect(COMPONENT_CONTEXT_MESSAGE_TYPE).toBe('ANMERKO_COMPONENT_CONTEXT');
-  expect(COMPONENT_CONTEXT_DEADLINE_MS).toBe(750);
+  expect(COMPONENT_CONTEXT_DEADLINE_MS).toBe(2_000);
   expect(COMPONENT_CONTEXT_PROBE_FAILURE).toBe('ANMERKO_COMPONENT_CONTEXT_PROBE_FAILED');
 });
 
