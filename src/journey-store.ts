@@ -12,8 +12,10 @@ export type JourneyStoreErrorCode =
   | 'stale-revision'
   | 'invalid-snapshot';
 
+// Saved journeys are never evicted to make room, so a full store asks for a
+// deletion whether anmerko's limits or the browser's quota ran out.
 const ERROR_MESSAGES: Record<JourneyStoreErrorCode, string> = {
-  'quota-exceeded': 'The reviewed journey exceeds available storage.',
+  'quota-exceeded': 'Saved journeys are full. Delete saved journeys to make room for this one, then save again.',
   aborted: 'The reviewed journey could not be written.',
   'not-found': 'The saved journey is incomplete.',
   'stale-revision': 'The journey revision is stale.',
@@ -240,6 +242,37 @@ function pageLabel(url: unknown): string {
   }
 }
 
+// The screenshot bytes a stored snapshot holds, from its metadata.
+function storedImageBytes(record: Record<string, unknown>): number {
+  if (Number.isSafeInteger(record.imageBytes) && (record.imageBytes as number) >= 0) return record.imageBytes as number;
+  const draft = record.draft;
+  if (!isObject(draft) || !isObject(draft.images)) return 0;
+  return Object.values(draft.images).reduce<number>((total, image) => (
+    isObject(image) && Number.isSafeInteger(image.byteLength) ? total + (image.byteLength as number) : total
+  ), 0);
+}
+
+// A new journey needs a free slot, and every saved journey's screenshots
+// together stay within their budget. Only snapshots the list shows, and so
+// the reader can delete, count.
+function ensureRoom(records: unknown[], stored: StoredSnapshot): void {
+  let count = 0;
+  let imageBytes = stored.imageBytes;
+  let replacing = false;
+  for (const record of records) {
+    if (!isObject(record) || toSummary(record) === undefined) continue;
+    if (record.journeyId === stored.journeyId) {
+      replacing = true;
+      continue;
+    }
+    count += 1;
+    imageBytes += storedImageBytes(record);
+  }
+  if ((!replacing && count >= JOURNEY_LIMITS.maxJourneys) || imageBytes > JOURNEY_LIMITS.maxReviewedImageBytes) {
+    throw new JourneyStoreError('quota-exceeded');
+  }
+}
+
 function toSummary(record: unknown): JourneySnapshotSummary | undefined {
   if (!isObject(record)) return;
   const { journeyId, revision, updatedAt, stepCount } = record;
@@ -326,6 +359,9 @@ export async function saveJourneySnapshot(
     if (existing !== undefined && existing.revision === stored.revision) {
       outcome = { journeyId: stored.journeyId, revision: stored.revision };
     } else {
+      // The count and budget are read in the write transaction, so racing
+      // saves cannot both claim the last room.
+      ensureRoom((await request(snapshots.getAll())) as unknown[], stored);
       const obsolete = (existing?.blobIds ?? []).filter(imageId => !stored.blobIds.includes(imageId));
       await request(snapshots.put(stored));
       for (const imageId of stored.blobIds) {

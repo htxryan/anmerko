@@ -680,6 +680,48 @@ test('entered values stay off unless the start request opts in, and saved journe
   expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
 });
 
+test('a save into a full saved-journey store keeps the review and evicts nothing', async ({ page }) => {
+  // Another hundred journeys are already saved: the most anmerko keeps.
+  await page.evaluate(async count => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('anmerko:journey-store:v1', 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('snapshots', { keyPath: 'journeyId' });
+        request.result.createObjectStore('blobs', { keyPath: 'key' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('snapshots', 'readwrite');
+      for (let index = 0; index < count; index += 1) {
+        tx.objectStore('snapshots').put({
+          schemaVersion: 1, journeyId: `saved-${index}`, revision: 1, updatedAt: '2026-09-20T12:00:00.000Z',
+          stepCount: 1, manifestBytes: 2, imageBytes: 69, blobIds: [], draft: {},
+        });
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }, 100);
+  const stopped = await reviewWithClickScreenshot(page);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: stopped.epoch, journeyId: stopped.journeyId,
+    revision: stopped.draft.revision, updatedAt: new Date().toISOString(),
+    expected: 'The journey is saved.', actual: 'Storage is full.',
+  })).toEqual({ ok: true });
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'saved-journeys-full' });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({
+    phase: 'reviewing', journeyId: stopped.journeyId, draft: { expected: 'The journey is saved.' },
+  });
+  const listed = (await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).value;
+  expect(listed).toHaveLength(100);
+  expect(listed.some((item: any) => item.journeyId === stopped.journeyId)).toBe(false);
+});
+
 test('review summaries and step removal apply with revision guards', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const before = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;

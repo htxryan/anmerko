@@ -18,6 +18,7 @@ const BACKEND_GUIDANCE: Record<string, string> = {
   'launch-expired': 'This journey link expired. On the website tab, choose Record journey again.',
   'session-storage-failed': 'Journey storage failed. Reset journey storage to continue. A previous draft or the latest action may be lost.',
   'stale-review': 'Another review tab changed this journey. Reload the review and try again.',
+  'saved-journeys-full': 'Saved journeys are full. Delete saved journeys to make room for this one, then save again.',
 };
 
 function validOwner(value: JourneyOwner | undefined): value is { ownerTabId: number; ownerWindowId: number } {

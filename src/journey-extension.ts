@@ -12,7 +12,7 @@ import { inspectNormalizedJourneyPng, normalizeJourneyPng, type NormalizedJourne
 import type { StopReason } from './journey-limits';
 import { JOURNEY_EVENTS_PORT_NAME } from './journey-messaging';
 import { createJourneySessionStore, JourneySessionStorageError } from './journey-session';
-import { deleteJourneySnapshot, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
+import { deleteJourneySnapshot, JourneyStoreError, listJourneySnapshots, openJourneySnapshot, saveJourneySnapshot } from './journey-store';
 import { extensionApi, firefoxExtension } from './platform';
 
 export interface JourneyScreenshotService {
@@ -30,7 +30,7 @@ export interface JourneyExtensionBinding {
 type Message = Record<string, unknown> & { type?: unknown };
 type ActiveState = Extract<JourneySession, { phase: 'starting' | 'recording' }>;
 type JourneyCommandErrorCode = 'busy' | 'owner-unavailable' | 'initial-capture-failed'
-  | 'launch-expired' | 'session-storage-failed' | 'stale-review';
+  | 'launch-expired' | 'session-storage-failed' | 'stale-review' | 'saved-journeys-full';
 type TrustedSurface =
   | { kind: 'sidebar' }
   | { kind: 'review'; tabId: number }
@@ -78,6 +78,7 @@ function failure(error?: unknown) {
   let code: JourneyCommandErrorCode | undefined;
   if (error instanceof JourneyCommandError) code = error.code;
   else if (error instanceof JourneySessionStorageError) code = 'session-storage-failed';
+  else if (error instanceof JourneyStoreError && error.code === 'quota-exceeded') code = 'saved-journeys-full';
   else if (error instanceof JourneyControllerError) {
     code = error.code === 'invalid-start' ? 'owner-unavailable' : error.code;
   }
