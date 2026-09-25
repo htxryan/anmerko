@@ -166,10 +166,11 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let latestCaptureId: string | undefined;
   let activeNormalizations = 0;
   let queuedNormalizations = 0;
-  // A save and a screenshot review never overlap: the save would otherwise
-  // store the pixels a mask is about to cover and then report success.
+  // A save never starts while a screenshot review is still decoding its
+  // mask: it would store the pixels the mask is about to cover and report
+  // success. The reverse needs no count: a save holds the review in its
+  // saving phase, which refuses every review edit as stale.
   let imageReviewsInFlight = 0;
-  let savesInFlight = 0;
   let normalizationTurn: Promise<void> = Promise.resolve();
   let releaseNormalizationTurn: () => void = () => {};
   type PendingWakeEvent = {
@@ -1084,7 +1085,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         || (message.operation !== 'remove' && (message.operation !== 'replace' || typeof message.dataUrl !== 'string'))) {
         throw new Error(GENERIC_ERROR);
       }
-      if (savesInFlight > 0) throw new JourneyCommandError('stale-review');
       const guard = { epoch: message.epoch, journeyId: message.journeyId, revision: message.revision, imageId: message.imageId };
       imageReviewsInFlight += 1;
       try {
@@ -1167,14 +1167,9 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       // Another review surface is still masking or removing a screenshot.
       if (imageReviewsInFlight > 0) throw new JourneyCommandError('stale-review');
       let saved: { journeyId: string; revision: number } | undefined;
-      savesInFlight += 1;
-      try {
-        await withPersistedState(controller.save(message.acknowledged).then(result => {
-          saved = result;
-        }));
-      } finally {
-        savesInFlight -= 1;
-      }
+      await withPersistedState(controller.save(message.acknowledged).then(result => {
+        saved = result;
+      }));
       return saved;
     }
     throw new Error(GENERIC_ERROR);

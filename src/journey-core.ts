@@ -993,6 +993,18 @@ export function reopenJourneySnapshot(
   return next;
 }
 
+// A save that never finished returns to review. Saving refuses edits, so the
+// draft is the reviewed one; its idle window restarts from its last edit.
+export function resumeSavingReview(state: SavingJourneySession): ReviewingJourneySession {
+  const base = Date.parse(state.draft.updatedAt);
+  return {
+    ...state,
+    phase: 'reviewing',
+    warningAt: boundedIsoAfter(base, JOURNEY_LIMITS.maxReviewIdleMs - JOURNEY_LIMITS.reviewWarningMs),
+    expiresAt: boundedIsoAfter(base, JOURNEY_LIMITS.maxReviewIdleMs),
+  };
+}
+
 export type ReviewBlockReason = 'summaries-required' | 'retained-step-required' | 'images-pending' | 'invalid-draft';
 
 export function reviewSaveGating(state: JourneySession): { ready: boolean; reasons: ReviewBlockReason[] } {

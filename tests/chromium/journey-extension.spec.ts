@@ -1035,6 +1035,42 @@ test('a save and a screenshot review never overlap, so a racing save cannot drop
   expect(await dataUrlPixels(page, snapshot.images[imageId].dataUrl)).toEqual(patternedPixels([rect]));
 });
 
+test('a review edit racing a save is refused as stale and the snapshot is exactly the saved review', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date().toISOString(),
+  });
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...guards(state),
+    expected: 'The receipt lists the order.', actual: 'The receipt is blank.',
+  })).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+
+  // A second review tab edits with the revision it last read while this tab saves.
+  const late = guards(state);
+  const [saved, ...refused] = await page.evaluate(({ edits, reviewSender }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    return Promise.all([
+      harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewSender),
+      ...edits.map(edit => harness.dispatch(edit, reviewSender)),
+    ]);
+  }, { reviewSender: reviewPage, edits: [
+    { type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', ...late, expected: 'Edited during save.', actual: 'Edited during save.' },
+    { type: 'ANMERKO_JOURNEY_REDACT_URL', ...late, stepId: state.draft.steps[1].id, url: 'source' },
+    { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...late, stepId: state.draft.steps[1].id },
+  ] });
+  expect(saved).toEqual({ ok: true, value: { journeyId: state.journeyId, revision: state.draft.revision } });
+  expect(refused).toEqual([staleReview, staleReview, staleReview]);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toEqual({
+    phase: 'saved', epoch: state.epoch + 1, journeyId: state.journeyId, revision: state.draft.revision,
+  });
+  const snapshot = (await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN_SNAPSHOT', journeyId: state.journeyId })).value;
+  expect(snapshot.draft).toMatchObject({ revision: state.draft.revision, expected: 'The receipt lists the order.' });
+  expect(snapshot.draft.steps.map((step: any) => [step.id, step.sourceUrl]))
+    .toEqual(state.draft.steps.map((step: any) => [step.id, step.sourceUrl]));
+});
+
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands

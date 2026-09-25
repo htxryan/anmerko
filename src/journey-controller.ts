@@ -11,6 +11,7 @@ import {
   removeJourneyStep,
   reopenJourneySnapshot,
   resolveJourneyCapture,
+  resumeSavingReview,
   reviewSaveGating,
   stopJourney,
   supersedeJourneyImagesAfter,
@@ -25,6 +26,7 @@ import {
   type Point,
   type RecordingJourneySession,
   type ReviewingJourneySession,
+  type SavingJourneySession,
   type Viewport,
 } from './journey-core';
 import { stripUrlCredentials, validateJourneyEventBatch } from './journey-events';
@@ -710,12 +712,25 @@ export function createJourneyController(
     }
     if (acknowledged !== true) throw new Error('Journey saving needs a review acknowledgement.');
     if (!adapter.saveSnapshot) throw new Error('Journey saving is unavailable.');
-    const saved = await adapter.saveSnapshot({ draft: previous.draft, images: previous.draft.images });
-    const next: JourneySession = {
-      phase: 'saved', epoch: previous.epoch + 1,
-      journeyId: saved.journeyId, revision: saved.revision,
+    // Every review edit requires the reviewing phase, so while the snapshot
+    // is written an edit from any review surface is refused as stale instead
+    // of landing in the draft and being published over by the saved state.
+    const saving: SavingJourneySession = {
+      phase: 'saving', sessionId: previous.sessionId, journeyId: previous.journeyId, epoch: previous.epoch,
+      ownerTabId: previous.ownerTabId, ownerWindowId: previous.ownerWindowId, draft: previous.draft,
     };
-    publish(next);
+    publish(saving);
+    let saved: { journeyId: string; revision: number };
+    try {
+      saved = await adapter.saveSnapshot({ draft: previous.draft, images: previous.draft.images });
+    } catch (error) {
+      if (state === saving) publish(previous);
+      throw error;
+    }
+    // A discard during the write already ended the review; the snapshot stays saved.
+    if (state === saving) {
+      publish({ phase: 'saved', epoch: previous.epoch + 1, journeyId: saved.journeyId, revision: saved.revision });
+    }
     return saved;
   }
 
@@ -855,9 +870,12 @@ function captureFailure(reason: CaptureFailure): Error & { reason: CaptureFailur
 
 function prepareRestoredState(restoredState: JourneySession, nowMs: number): JourneySession {
   if (restoredState.phase === 'starting') return failInitialImage(restoredState);
-  if (restoredState.phase === 'reviewing' && nowMs >= Date.parse(restoredState.expiresAt)) {
-    return { phase: 'idle', epoch: restoredState.epoch + 1 };
+  // No save survives in this controller, so an interrupted save returns to review.
+  const restored = restoredState.phase === 'saving' ? resumeSavingReview(restoredState) : restoredState;
+  if (restored.phase === 'reviewing' && nowMs >= Date.parse(restored.expiresAt)) {
+    return { phase: 'idle', epoch: restored.epoch + 1 };
   }
+  if (restored !== restoredState) return restored;
   if (restoredState.phase !== 'recording') return restoredState;
   if (nowMs >= Date.parse(restoredState.deadlineAt)) {
     return stopJourney(restoredState, {
