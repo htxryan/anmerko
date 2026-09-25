@@ -1,5 +1,7 @@
-declare const __ANMERKO_JOURNEYS__: boolean;
+declare const __TARGET_JOURNEYS__: boolean;
 
-// The build defines this per target: on for Chrome, Edge, and Firefox, off for
-// Orion. Test harnesses bundled without the define keep journeys off.
-export const journeysEnabled = typeof __ANMERKO_JOURNEYS__ !== 'undefined' && __ANMERKO_JOURNEYS__;
+// Whether this build target includes journeys: scripts/extension/build.mjs
+// defines it per target (Chrome, Edge, and Firefox yes; Orion no). It is not a
+// switch; nothing at build or run time turns it on. Bundles built without the
+// define, such as test harnesses, leave journeys out.
+export const targetJourneys = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__;

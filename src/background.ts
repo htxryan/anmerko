@@ -13,7 +13,7 @@ import { createCaptureService } from './capture-service';
 import { bindJourneyExtension } from './journey-extension';
 export { activateTab } from './activate';
 
-declare const __ANMERKO_JOURNEYS__: boolean;
+declare const __TARGET_JOURNEYS__: boolean;
 
 const api = extensionApi();
 const sidebarUrl = api.runtime.getURL('sidebar.html');
@@ -44,9 +44,10 @@ const screenshotService = createCaptureService(
     },
   },
 );
-// Read the build define here rather than journeysEnabled: esbuild folds it only
-// within this module, which drops the journey runtime from Orion's bundle.
-const journeys = typeof __ANMERKO_JOURNEYS__ !== 'undefined' && __ANMERKO_JOURNEYS__
+// Journeys are the build target's capability. Read its define here rather than
+// targetJourneys: esbuild folds it only within this module, which drops the
+// journey runtime from Orion's bundle.
+const journeys = typeof __TARGET_JOURNEYS__ !== 'undefined' && __TARGET_JOURNEYS__
   ? bindJourneyExtension(screenshotService) : undefined;
 type LayoutMode = 'dock' | 'overlay' | 'minimized' | 'closed';
 const layoutModes = new Set<LayoutMode>(['dock', 'overlay', 'minimized', 'closed']);

@@ -5,7 +5,8 @@ import { buildVersion } from './build-version.mjs';
 const target = browserTarget();
 const { build } = await import('esbuild');
 const { outdir } = target;
-const define = { __ANMERKO_JOURNEYS__: String(target.journeys) };
+// Tells the bundles whether this target includes journeys (Orion does not).
+const define = { __TARGET_JOURNEYS__: String(target.journeys) };
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
 await cp('public', outdir, { recursive: true });

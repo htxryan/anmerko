@@ -22,7 +22,7 @@ const clientBundle = buildSync({
 function pageBundle(enabled: boolean) {
   return buildSync({
     entryPoints: ['src/journey-page.ts'], bundle: true, write: false, format: 'iife',
-    loader: { '.css': 'text' }, define: { __ANMERKO_JOURNEYS__: String(enabled) },
+    loader: { '.css': 'text' }, define: { __TARGET_JOURNEYS__: String(enabled) },
   }).outputFiles[0].text;
 }
 
@@ -250,7 +250,7 @@ test('every review surface styles the screenshot mask dialog', async ({ page }) 
 
   const sidebarBundle = buildSync({
     entryPoints: ['tests/chromium/fixtures/native-sidebar-harness.ts'], bundle: true, write: false, format: 'iife',
-    loader: { '.css': 'text' }, define: { __ANMERKO_JOURNEYS__: 'true' },
+    loader: { '.css': 'text' }, define: { __TARGET_JOURNEYS__: 'true' },
   }).outputFiles[0].text;
   await page.goto('http://127.0.0.1:4173/sidebar.html');
   await page.addScriptTag({ content: sidebarBundle });

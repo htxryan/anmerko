@@ -1,5 +1,5 @@
 import { createJourneyClient } from './journey-client';
-import { journeysEnabled } from './journey-feature';
+import { targetJourneys } from './journey-feature';
 import { journeySurfaceStyles } from './journey-styles';
 import { mountJourneyUI } from './journey-ui';
 
@@ -11,7 +11,7 @@ function launchIntent(hash: string): string | undefined {
   return match?.[1];
 }
 
-if (!journeysEnabled) {
+if (!targetJourneys) {
   const section = document.createElement('section');
   const heading = document.createElement('h1');
   const explanation = document.createElement('p');
