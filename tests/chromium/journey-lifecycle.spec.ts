@@ -360,6 +360,22 @@ test('a restored saving session resumes review instead of waiting on a save that
   expect(createJourneyController(expired.adapter, interrupted).getState()).toEqual({ phase: 'idle', epoch: reviewed.epoch + 1 });
 });
 
+test('a step removal the draft refuses is reported instead of silently ignored', async () => {
+  const harness = fixture();
+  const controller = await summarizedReview(harness);
+  let reviewed = controller.getState();
+  for (const stepId of ['step-pending-1', 'step-pending-2']) {
+    await controller.removeStep({ ...reviewGuards(reviewed, harness.nowMs), stepId });
+    reviewed = controller.getState();
+  }
+  if (reviewed.phase !== 'reviewing') throw new Error('Expected review');
+  expect(reviewed.draft.steps.map(step => step.id)).toEqual(['step-initial']);
+
+  await expect(controller.removeStep({ ...reviewGuards(reviewed, harness.nowMs), stepId: 'step-initial' }))
+    .rejects.toThrow('The step could not be removed.');
+  expect(controller.getState()).toBe(reviewed);
+});
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;

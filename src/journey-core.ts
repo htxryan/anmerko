@@ -929,15 +929,50 @@ export function removeJourneyStep(state: JourneySession, input: JourneyRemoveSte
   if (updateMs < Date.parse(state.draft.updatedAt) || updateMs >= Date.parse(state.expiresAt)) return state;
   const index = state.draft.steps.findIndex(step => step.id === input.stepId);
   if (index < 0 || state.draft.steps.length <= 1) return state;
-  const steps = state.draft.steps.filter(step => step.id !== input.stepId);
-  const referencedImageIds = new Set(steps.flatMap(step => step.image.status === 'retained' ? [step.image.imageId] : []));
+  const remaining = state.draft.steps.filter(step => step.id !== input.stepId);
+  const references = new Map<string, number>();
+  for (const step of remaining) {
+    if (step.image.status === 'retained') references.set(step.image.imageId, (references.get(step.image.imageId) ?? 0) + 1);
+  }
+  // A removed click takes its causal link along, and a shared result image
+  // left with one step is no longer a shared click/navigation result.
+  const steps = remaining.map(step => {
+    let next = step;
+    if (next.kind === 'navigation' && next.navigation.causedByStepId === input.stepId) {
+      next = { ...next, navigation: { toUrl: next.navigation.toUrl } };
+    }
+    if (next.image.status === 'retained' && next.image.sharedNavigationResult && references.get(next.image.imageId) === 1) {
+      next = { ...next, image: { status: 'retained', imageId: next.image.imageId } };
+    }
+    return next;
+  });
   const images = Object.fromEntries(Object.entries(state.draft.images)
-    .filter(([imageId]) => referencedImageIds.has(imageId)));
-  const draft = {
+    .filter(([imageId]) => references.has(imageId)));
+  const draft = pruneJourneyRedactions({
     ...state.draft, steps, images, revision: state.draft.revision + 1, updatedAt: input.updatedAt,
-  };
+  });
   if (validateJourneyDraft(draft).ok === false) return state;
   return { ...state, draft };
+}
+
+// Redaction flags describe markers still in the draft. Removing a step or a
+// screenshot removes the markers it carried, so its flags go with it;
+// otherwise validation would reject, and silently undo, the removal.
+export function pruneJourneyRedactions(draft: JourneyDraftV1): JourneyDraftV1 {
+  if (!draft.redactions) return draft;
+  const steps: JourneyUrlRedactions['steps'] = {};
+  for (const step of draft.steps) {
+    const flags = draft.redactions.steps[step.id];
+    if (!flags) continue;
+    const kept: JourneyUrlRedactions['steps'][string] = {};
+    if (flags.sourceUrl && step.sourceUrl === JOURNEY_REDACTED_URL) kept.sourceUrl = true;
+    if (flags.captureUrl && step.image.status === 'retained'
+      && draft.images[step.image.imageId]?.captureUrl === JOURNEY_REDACTED_URL) kept.captureUrl = true;
+    if (flags.toUrl && step.kind === 'navigation' && step.navigation.toUrl === JOURNEY_REDACTED_URL) kept.toUrl = true;
+    if (Object.keys(kept).length > 0) steps[step.id] = kept;
+  }
+  const { redactions: _pruned, ...rest } = draft;
+  return Object.keys(steps).length > 0 ? { ...rest, redactions: { steps } } : rest;
 }
 
 export interface JourneyReopenInput {

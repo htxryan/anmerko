@@ -1071,6 +1071,40 @@ test('a review edit racing a save is refused as stale and the snapshot is exactl
     .toEqual(state.draft.steps.map((step: any) => [step.id, step.sourceUrl]));
 });
 
+test('removing a screenshot or step whose URLs were redacted succeeds through the command channel', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const guards = (current: any) => ({
+    epoch: current.epoch, journeyId: current.journeyId, revision: current.draft.revision,
+    updatedAt: new Date().toISOString(),
+  });
+  const click = state.draft.steps[1];
+  for (const url of ['capture', 'source']) {
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REDACT_URL', ...guards(state), stepId: click.id, url }))
+      .toEqual({ ok: true });
+    state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  }
+  expect(state.draft.redactions).toEqual({ steps: { [click.id]: { captureUrl: true, sourceUrl: true } } });
+
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_REVIEW_IMAGE', operation: 'remove',
+    epoch: state.epoch, journeyId: state.journeyId, revision: state.draft.revision, imageId: click.image.imageId,
+  })).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.steps[1].image).toEqual({ status: 'removed' });
+  expect(state.draft.redactions).toEqual({ steps: { [click.id]: { sourceUrl: true } } });
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards(state), stepId: click.id }))
+    .toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(state.draft.steps.map((step: any) => step.kind)).toEqual(['initial']);
+  expect(state.draft).not.toHaveProperty('redactions');
+
+  // The last step cannot be removed, and the refusal is reported rather than ignored.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_REMOVE_STEP', ...guards(state), stepId: state.draft.steps[0].id }))
+    .toEqual(unavailable);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft.revision).toBe(state.draft.revision);
+});
+
 test('freezes an unexplained same-URL document replacement instead of reattaching collection', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   const startsBefore = await page.evaluate(() => (globalThis as HarnessWindow).harness.pageCommands

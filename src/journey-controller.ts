@@ -644,7 +644,10 @@ export function createJourneyController(
   async function removeStep(input: JourneyRemoveStepInput): Promise<void> {
     const previous = currentReview(state, input);
     const next = removeJourneyStep(previous, input);
-    if (next !== previous) publish(next);
+    // The review guards passed, so an unchanged draft means the removal
+    // itself was refused; say so instead of leaving the step in silently.
+    if (next === previous) throw new Error('The step could not be removed.');
+    publish(next);
   }
 
   async function editValue(input: JourneyEditValueInput): Promise<void> {
