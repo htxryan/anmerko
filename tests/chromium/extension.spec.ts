@@ -241,6 +241,30 @@ for (const touch of [false, true]) test.describe(`minimized global comments (${t
   });
 });
 
+for (const touch of [false, true]) test.describe(`SPA route changes (${touch ? 'touch' : 'desktop'})`, () => {
+  test.use({ touch });
+  test('keep a minimized floating panel minimized and still cancel element selection', async ({ page, activate }) => {
+    await activate(page);
+    const quick = page.getByRole('group', { name: 'Quick Comment Actions' });
+    await panel(page).getByRole('button', { name: 'Minimize comments' }).click();
+    await expect(quick).toBeVisible();
+    await page.evaluate(() => history.pushState({}, '', '/minimized-route'));
+    // The hidden panel's status confirms the route poll handled the change.
+    await expect(page.locator('anmerko-overlay p.status')).toHaveText('Showing comments for this page.');
+    await expect(quick).toBeVisible();
+    await expect(panel(page)).toBeHidden();
+    await quick.getByRole('button', { name: 'Show anmerko comments' }).click();
+    await panel(page).getByRole('button', { name: 'Select Element', exact: true }).click();
+    const picker = page.locator('anmerko-overlay .picker-bar');
+    await expect(picker).toBeVisible();
+    await page.evaluate(() => { location.hash = 'selecting'; });
+    await expect(picker).toBeHidden();
+    await expect(panel(page).getByRole('button', { name: 'Select Element', exact: true })).toBeVisible();
+    await page.locator('#hero-title').click();
+    await expect(panel(page).getByLabel('Comment', { exact: true })).toHaveCount(0);
+  });
+});
+
 test.describe('screenshot comments', () => {
   test.use({ capturePermission: true, nativeWindow: true });
   test('minimized screenshot action can cancel or save and return to the floating controls', async ({ page, activate }) => {

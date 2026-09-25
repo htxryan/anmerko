@@ -1247,7 +1247,8 @@ export function mount(runtime: Runtime): Controller {
       viewToken = createUuid();
       if (draft?.element) changeDraft(true);
       locatedId = null;
-      setPicking(false);
+      // Cancel selection without reopening a minimized panel.
+      if (picking) setPicking(false); else highlighted = null;
       if (draft) renderEditor();
       renderNotes();
       status(draft ? 'Page changed. Your draft will be saved to the page where you started the comment.' : 'Showing comments for this page.');
