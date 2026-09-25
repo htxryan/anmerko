@@ -25,7 +25,7 @@ if (!journeysAvailable({ platform: currentPlatform(), api: extensionApi() })) {
   const explanation = document.createElement('p');
   explanation.className = 'journey-help';
   heading.textContent = 'Journey recording unavailable';
-  explanation.textContent = 'Journeys are not available in this browser. They work in Chrome, Edge, and Firefox on computers and Android, not on iPhone or iPad. Comments still work on the website tab.';
+  explanation.textContent = 'Journeys are not available in this browser. They work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android, but not on iPhone or iPad. Comments still work on the website tab.';
   section.append(brand, heading, explanation);
   root.append(section);
 } else {

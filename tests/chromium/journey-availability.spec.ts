@@ -408,7 +408,7 @@ for (const { name, ...options } of journeyPageCases) {
   test(`the journey tab ${name} says journeys are not available without contacting the background`, async ({ page }) => {
     await loadJourneyPage(page, options);
     await expect(page.getByRole('heading', { name: 'Journey recording unavailable' })).toBeVisible();
-    await expect(page.getByText('Journeys are not available in this browser. They work in Chrome, Edge, and Firefox on computers and Android, not on iPhone or iPad. Comments still work on the website tab.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Journeys are not available in this browser. They work in Chrome, Edge, and Firefox on computers and in Edge and Firefox on Android, but not on iPhone or iPad. Comments still work on the website tab.', { exact: true })).toBeVisible();
     await expect(page.getByRole('button')).toHaveCount(0);
     expect(await page.evaluate(() => (globalThis as any).journeyMessages)).toEqual([]);
   });
