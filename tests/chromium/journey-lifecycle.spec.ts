@@ -345,6 +345,20 @@ test('a discard during the save write keeps the discard and still reports the st
   expect(controller.getState()).toEqual({ phase: 'idle', epoch: reviewed.epoch + 1 });
 });
 
+test('a saved journey is finished, so a new journey starts without discarding its confirmation first', async () => {
+  const harness = fixture();
+  harness.adapter.saveSnapshot = async input => ({ journeyId: input.draft.id, revision: input.draft.revision });
+  const controller = await summarizedReview(harness);
+  await controller.save(true);
+  expect(controller.getState()).toMatchObject({ phase: 'saved' });
+
+  await controller.start({ ownerTabId: 42, ownerWindowId: 7 });
+  expect(controller.getState()).toMatchObject({ phase: 'recording', ownerTabId: 42, ownerWindowId: 7 });
+  expect(harness.calls.changed.slice(-3).map(state => state.phase)).toEqual(['saved', 'starting', 'recording']);
+  // A live journey still refuses a second start.
+  await expect(controller.start({ ownerTabId: 42, ownerWindowId: 7 })).rejects.toMatchObject({ code: 'busy' });
+});
+
 test('a restored saving session resumes review instead of waiting on a save that no longer runs', async () => {
   const harness = fixture();
   const controller = await summarizedReview(harness);

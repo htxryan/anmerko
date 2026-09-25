@@ -1431,6 +1431,81 @@ test.describe('native desktop docking', () => {
   });
 });
 
+test.describe('idle background sidebar layouts', () => {
+  test.use({ nativeWindow: true });
+  for (const [control, restored] of [['.dock', 'floating'], ['.minimize', 'minimized']] as const) {
+    test(`a docked sidebar applies ${restored} on the first click after the idle worker stops`, async ({ page, context, worker }) => {
+      await worker.evaluate(async url => {
+        const tab = (await chrome.tabs.query({})).find(t => t.url === url)!;
+        await chrome.scripting.executeScript({ target: { tabId: tab.id! }, files: ['content.js'] });
+        await chrome.tabs.sendMessage(tab.id!, { type: 'ANMERKO_PRESENT', mode: 'overlay', canDock: true });
+      }, page.url());
+      await page.getByRole('button', { name: 'Dock sidebar', exact: true }).click();
+      const dock = await sidebar(context, page);
+      await expect(panel(page)).toBeHidden();
+      // Chrome stops an idle worker after 30 seconds, which closes the sidebar's
+      // port while the sidebar still shows its connected editor.
+      const cdp = await context.newCDPSession(page);
+      const workerRunning = async () => (await cdp.send('Target.getTargets')).targetInfos
+        .some(target => target.type === 'service_worker' && target.url === worker.url());
+      expect(await workerRunning()).toBe(true);
+      await dock.command('ServiceWorker.enable');
+      await dock.command('ServiceWorker.stopAllWorkers');
+      await expect.poll(workerRunning).toBe(false);
+      // Let the sidebar observe its closed port before the click.
+      await page.waitForTimeout(500);
+      await dock.click(control);
+      if (restored === 'floating') await expect(panel(page)).toBeVisible();
+      else await expect(page.getByRole('button', { name: 'Show anmerko comments' })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(1300);
+      // The layout's port woke the worker again.
+      await expect.poll(workerRunning).toBe(true);
+    });
+  }
+});
+
+test('a stopped worker stays stopped for navigations and tab changes while no journey exists', async ({ context, page, worker }) => {
+  // Journey navigation and tab listeners would wake the worker for every tab.
+  // An idle worker removes them once it has restored the idle state.
+  await expect.poll(() => worker.evaluate(() => [
+    chrome.webNavigation.onCommitted, chrome.webNavigation.onHistoryStateUpdated, chrome.webNavigation.onReferenceFragmentUpdated,
+    chrome.tabs.onActivated, chrome.tabs.onUpdated, chrome.tabs.onRemoved, chrome.tabs.onReplaced, chrome.windows.onFocusChanged,
+  ].some(event => event.hasListeners()))).toBe(false);
+  const other = await context.newPage();
+  await other.goto(`${ORIGIN}/?other`);
+  // The ServiceWorker domain reports the extension's worker to its own pages.
+  const extensionOrigin = `chrome-extension://${new URL(worker.url()).host}`;
+  const control = await context.newPage();
+  await control.goto(`${extensionOrigin}/unavailable.html`);
+  const cdp = await context.newCDPSession(control);
+  let status = 'unknown';
+  let starts = 0;
+  cdp.on('ServiceWorker.workerVersionUpdated', ({ versions }) => {
+    for (const version of versions) {
+      if (!version.scriptURL.startsWith(extensionOrigin) || version.runningStatus === status) continue;
+      if (version.runningStatus === 'starting') starts += 1;
+      status = version.runningStatus;
+    }
+  });
+  await cdp.send('ServiceWorker.enable');
+  await expect.poll(() => status).toBe('running');
+  await cdp.send('ServiceWorker.stopAllWorkers');
+  await expect.poll(() => status).toBe('stopped');
+
+  await other.goto(`${ORIGIN}/?next`);
+  await other.evaluate(() => history.pushState({}, '', '/pushed-route'));
+  await other.evaluate(() => { location.hash = 'fragment'; });
+  await other.bringToFront();
+  await page.bringToFront();
+  const extra = await context.newPage();
+  await extra.goto(`${ORIGIN}/?extra`);
+  await extra.close();
+  await other.reload();
+  await page.waitForTimeout(2_000);
+  expect(starts).toBe(0);
+  expect(status).toBe('stopped');
+});
+
 test.describe('mobile docking exclusion', () => {
   test.use({ touch: true });
   test('does not offer docking even in landscape or when the browser advertises a sidebar API', async ({ page, worker }) => {

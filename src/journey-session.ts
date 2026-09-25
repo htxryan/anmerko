@@ -263,6 +263,19 @@ function aggregateStorageBytes(state: Exclude<JourneySession, { phase: 'idle' }>
   });
 }
 
+// Published states are never mutated, so the committed state's own object
+// needs no second write. Nor does a save's saving phase over the review it
+// began from: a restart resumes either as that review, and rewriting it would
+// copy every screenshot again only to change the phase.
+function storedAs(state: JourneySession, committed: JourneySession | undefined): boolean {
+  if (!committed) return false;
+  if (state === committed) return true;
+  return state.phase === 'saving' && committed.phase === 'reviewing' && state.draft === committed.draft
+    && state.sessionId === committed.sessionId && state.journeyId === committed.journeyId
+    && state.epoch === committed.epoch && state.ownerTabId === committed.ownerTabId
+    && state.ownerWindowId === committed.ownerWindowId;
+}
+
 export function createJourneySessionStore(storage: JourneySessionStorageAdapter): {
   read(now: number): Promise<JourneySession>;
   write(state: JourneySession): Promise<void>;
@@ -270,6 +283,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
   let queue: Promise<void> = Promise.resolve();
   let generation = 0;
   let failed = false;
+  let committed: JourneySession | undefined;
 
   const enqueue = <Value>(operation: () => Promise<Value>): Promise<Value> => {
     const result = queue.then(operation);
@@ -301,6 +315,7 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
 
   const failStorage = async (): Promise<never> => {
     failed = true;
+    committed = undefined;
     const cleared = await clearRawOrTombstone();
     throw new JourneySessionStorageError(cleared ? 'storage-unavailable' : 'cleanup-failed');
   };
@@ -335,6 +350,13 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
   };
 
   const read = (now: number): Promise<JourneySession> => enqueue(async () => {
+    committed = undefined;
+    const restored = await readCommitted(now);
+    if (restored.phase !== 'idle') committed = restored;
+    return restored;
+  });
+
+  const readCommitted = async (now: number): Promise<JourneySession> => {
     if (!Number.isFinite(now) || now < 0 || now > MAX_DATE_MS) {
       throw new JourneySessionStorageError('invalid-session');
     }
@@ -402,36 +424,39 @@ export function createJourneySessionStore(storage: JourneySessionStorageAdapter)
     }
 
     return state;
-  });
+  };
 
-  const write = (state: JourneySession): Promise<void> => {
+  const write = (state: JourneySession): Promise<void> => enqueue(async () => {
+    // Its draft was checked when it was stored, so skip serializing every
+    // screenshot again just to measure and validate it.
+    if (storedAs(state, committed)) return;
     const inputBytes = serializedBytes(state);
     if (inputBytes !== undefined && inputBytes > SESSION_STATE_MAX_BYTES) {
-      return Promise.reject(new JourneySessionStorageError('session-too-large'));
+      throw new JourneySessionStorageError('session-too-large');
     }
     const snapshot = validateJourneySession(state);
-    if (!snapshot) return Promise.reject(new JourneySessionStorageError('invalid-session'));
+    if (!snapshot) throw new JourneySessionStorageError('invalid-session');
     if (snapshot.phase !== 'idle') {
       const aggregateBytes = aggregateStorageBytes(snapshot, Number.MAX_SAFE_INTEGER);
       if (aggregateBytes === undefined || aggregateBytes > JOURNEY_LIMITS.maxSessionBytes) {
-        return Promise.reject(new JourneySessionStorageError('session-too-large'));
+        throw new JourneySessionStorageError('session-too-large');
       }
     }
-    return enqueue(async () => {
-      if (failed && snapshot.phase !== 'idle') {
-        throw new JourneySessionStorageError('storage-unavailable');
+    if (failed && snapshot.phase !== 'idle') {
+      throw new JourneySessionStorageError('storage-unavailable');
+    }
+    if (snapshot.phase === 'idle') {
+      committed = undefined;
+      if (!await clearRawOrTombstone()) {
+        failed = true;
+        throw new JourneySessionStorageError('cleanup-failed');
       }
-      if (snapshot.phase === 'idle') {
-        if (!await clearRawOrTombstone()) {
-          failed = true;
-          throw new JourneySessionStorageError('cleanup-failed');
-        }
-        failed = false;
-        return;
-      }
-      await persist(snapshot);
-    });
-  };
+      failed = false;
+      return;
+    }
+    await persist(snapshot);
+    committed = state;
+  });
 
   return { read, write };
 }

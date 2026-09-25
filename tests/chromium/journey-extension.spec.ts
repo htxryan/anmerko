@@ -51,15 +51,15 @@ type Harness = {
   releaseTabCreate?: () => void;
   captureMode: 'normal' | 'away-and-back' | 'throw';
   events: {
-    activated: { emit(value: unknown): void };
-    updated: { emit(...values: unknown[]): void };
-    removed: { emit(...values: unknown[]): void };
-    replaced: { emit(...values: unknown[]): void };
-    focused: { emit(value: unknown): void };
-    alarm: { emit(value: unknown): void };
-    committed: { emit(value: unknown): void; count(): number };
-    history: { emit(value: unknown): void; count(): number };
-    fragment: { emit(value: unknown): void; count(): number };
+    activated: { emit(value: unknown): void; count(): number };
+    updated: { emit(...values: unknown[]): void; count(): number };
+    removed: { emit(...values: unknown[]): void; count(): number };
+    replaced: { emit(...values: unknown[]): void; count(): number };
+    focused: { emit(value: unknown): void; count(): number };
+    alarm: { emit(value: unknown): void; count(): number };
+    committed: { emit(value: unknown): void; count(): number; filters(): unknown[] };
+    history: { emit(value: unknown): void; count(): number; filters(): unknown[] };
+    fragment: { emit(value: unknown): void; count(): number; filters(): unknown[] };
   };
   control: { ready: Promise<void>; stopIfRecording(): boolean; openReviewIfAvailable(): boolean };
   reboot(): void;
@@ -183,15 +183,18 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => {
     function extensionEvent() {
       const listeners: Array<(...values: any[]) => void> = [];
+      const filters: unknown[] = [];
       return {
-        addListener(listener: (...values: any[]) => void) { listeners.push(listener); },
+        addListener(listener: (...values: any[]) => void, filter?: unknown) { listeners.push(listener); filters.push(filter); },
         removeListener(listener: (...values: any[]) => void) {
           const index = listeners.indexOf(listener);
-          if (index >= 0) listeners.splice(index, 1);
+          if (index >= 0) { listeners.splice(index, 1); filters.splice(index, 1); }
         },
-        emit(...values: any[]) { for (const listener of listeners) listener(...values); },
+        // Browsers dispatch to the listeners registered when the event fired.
+        emit(...values: any[]) { for (const listener of listeners.slice()) listener(...values); },
         count() { return listeners.length; },
-        clear() { listeners.length = 0; },
+        filters() { return structuredClone(filters); },
+        clear() { listeners.length = 0; filters.length = 0; },
       };
     }
     const runtimeMessage = extensionEvent();
@@ -1071,6 +1074,152 @@ test('a review edit racing a save is refused as stale and the snapshot is exactl
     .toEqual(state.draft.steps.map((step: any) => [step.id, step.sourceUrl]));
 });
 
+test('saving never copies the reviewed screenshots into session storage again', async ({ page }) => {
+  const state = await reviewWithClickScreenshot(page);
+  expect(await dispatch(page, {
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId,
+    revision: state.draft.revision, updatedAt: new Date().toISOString(),
+    expected: 'The receipt lists the order.', actual: 'The receipt is blank.',
+  })).toEqual({ ok: true });
+  await page.evaluate(() => {
+    const session = (globalThis as any).chrome.storage.session;
+    const set = session.set;
+    (globalThis as any).__sessionWrites = [];
+    session.set = (items: Record<string, any>) => {
+      (globalThis as any).__sessionWrites.push(Object.entries(items).map(([key, value]) => ({
+        key, phase: value?.state?.phase ?? value?.phase ?? value?.status, bytes: JSON.stringify(value).length,
+      })));
+      return set(items);
+    };
+  });
+  const saved = await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true });
+  expect(saved).toMatchObject({ ok: true });
+  const writes = (await page.evaluate(() => (globalThis as any).__sessionWrites)).flat();
+  // Only the small saved confirmation is written: the review already holds
+  // the draft a restart would resume, so the saving phase adds no copy.
+  expect(writes.filter((write: any) => write.key.endsWith(':payload')).map((write: any) => write.phase)).toEqual(['saved']);
+  expect(Math.max(...writes.map((write: any) => write.bytes))).toBeLessThan(1_000);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({ phase: 'saved' });
+});
+
+test('a controller replaced by a storage failure during its save cannot publish the late saved state', async ({ page }) => {
+  let state = await reviewWithClickScreenshot(page);
+  const summary = (current: any, actual: string) => ({
+    type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: current.epoch, journeyId: current.journeyId,
+    revision: current.draft.revision, updatedAt: new Date().toISOString(), expected: 'The receipt lists the order.', actual,
+  });
+  expect(await dispatch(page, summary(state, 'The receipt is blank.'))).toEqual({ ok: true });
+  state = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).toEqual({ ok: true, value: [] });
+  // Hold the snapshot store so the save stays in flight, and hold the next
+  // review alarm so its failure lands while the controller is saving.
+  await page.evaluate(async () => {
+    const test = globalThis as any;
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open('anmerko:journey-store:v1');
+      opening.onsuccess = () => resolve(opening.result);
+      opening.onerror = () => reject(opening.error);
+    });
+    const snapshots = db.transaction('snapshots', 'readwrite').objectStore('snapshots');
+    test.__holdSnapshots = true;
+    const hold = () => { snapshots.get('held').onsuccess = () => { if (test.__holdSnapshots) hold(); else db.close(); }; };
+    hold();
+    const alarms = test.chrome.alarms;
+    test.__createAlarm = alarms.create;
+    alarms.create = () => new Promise((_resolve, reject) => { test.__failAlarm = () => reject(new Error('alarm create failed')); });
+  });
+  const pending = page.evaluate(({ edit }) => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const edited = harness.dispatch(edit, { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' });
+    return new Promise(resolve => {
+      const saveWhenHeld = () => {
+        if (!(globalThis as any).__failAlarm) { setTimeout(saveWhenHeld, 5); return; }
+        const saving = harness.dispatch({ type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true },
+          { id: 'test-extension', url: 'chrome-extension://test-extension/sidebar.html' });
+        resolve(Promise.all([edited, saving]));
+      };
+      saveWhenHeld();
+    });
+  }, { edit: summary(state, 'The receipt is blank after the edit.') });
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('saving');
+
+  await page.evaluate(() => (globalThis as any).__failAlarm());
+  await expect.poll(async () => (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.draft?.stopReason)
+    .toBe('session-storage-limit');
+  await page.evaluate(() => {
+    const test = globalThis as any;
+    test.chrome.alarms.create = test.__createAlarm;
+    test.__holdSnapshots = false;
+  });
+  const [edited, saved] = await pending as any[];
+  expect(edited).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
+  expect(saved).toEqual({ ok: false, error: 'Journey command unavailable.', code: 'session-storage-failed' });
+  // The replacement review stays the journey everywhere: in memory, in
+  // session storage, and after a restart.
+  const current = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+  expect(current).toMatchObject({ phase: 'reviewing', journeyId: state.journeyId, draft: { actual: 'The receipt is blank after the edit.' } });
+  expect(await page.evaluate(() => (globalThis as HarnessWindow).harness.sessionStorage['anmerko:journey-session:v1:control']))
+    .toMatchObject({ status: 'committed', phase: 'reviewing' });
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.reboot());
+  await page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
+    .toMatchObject({ phase: 'reviewing', journeyId: state.journeyId });
+});
+
+test('a saved journey never blocks Record journey from the floating panel or a new sidebar start', async ({ page }) => {
+  const saveInJourneyTab = async () => {
+    const state = await reviewWithClickScreenshot(page);
+    await page.evaluate(() => {
+      (globalThis as HarnessWindow).harness.tabs[80] = {
+        id: 80, windowId: 7, active: true, url: 'chrome-extension://test-extension/journey.html',
+      };
+    });
+    expect(await dispatch(page, {
+      type: 'ANMERKO_JOURNEY_UPDATE_SUMMARY', epoch: state.epoch, journeyId: state.journeyId,
+      revision: state.draft.revision, updatedAt: new Date().toISOString(),
+      expected: 'The order is confirmed.', actual: 'The confirmation never appears.',
+    }, reviewPage)).toEqual({ ok: true });
+    expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_SAVE', acknowledged: true }, reviewPage)).toMatchObject({ ok: true });
+    // The reporter closes the journey tab on its saved confirmation.
+    await page.evaluate(() => {
+      const harness = (globalThis as HarnessWindow).harness;
+      delete harness.tabs[80];
+      harness.events.removed.emit(80, { windowId: 7 });
+    });
+    const saved = (await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value;
+    expect(saved).toMatchObject({ phase: 'saved', journeyId: state.journeyId });
+    return saved;
+  };
+
+  const saved = await saveInJourneyTab();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  // The launch tab opens on Record, and the snapshot stays in Saved journeys.
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toEqual({ phase: 'idle', epoch: saved.epoch + 1 });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).value.map((item: any) => item.journeyId))
+    .toEqual([saved.journeyId]);
+  const launch = await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const url = harness.createdTabs.at(-1).url as string;
+    const tab = Object.values(harness.tabs).find(item => item.url === url)!;
+    return { intent: url.slice(url.indexOf('#launch=') + 8), sender: { id: 'test-extension', url, frameId: 0, tab } };
+  });
+  expect(launch.intent).toMatch(/^[A-Za-z0-9._~-]+$/);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', intent: launch.intent }, launch.sender)).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+
+  // A sidebar showing the saved confirmation can start again directly too.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    for (const tab of Object.values(harness.tabs)) tab.active = tab.id === 1;
+  });
+  const again = await saveInJourneyTab();
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value).toMatchObject({ phase: 'recording' });
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_LIST' })).value.map((item: any) => item.journeyId).sort())
+    .toEqual([saved.journeyId, again.journeyId].sort());
+});
+
 test('removing a screenshot or step whose URLs were redacted succeeds through the command channel', async ({ page }) => {
   let state = await reviewWithClickScreenshot(page);
   const guards = (current: any) => ({
@@ -1373,6 +1522,194 @@ test('fails closed without webNavigation and installs navigation listeners once 
   expect(facts.sequence).toContain('capture');
 });
 
+// navigation (commit, history, fragment), owner (activated, updated, replaced, focus), removal, alarm
+function journeyListeners(page: Page) {
+  return page.evaluate(() => {
+    const { events } = (globalThis as HarnessWindow).harness;
+    return {
+      navigation: [events.committed.count(), events.history.count(), events.fragment.count()],
+      owner: [events.activated.count(), events.updated.count(), events.replaced.count(), events.focused.count()],
+      removal: events.removed.count(),
+      alarm: events.alarm.count(),
+    };
+  });
+}
+
+// Reads the listeners a background registered in its startup turn, before
+// its state is restored: the ones a browser would wake it for.
+function rebootSynchronously(page: Page) {
+  return page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    // The unloaded background's timers end with it.
+    const keepAwake = (globalThis as any).__keepAwake as Map<number, unknown> | undefined;
+    for (const id of keepAwake?.keys() ?? []) clearInterval(id);
+    harness.reboot();
+    const { events } = harness;
+    return {
+      navigation: [events.committed.count(), events.history.count(), events.fragment.count()],
+      owner: [events.activated.count(), events.updated.count(), events.replaced.count(), events.focused.count()],
+      removal: events.removed.count(),
+      alarm: events.alarm.count(),
+      filters: [events.committed.filters(), events.history.filters(), events.fragment.filters()],
+    };
+  });
+}
+
+// Records the keep-awake intervals a background sets and clears.
+function trackKeepAwake(page: Page) {
+  return page.evaluate(() => {
+    const test = globalThis as any;
+    const set = setInterval, clear = clearInterval;
+    const keepAwake = new Map<number, () => void>();
+    test.__keepAwake = keepAwake;
+    test.setInterval = (callback: () => void, ms?: number) => {
+      const id = set(callback, ms);
+      if (ms === 10_000) keepAwake.set(id as unknown as number, callback);
+      return id;
+    };
+    test.clearInterval = (id: number) => { keepAwake.delete(id); clear(id); };
+  });
+}
+
+const IDLE_LISTENERS = { navigation: [0, 0, 0], owner: [0, 0, 0, 0], removal: 0, alarm: 1 };
+const LIVE_LISTENERS = { navigation: [1, 1, 1], owner: [1, 1, 1, 1], removal: 1, alarm: 1 };
+
+test('journey listeners register at startup and stay only while a journey phase needs them', async ({ page }) => {
+  const listeners = () => journeyListeners(page);
+  const ready = () => page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  await trackKeepAwake(page);
+
+  // An idle background wakes for none of the navigation and tab events. The
+  // alarm listener fires only for alarms a journey scheduled.
+  await ready();
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  // Chromium wakes a worker for listeners it added after starting too.
+  expect(await page.evaluate(() => (globalThis as any).__keepAwake.size)).toBe(0);
+  // Every event is registered in the startup turn, so a waking event reaches
+  // a journey that has not been restored yet.
+  const woken = await rebootSynchronously(page);
+  expect(woken).toMatchObject(LIVE_LISTENERS);
+  expect(woken.filters).toEqual([
+    [undefined],
+    [{ url: [{ schemes: ['http', 'https'] }] }],
+    [{ url: [{ schemes: ['http', 'https'] }] }],
+  ]);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+
+  // A review only waits for its warning and expiry alarms.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await rebootSynchronously(page)).toMatchObject(LIVE_LISTENERS);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await rebootSynchronously(page)).toMatchObject(LIVE_LISTENERS);
+  await ready();
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+
+  // A pending launch tab is watched for closing, which releases its intent.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+  expect(await listeners()).toEqual({ ...IDLE_LISTENERS, removal: 1 });
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const launchTab = Object.values(harness.tabs).find(tab => tab.url.includes('#launch='))!;
+    delete harness.tabs[launchTab.id];
+    harness.tabs[1].active = true;
+    harness.events.removed.emit(launchTab.id, { windowId: 7 });
+  });
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_OPEN' }, ownerPage)).toEqual({ ok: true });
+
+  // A start whose first screenshot fails leaves nothing registered.
+  await page.evaluate(() => {
+    const harness = (globalThis as HarnessWindow).harness;
+    const launchTab = Object.values(harness.tabs).find(tab => tab.url.includes('#launch='))!;
+    delete harness.tabs[launchTab.id];
+    harness.tabs[1].active = true;
+    harness.events.removed.emit(launchTab.id, { windowId: 7 });
+    harness.captureMode = 'throw';
+  });
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 }))
+    .toEqual({ ok: false, error: 'Journey command unavailable.', code: 'initial-capture-failed' });
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+});
+
+test('a Firefox event page registers journey listeners at startup only after a live phase and otherwise stays awake while live', async ({ page }) => {
+  const listeners = () => journeyListeners(page);
+  const ready = () => page.evaluate(() => (globalThis as HarnessWindow).harness.control.ready);
+  const hint = () => page.evaluate(() => localStorage.getItem('anmerko:journey-listeners:v1'));
+  const keepAwake = () => page.evaluate(() => (globalThis as any).__keepAwake.size);
+  await trackKeepAwake(page);
+  await page.evaluate(() => {
+    const test = globalThis as any;
+    // Only Firefox has runtime.getBrowserInfo.
+    test.chrome.runtime.getBrowserInfo = async () => ({ name: 'Firefox' });
+    test.__platformInfoCalls = 0;
+    test.chrome.runtime.getPlatformInfo = async () => { test.__platformInfoCalls += 1; return { os: 'mac' }; };
+  });
+
+  // A first start has no hint, so it registers every listener and removes them once idle.
+  expect(await hint()).toBeNull();
+  expect(await rebootSynchronously(page)).toMatchObject(LIVE_LISTENERS);
+  await ready();
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await hint()).toBe('idle');
+  // Firefox wakes an event page only for listeners registered while it
+  // started, so the next start leaves out every navigation and tab event.
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await keepAwake()).toBe(0);
+
+  // Listeners added now would not wake the unloaded page, so the journey
+  // keeps it from idling with a periodic API call.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  expect(await hint()).toBe('live');
+  expect(await keepAwake()).toBe(1);
+  expect(await page.evaluate(() => {
+    const test = globalThis as any;
+    for (const callback of test.__keepAwake.values()) callback();
+    return test.__platformInfoCalls;
+  })).toBe(1);
+
+  // A start during the journey registers them all and needs no keep-awake.
+  const woken = await rebootSynchronously(page);
+  expect(woken).toMatchObject(LIVE_LISTENERS);
+  expect(woken.filters[1]).toEqual([{ url: [{ schemes: ['http', 'https'] }] }]);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  expect(await keepAwake()).toBe(0);
+
+  // A journey restored by a start that left them out (a lost hint) is kept awake too.
+  await page.evaluate(() => localStorage.setItem('anmerko:journey-listeners:v1', 'idle'));
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('recording');
+  expect(await listeners()).toEqual(LIVE_LISTENERS);
+  expect(await hint()).toBe('live');
+  expect(await keepAwake()).toBe(1);
+
+  // Ending the journey releases the page and tells the next start to leave them out.
+  expect(await dispatch(page, { type: 'ANMERKO_JOURNEY_STOP' })).toEqual({ ok: true });
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+  expect(await hint()).toBe('idle');
+  expect(await keepAwake()).toBe(0);
+  expect(await rebootSynchronously(page)).toMatchObject(IDLE_LISTENERS);
+  await ready();
+  expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value.phase).toBe('reviewing');
+  expect(await listeners()).toEqual(IDLE_LISTENERS);
+});
+
 test('observes ordered top-frame owner navigations and injects the idle observer only for new documents', async ({ page }) => {
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
   await page.evaluate(() => {
@@ -1478,15 +1815,17 @@ test('stops on protected owner destinations and tab replacement without followin
   }));
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'protected-page' } });
-  // A protected-page stop preserves the installed navigation listeners.
-  expect(await page.evaluate(() => [
+  const navigationListeners = () => page.evaluate(() => [
     (globalThis as HarnessWindow).harness.events.committed.count(),
     (globalThis as HarnessWindow).harness.events.history.count(),
     (globalThis as HarnessWindow).harness.events.fragment.count(),
-  ])).toEqual([1, 1, 1]);
+  ]);
+  // The review needs no navigation events; the next journey registers them again.
+  expect(await navigationListeners()).toEqual([0, 0, 0]);
 
   await dispatch(page, { type: 'ANMERKO_JOURNEY_DISCARD' });
   await dispatch(page, { type: 'ANMERKO_JOURNEY_START', ownerTabId: 1, ownerWindowId: 7 });
+  expect(await navigationListeners()).toEqual([1, 1, 1]);
   await page.evaluate(() => (globalThis as HarnessWindow).harness.events.replaced.emit(9, 1));
   expect((await dispatch(page, { type: 'ANMERKO_JOURNEY_STATE' })).value)
     .toMatchObject({ phase: 'reviewing', draft: { stopReason: 'tab-lost' } });

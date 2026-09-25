@@ -561,6 +561,26 @@ test('Firefox reconnects its sidebar after idle background shutdown and a protec
   assert.equal(await (await ui('.panel')).isDisplayed(), false);
 }));
 
+test('Firefox floats and minimizes a docked sidebar on the first click after idle background shutdown', { timeout: 90000 }, async t => session(t, async ({ driver, ui, activateDock, docked, dockClick }) => {
+  const width = await driver.executeScript(() => innerWidth);
+  const dockedAndIdle = async () => {
+    await activateDock();
+    await driver.wait(async () => await driver.executeScript(() => innerWidth) < width - 150, 5000, 'docking reduces width');
+    await driver.wait(() => docked("return root?.querySelector('.connection-prompt')?.hidden === true && !!root.querySelector('.minimize')"), 5000);
+    // The unloaded event page closes the sidebar's port; the sidebar still shows its page.
+    await suspendBackground(driver);
+  };
+  await dockedAndIdle();
+  await dockClick('.dock');
+  await driver.wait(async () => await driver.executeScript(() => innerWidth) === width, 5000, 'floating after idle shutdown closes the sidebar');
+  await driver.wait(async () => (await ui('.panel'))?.isDisplayed(), 5000, 'floating after idle shutdown shows the page panel');
+  await dockedAndIdle();
+  await dockClick('.minimize');
+  await driver.wait(async () => await driver.executeScript(() => innerWidth) === width, 5000, 'minimizing after idle shutdown closes the sidebar');
+  await driver.wait(async () => (await ui('.resume'))?.isDisplayed(), 5000, 'minimizing after idle shutdown shows the resume button');
+  assert.equal(await (await ui('.panel')).isDisplayed(), false);
+}));
+
 test('Firefox default process isolation reconnects after a protected tab and fresh toolbar activation', { timeout: 90000 }, async t => session(t, async ({ driver, ui, activateDock }) => {
   await activateDock();
   await driver.wait(async () => !(await (await ui('.panel')).isDisplayed()), 5000, 'initial remote sidebar handoff completes');
@@ -619,6 +639,100 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
   assert.deepEqual(review.steps.map(step => step.heading), ['Step 1 · Initial view', 'Step 2 · Navigation']);
   assert.match(review.steps[1].text, new RegExp(`Destination URL\\s+${origin.replace(/[.]/g, '\\.')}/`));
   assert.match(review.steps[1].text, /Screenshot unavailable: screenshot permission was denied\./);
+}));
+
+test('Firefox wakes its unloaded event page for tab and navigation events only while a journey needs them', { timeout: 180000 }, async t => session(t, async ({ driver, activateDock, docked, dockClick }) => {
+  const journey = () => docked("return root?.querySelector('.journey-container')?.innerText ?? ''");
+  const privileged = async (script, ...args) => {
+    await driver.setContext('chrome');
+    try { return await driver.executeAsyncScript(script, ...args); } finally { await driver.setContext('content'); }
+  };
+  // Firefox wakes an unloaded event page for exactly the listeners it registered while starting.
+  const background = () => privileged((id, done) => {
+    const extension = WebExtensionPolicy.getByID(id).extension;
+    const primed = [];
+    for (const [module, events] of extension.persistentListeners ?? []) {
+      for (const [event, keys] of events) if (keys.size) primed.push(`${module}.${event}`);
+    }
+    done({ state: extension.backgroundState, journeyEvents: primed.filter(name => /^(tabs|webNavigation|windows)\./.test(name)).sort(), primed });
+  }, FIREFOX_GUID);
+  const hint = () => privileged((id, done) => {
+    done(WebExtensionPolicy.getByID(id).extension.backgroundContext?.xulBrowser?.contentWindow?.localStorage.getItem('anmerko:journey-listeners:v1') ?? null);
+  }, FIREFOX_GUID);
+  const settled = async (expected, message) => {
+    await driver.wait(async () => (await background()).state === 'running' && await hint() === expected, 10000, message);
+  };
+  // Loads a background tab; optionally also switches to it and closes it.
+  const elsewhere = (path, switchAndClose) => privileged((url, switchAndClose, done) => {
+    const { gBrowser } = Services.wm.getMostRecentWindow('navigator:browser');
+    const page = gBrowser.selectedTab;
+    const other = gBrowser.addTrustedTab(url, { inBackground: true });
+    setTimeout(() => {
+      if (!switchAndClose) { done(); return; }
+      gBrowser.selectedTab = other;
+      setTimeout(() => { gBrowser.selectedTab = page; gBrowser.removeTab(other); setTimeout(done, 500); }, 500);
+    }, 1500);
+  }, `${origin}/${path}`, switchAndClose);
+  const all = ['tabs.onActivated', 'tabs.onRemoved', 'tabs.onUpdated', 'webNavigation.onCommitted',
+    'webNavigation.onHistoryStateUpdated', 'webNavigation.onReferenceFragmentUpdated', 'windows.onFocusChanged'];
+
+  // A first start has no hint yet, so it registers every journey listener once.
+  await settled('idle', 'the first start restores an idle journey state');
+  const first = await background();
+  assert.deepEqual(first.journeyEvents, all);
+  assert.ok(first.primed.includes('alarms.onAlarm'));
+  await suspendBackground(driver);
+  await elsewhere('?first-wake', false);
+  // The next start follows the idle hint and drops them.
+  await settled('idle', 'a navigation wakes the first-run registrations once');
+  const idle = await background();
+  assert.deepEqual(idle.journeyEvents, []);
+  assert.ok(idle.primed.includes('alarms.onAlarm'), 'alarms stay registered; only journeys schedule them');
+  await suspendBackground(driver);
+  await elsewhere('?idle', true);
+  assert.equal((await background()).state, 'stopped', 'navigating, switching and closing another tab leave the idle event page unloaded');
+
+  // A journey started after an idle start keeps the page awake instead. The
+  // shorter idle timeout would unload it during the wait below otherwise.
+  await privileged(done => { Services.prefs.setIntPref('extensions.background.idle.timeout', 15000); done(); });
+  await activateDock();
+  await dockClick('.comment-options');
+  await dockClick('.journey-record');
+  await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
+  await dockClick('.journey-container .journey-primary');
+  await driver.wait(async () => /Recording journey/.test(await journey()), 20000, 'recording starts after the initial screenshot');
+  assert.equal(await hint(), 'live');
+  assert.deepEqual((await background()).journeyEvents, [], 'listeners added after starting are not registered for waking');
+  await driver.sleep(22000);
+  assert.equal((await background()).state, 'running', 'the recording keeps its event page past the idle timeout');
+  assert.match(await journey(), /Recording journey/);
+
+  // A start during the journey registers them, so a navigation elsewhere wakes it.
+  await suspendBackground(driver);
+  await privileged((id, done) => { WebExtensionPolicy.getByID(id).extension.wakeupBackground().then(() => done()); }, FIREFOX_GUID);
+  await settled('live', 'a live journey restores after a wake');
+  assert.deepEqual((await background()).journeyEvents, all);
+  await driver.sleep(1000);
+  assert.match(await journey(), /Recording journey/, 'the woken event page recovers the recording');
+  await suspendBackground(driver);
+  await elsewhere('?recording', false);
+  assert.equal((await background()).state, 'running', 'another tab loading wakes the event page during a recording');
+  await driver.sleep(1000);
+  assert.match(await journey(), /Recording journey/, 'the other tab does not end the journey');
+
+  // Once the journey ends, the page idles again and the next start drops the listeners.
+  await dockClick('[data-focus-id="journey-stop"]');
+  await driver.wait(async () => /Review journey/.test(await journey()), 15000, 'stopping opens the review');
+  assert.equal(await hint(), 'idle');
+  await driver.wait(async () => (await background()).state === 'stopped', 30000, 'the review lets the event page unload when idle');
+  // The start during the journey registered them, so it can wake once more; that start drops them.
+  await elsewhere('?after-journey', false);
+  if ((await background()).state !== 'stopped') await settled('idle', 'the review restores after the extra wake');
+  assert.deepEqual((await background()).journeyEvents, []);
+  await suspendBackground(driver);
+  await elsewhere('?after-review', false);
+  assert.equal((await background()).state, 'stopped', 'a navigation after the journey leaves the event page unloaded');
 }));
 
 test('Firefox production extension covers the shared component-context fixture matrix', { timeout: 180000 }, async t => session(t, async ({

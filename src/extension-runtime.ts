@@ -54,6 +54,8 @@ export function extensionRuntime(onDispose: () => void): Runtime {
   let sidebarNeedsReconnect = false;
   let sidebarPort: chrome.runtime.Port | undefined;
   let sidebarHandedOff: ((version: number) => void) | undefined;
+  let resumeSidebarPort: (() => void) | undefined;
+  let dropSidebarPort: (() => void) | undefined;
   async function pageCommand(type: string, extra: Record<string, unknown> = {}) {
     if (!targetTab) throw new Error('Click anmerko in the toolbar to connect this page.');
     return api.tabs.sendMessage(targetTab, { type, ...extra });
@@ -75,12 +77,28 @@ export function extensionRuntime(onDispose: () => void): Runtime {
     },
     async changeLayout(mode, state, mobile) {
       if (native && ['overlay', 'minimized', 'closed'].includes(mode)) {
-        if (sidebarClosing || !sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
-        const version = sidebarRequestVersion;
-        sidebarPort.postMessage({
-          type: 'ANMERKO_SIDEBAR_LAYOUT', version,
-          mode, state: state.url ? state : undefined,
-        });
+        const postLayout = (): number | undefined => {
+          if (!sidebarPort) resumeSidebarPort?.();
+          if (sidebarClosing || !sidebarPort || sidebarRequestVersion === undefined) throw new Error('Could not change layout.');
+          try {
+            sidebarPort.postMessage({
+              type: 'ANMERKO_SIDEBAR_LAYOUT', version: sidebarRequestVersion,
+              mode, state: state.url ? state : undefined,
+            });
+          } catch {
+            return;
+          }
+          return sidebarRequestVersion;
+        };
+        let posted = postLayout();
+        if (posted === undefined) {
+          // The background can stop just before this click, ahead of the
+          // port's disconnect event. Reopen the port and post once more.
+          dropSidebarPort?.();
+          posted = postLayout();
+          if (posted === undefined) throw new Error('Could not change layout.');
+        }
+        const version = posted;
         closingLayoutVersion = sidebarRequestVersion;
         sidebarReopenVersion = sidebarRequestVersion;
         sidebarClosing = true;
@@ -148,15 +166,7 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           controller.applyState(result.value);
         });
         current.onDisconnect.addListener(() => {
-          if (signal.aborted || sidebarPort !== current) return;
-          // Firefox can unload its idle event page while the sidebar stays open.
-          // Recreate the port on the next activation, not in an idle keepalive loop.
-          sidebarPort = undefined;
-          sidebarRequestVersion = undefined;
-          // An intentional close can deliver disconnect before page disposal.
-          // Keep blocking late tab events so they cannot undo the accepted layout.
-          if (!sidebarClosing) closingLayoutVersion = undefined;
-          ++connectionVersion;
+          if (!signal.aborted && sidebarPort === current) dropSidebarPort?.();
         });
         return current;
       }
@@ -181,6 +191,28 @@ export function extensionRuntime(onDispose: () => void): Runtime {
           if (!signal.aborted && version === connectionVersion) controller.connectionFailed(error);
         }
       }
+      dropSidebarPort = () => {
+        // Firefox can unload its idle event page while the sidebar stays open.
+        // Recreate the port on the next activation, not in an idle keepalive loop.
+        sidebarPort = undefined;
+        sidebarRequestVersion = undefined;
+        // An intentional close can deliver disconnect before page disposal.
+        // Keep blocking late tab events so they cannot undo the accepted layout.
+        if (!sidebarClosing) closingLayoutVersion = undefined;
+        ++connectionVersion;
+      };
+      // An idle background drops this port while the sidebar still shows its
+      // page. A layout reopens it for that tab within the same click, so the
+      // woken background receives the startup request before the layout and
+      // hands the page over exactly as for a sidebar that never idled.
+      resumeSidebarPort = () => {
+        if (signal.aborted || sidebarPort || sidebarClosing || targetTab === undefined || windowId === undefined) return;
+        const version = ++connectionVersion;
+        try { connectionPort().postMessage({ tabId: targetTab, windowId, version }); }
+        catch { return; }
+        sidebarRequestVersion = version;
+        sidebarReopenVersion = version;
+      };
       // Chrome can show a closed sidebar's document again. Once a closing layout
       // hands the page its view, that document keeps the connection prompt until
       // a fresh owner answers, so a stale panel never offers a refused Float.

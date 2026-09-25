@@ -16,6 +16,7 @@ const ports: {
   onDisconnect: ReturnType<typeof event>;
   serverMessages?: ReturnType<typeof event>;
   serverDisconnect?: ReturnType<typeof event>;
+  posted: unknown[];
   closed: boolean;
 }[] = [];
 const requests: any[] = [];
@@ -26,6 +27,7 @@ const backgroundOwners = new Map<number, object>();
 let delayQuery = false;
 let releaseQuery: (() => void) | undefined;
 let activeTabId = 1;
+let lateDisconnect: (() => void) | undefined;
 Object.assign(globalThis, { chrome: {
   sidebarAction: {
     open: async () => {},
@@ -38,12 +40,13 @@ Object.assign(globalThis, { chrome: {
     onMessage: runtimeMessages,
     async sendMessage(message: unknown) { layoutMessages.push(message); return { ok: true }; },
     connect: () => {
-      const port: (typeof ports)[number] = { onMessage: event(), onDisconnect: event(), closed: false };
+      const port: (typeof ports)[number] = { onMessage: event(), onDisconnect: event(), posted: [], closed: false };
       ports.push(port);
       return { ...port, postMessage(request: any) {
         if (port.closed) throw new Error('Disconnected port');
         if (request.type === 'ANMERKO_SIDEBAR_LAYOUT') layoutSequence.push('port-post');
         requests.push(request);
+        port.posted.push(request);
         port.serverMessages?.emit(request);
       }, disconnect() { port.closed = true; } };
     },
@@ -79,6 +82,14 @@ Object.assign(globalThis, { nativeHarness: {
     port.onDisconnect.emit();
     port.serverDisconnect?.emit();
   },
+  // The background stopped, but the sidebar has not seen the port's disconnect event yet.
+  stop() {
+    const port = ports.at(-1)!;
+    port.closed = true;
+    port.serverDisconnect?.emit();
+    lateDisconnect = () => port.onDisconnect.emit();
+  },
+  deliverLateDisconnect() { lateDisconnect?.(); lateDisconnect = undefined; },
   staleReply() { ports[0].onMessage.emit({ ...requests.at(-1), ok: false, error: 'Old port response' }); },
   broadcast(overrides: Partial<ViewState> = {}) {
     runtimeMessages.emit({ type: 'ANMERKO_VIEW_CHANGED', state: { ...state, ...overrides } }, { id: 'test-extension', tab: { id: activeTabId } }, () => {});
@@ -106,7 +117,8 @@ Object.assign(globalThis, { nativeHarness: {
       closed: async () => { backgroundModes.push('minimized'); },
       layout: async (_tabId, _windowId, mode) => { backgroundModes.push(mode); },
     }, backgroundOwners);
-    for (const request of requests) serverMessages.emit(request);
+    // A background serves only what its own port carried.
+    for (const request of port.posted) serverMessages.emit(request);
   },
   resetLayoutSequence() { layoutSequence.length = 0; },
   failLayout() {

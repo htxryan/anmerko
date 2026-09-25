@@ -114,6 +114,11 @@ export class JourneyControllerError extends Error {
 const POST_ACTION_DELAY_MS = 500;
 const NAVIGATION_WINDOW_MS = 5_000;
 
+// A saved journey is finished: its confirmation never holds the recorder.
+export function journeyStartable(state: JourneySession): boolean {
+  return state.phase === 'idle' || state.phase === 'saved';
+}
+
 export function createJourneyController(
   adapter: JourneyControllerAdapter,
   restoredState: JourneySession = { phase: 'idle', epoch: 0 },
@@ -135,14 +140,14 @@ export function createJourneyController(
       || (input.includeEnteredValues !== undefined && typeof input.includeEnteredValues !== 'boolean')) {
       throw new JourneyControllerError('invalid-start', 'Journey recording needs a valid owner tab and window.');
     }
-    if (state.phase !== 'idle' || launching) {
+    if (!journeyStartable(state) || launching) {
       throw new JourneyControllerError('busy', 'Finish or discard the current journey before starting another.');
     }
     launching = true;
     const generation = ++workGeneration;
     try {
       const identity = await adapter.identify(input.ownerTabId);
-      if (generation !== workGeneration || state.phase !== 'idle') return;
+      if (generation !== workGeneration || !journeyStartable(state)) return;
       if (!identity.visible) throw new JourneyControllerError('owner-unavailable', 'The page is not available for journey recording.');
       const startedMs = now();
       const starting = createJourneySession({

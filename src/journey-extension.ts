@@ -1,6 +1,7 @@
 import {
   createJourneyController,
   JourneyControllerError,
+  journeyStartable,
   type JourneyController,
   type JourneyControllerAdapter,
   type JourneyPageIdentity,
@@ -56,6 +57,10 @@ const REVIEW_WARNING_ALARM = 'anmerko-journey-review-warning';
 const REVIEW_EXPIRY_ALARM = 'anmerko-journey-review-expiry';
 const JOURNEY_ALARMS = [RECORDING_DEADLINE_ALARM, REVIEW_WARNING_ALARM, REVIEW_EXPIRY_ALARM] as const;
 const MAX_PENDING_WAKE_EVENTS = 16;
+const WEB_DOCUMENTS = { url: [{ schemes: ['http', 'https'] }] };
+const LISTENER_HINT_KEY = 'anmerko:journey-listeners:v1';
+// Firefox unloads an event page after 30 idle seconds; any API call restarts that count.
+const KEEP_AWAKE_INTERVAL_MS = 10_000;
 const MAX_CONCURRENT_NORMALIZATIONS = 1;
 const MAX_QUEUED_NORMALIZATIONS = 1;
 function success<T>(value?: T): { ok: true; value?: T } {
@@ -135,6 +140,41 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 }
 
+interface ListenerHint {
+  // Whether the last journey phase needed the live-journey listeners, when known.
+  live?: boolean;
+  remember(live: boolean): void;
+}
+
+// Firefox wakes an unloaded event page only for the listeners it registered
+// while starting, and keeps waking it for them until a later start omits
+// them: removing a listener afterwards does not stop the wakes, and adding one
+// afterwards does not start them. Only Firefox has runtime.getBrowserInfo, and
+// its event page has synchronous localStorage, so every journey phase leaves a
+// hint there for the next start. A Chromium worker needs none.
+function firefoxListenerHint(runtime: typeof chrome.runtime): ListenerHint | undefined {
+  if (typeof (runtime as { getBrowserInfo?: unknown }).getBrowserInfo !== 'function') return;
+  let storage: Storage | undefined;
+  try { storage = globalThis.localStorage; } catch { /* Treated as unavailable below. */ }
+  if (!storage) return;
+  const hints = storage;
+  let stored: string | null = null;
+  try { stored = hints.getItem(LISTENER_HINT_KEY); } catch { /* An unknown hint registers every listener. */ }
+  const hint: ListenerHint = {
+    live: stored === 'live' ? true : stored === 'idle' ? false : undefined,
+    remember(live) {
+      if (live === hint.live) return;
+      hint.live = live;
+      try { hints.setItem(LISTENER_HINT_KEY, live ? 'live' : 'idle'); }
+      catch {
+        hint.live = undefined;
+        try { hints.removeItem(LISTENER_HINT_KEY); } catch { /* The next start reads the stale hint. */ }
+      }
+    },
+  };
+  return hint;
+}
+
 export function bindJourneyExtension(screenshotService: JourneyScreenshotService): JourneyExtensionBinding {
   const api = extensionApi();
   const sessionStore = createJourneySessionStore({
@@ -151,7 +191,6 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   let launchOpening = false;
   let reviewTabId: number | undefined;
   let reviewOpening: Promise<void> | undefined;
-  let navigationListenersInstalled = false;
   let controller: JourneyController;
   let ready: Promise<void>;
   let initializationError: unknown;
@@ -543,6 +582,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       }).catch(() => {});
     }
     void persistState(state).catch(() => {});
+    syncListeners();
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
@@ -581,7 +621,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   };
 
-  const makeController = (restored?: JourneySession) => createJourneyController({
+  const makeController = (restored?: JourneySession): JourneyController => {
+    const created = createJourneyController({
       identify,
       connect,
       capture,
@@ -592,11 +633,16 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await pageCommand(tabId, { type: 'ANMERKO_JOURNEY_PAGE_STOP', ...input });
       },
       pageAccessLost,
-      changed,
+      // A controller replaced after a storage failure may still finish work it
+      // began, such as a save. Its late state must not overwrite the
+      // replacement in storage, alarms, the toolbar, or open surfaces.
+      changed: state => { if (controller === created) changed(state); },
       async saveSnapshot(input) {
         return saveJourneySnapshot(input);
       },
     }, restored);
+    return created;
+  };
 
   controller = makeController();
 
@@ -636,18 +682,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const fragmentUpdated = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
     routeNavigation(details, 'same-document');
   };
-  const installNavigationListeners = (): boolean => {
-    if (navigationListenersInstalled) return true;
+  const navigationApi = () => {
     const available = api.webNavigation;
-    if (!available?.onCommitted || !available.onHistoryStateUpdated || !available.onReferenceFragmentUpdated) return false;
-    available.onCommitted.addListener(committed);
-    available.onHistoryStateUpdated.addListener(historyUpdated);
-    available.onReferenceFragmentUpdated.addListener(fragmentUpdated);
-    navigationListenersInstalled = true;
-    return true;
+    return available?.onCommitted && available.onHistoryStateUpdated && available.onReferenceFragmentUpdated
+      ? available : undefined;
   };
   const ensureJourneySupport = (): void => {
-    if (!installNavigationListeners()) throw new Error(GENERIC_ERROR);
+    if (!navigationApi()) throw new Error(GENERIC_ERROR);
   };
 
   const ownerActivated = (info: { tabId: number; windowId: number }) => {
@@ -678,6 +719,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
   const ownerRemoved = (tabId: number) => {
     if (tabId === reviewTabId) reviewTabId = undefined;
     for (const [id, intent] of launchIntents) if (intent.launchTabId === tabId) launchIntents.delete(id);
+    syncListeners();
     enqueueRoutedEvent(async () => {
       const state = controller.getState();
       if (activeState(state) && tabId === state.ownerTabId) await controller.stop('tab-lost');
@@ -689,13 +731,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       if (activeState(state) && windowId !== state.ownerWindowId) await controller.stop('focus-lost');
     });
   };
-  api.tabs.onActivated.addListener(ownerActivated);
-  api.tabs.onUpdated.addListener(ownerUpdated);
-  api.tabs.onRemoved.addListener(ownerRemoved);
-  api.tabs.onReplaced?.addListener(ownerReplaced);
-  windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
-
-  api.alarms.onAlarm.addListener(alarm => {
+  const alarmFired = (alarm: chrome.alarms.Alarm) => {
     if (!JOURNEY_ALARMS.includes(alarm.name as typeof JOURNEY_ALARMS[number])) return;
     enqueueRoutedEvent(async () => {
       const state = controller.getState();
@@ -710,7 +746,93 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         await controller.discard();
       }
     });
-  });
+  };
+
+  // Each navigation and tab listener wakes an idle service worker or event
+  // page for its event in every tab, so each stays registered only while a
+  // journey phase needs it. A Chromium worker registers all of them
+  // synchronously at startup, so the event that woke it for a live journey
+  // still reaches it, and removes each once the restored state shows nothing
+  // needs it. A Firefox start registers them only when its hint says the last
+  // phase was live, or is unknown; the next start after a journey drops them.
+  const listenerHint = firefoxListenerHint(api.runtime);
+  const liveListenersAtStartup = listenerHint?.live ?? true;
+  let navigationEvents: typeof chrome.webNavigation | undefined;
+  let watchingOwner = false;
+  let watchingRemovals = false;
+  let keepAwakeTimer: ReturnType<typeof setInterval> | undefined;
+  const watchNavigation = (wanted: boolean) => {
+    if (wanted && !navigationEvents) {
+      const available = navigationApi();
+      if (!available) return;
+      // Same-document updates only matter on the journey's HTTP(S) document.
+      // Commits stay unfiltered: an owner tab that opens a browser page must
+      // still stop the journey as protected-page.
+      available.onCommitted.addListener(committed);
+      available.onHistoryStateUpdated.addListener(historyUpdated, WEB_DOCUMENTS);
+      available.onReferenceFragmentUpdated.addListener(fragmentUpdated, WEB_DOCUMENTS);
+      navigationEvents = available;
+    } else if (!wanted && navigationEvents) {
+      navigationEvents.onCommitted.removeListener(committed);
+      navigationEvents.onHistoryStateUpdated.removeListener(historyUpdated);
+      navigationEvents.onReferenceFragmentUpdated.removeListener(fragmentUpdated);
+      navigationEvents = undefined;
+    }
+  };
+  const watchOwner = (wanted: boolean) => {
+    if (wanted === watchingOwner) return;
+    watchingOwner = wanted;
+    if (wanted) {
+      api.tabs.onActivated.addListener(ownerActivated);
+      api.tabs.onUpdated.addListener(ownerUpdated);
+      api.tabs.onReplaced?.addListener(ownerReplaced);
+      windowsApi?.onFocusChanged?.addListener(ownerFocusChanged);
+    } else {
+      api.tabs.onActivated.removeListener(ownerActivated);
+      api.tabs.onUpdated.removeListener(ownerUpdated);
+      api.tabs.onReplaced?.removeListener(ownerReplaced);
+      windowsApi?.onFocusChanged?.removeListener(ownerFocusChanged);
+    }
+  };
+  const watchRemovals = (wanted: boolean) => {
+    if (wanted === watchingRemovals) return;
+    watchingRemovals = wanted;
+    if (wanted) api.tabs.onRemoved.addListener(ownerRemoved);
+    else api.tabs.onRemoved.removeListener(ownerRemoved);
+  };
+  // Listeners a Firefox event page adds after starting never wake it once
+  // unloaded, so a journey that went live after a start without them keeps
+  // the page from idling until it ends. Recording lasts five minutes at most.
+  const keepAwake = (wanted: boolean) => {
+    if (wanted && keepAwakeTimer === undefined) {
+      keepAwakeTimer = setInterval(() => { void api.runtime.getPlatformInfo().catch(() => {}); }, KEEP_AWAKE_INTERVAL_MS);
+    } else if (!wanted && keepAwakeTimer !== undefined) {
+      clearInterval(keepAwakeTimer);
+      keepAwakeTimer = undefined;
+    }
+  };
+  // Owner and navigation events matter only while a journey starts or
+  // records. A pending launch tab also needs its closing seen, or the unused
+  // intent would refuse Record journey until it expires; the intent lives
+  // only in memory, so that listener never needs to wake the background. A
+  // review tab that closes unseen is replaced on demand.
+  const syncListeners = () => {
+    if (!initialized) return;
+    const live = !initializationError && activeState(controller.getState());
+    watchNavigation(live);
+    watchOwner(live);
+    watchRemovals(live || launchIntents.size > 0);
+    listenerHint?.remember(live);
+    keepAwake(live && !!listenerHint && !liveListenersAtStartup);
+  };
+  watchNavigation(liveListenersAtStartup);
+  watchOwner(liveListenersAtStartup);
+  watchRemovals(liveListenersAtStartup);
+  // Alarms fire only for the recording deadline and review expiry, which
+  // journeys schedule and clear themselves, so this listener never wakes an
+  // idle background. It stays registered from startup for every phase, which
+  // also lets a Firefox review started after a start expire on time.
+  api.alarms.onAlarm.addListener(alarmFired);
 
   const recordingUrl = (state: Extract<JourneySession, { phase: 'recording' }>): string | undefined => {
     const step = state.draft.steps.at(-1);
@@ -864,6 +986,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     const current = controller.getState();
     if (current.phase === 'reviewing' && Date.now() >= Date.parse(current.warningAt)) showReviewWarning(current);
     initialized = true;
+    syncListeners();
     void api.runtime.sendMessage({ type: 'ANMERKO_JOURNEY_CHANGED' }).catch(() => {});
   };
 
@@ -876,6 +999,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     initializationError = undefined;
     discardPendingWakeEvents();
     decorateForState(idle);
+    syncListeners();
     await Promise.all(Array.from(connectedEventPorts.values(), candidate => (
       stopStalePageRecorder(candidate.tabId, candidate.windowId)
     )));
@@ -886,7 +1010,8 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     operation: Promise<unknown>,
     respond: (response: unknown) => void,
   ) => {
-    operation.then(value => respond(success(value)), error => respond(failure(error)));
+    operation.then(value => respond(success(value)), error => respond(failure(error)))
+      .finally(syncListeners);
     return true;
   };
 
@@ -901,7 +1026,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
 
   const openLaunch = async (senderTabId: number, senderWindowId: number, senderUrl: string): Promise<void> => {
     const state = controller.getState();
-    if (state.phase !== 'idle') {
+    if (!journeyStartable(state)) {
       if (!('ownerTabId' in state) || state.ownerTabId !== senderTabId || state.ownerWindowId !== senderWindowId) {
         throw new JourneyCommandError('owner-unavailable');
       }
@@ -920,9 +1045,12 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
       } catch {
         throw new JourneyCommandError('owner-unavailable');
       }
-      if (!identity.visible || identity.url !== senderUrl || controller.getState().phase !== 'idle') {
+      if (!identity.visible || identity.url !== senderUrl || !journeyStartable(controller.getState())) {
         throw new JourneyCommandError('owner-unavailable');
       }
+      // The launch tab opens on Record, not on the finished journey's
+      // confirmation; the snapshot itself stays in Saved journeys.
+      if (controller.getState().phase === 'saved') await controller.discard();
       const id = crypto.randomUUID();
       intent = {
         ownerTabId: senderTabId, ownerWindowId: senderWindowId,
@@ -930,6 +1058,7 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
         expiresAt: Date.now() + LAUNCH_TTL_MS,
       };
       launchIntents.set(id, intent);
+      syncListeners();
       let created: chrome.tabs.Tab;
       try {
         created = await api.tabs.create({ url: `${journeyUrl}#launch=${id}` });
@@ -1310,13 +1439,13 @@ export function bindJourneyExtension(screenshotService: JourneyScreenshotService
     }
   });
 
-  installNavigationListeners();
   ready = initialize().catch(async error => {
     initializationError = error;
     initialized = true;
     discardPendingWakeEvents();
     if (activeState(controller.getState())) await controller.stop('session-storage-limit');
     await clearJourneyAlarms();
+    syncListeners();
   });
 
   return {
