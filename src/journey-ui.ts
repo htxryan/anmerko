@@ -334,14 +334,19 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     return scope instanceof ShadowRoot ? scope.activeElement : document.activeElement;
   }
 
-  // Focus is lost when it fell back to the document, not when the reader moved on.
+  // Focus is lost when it fell back to the document, not when the reader moved on,
+  // including to the web page beside a sidebar.
   function focusLost(): boolean {
+    if (!document.hasFocus()) return false;
     const scope = view.getRootNode();
     const documentLost = document.activeElement === null || document.activeElement === document.body;
     return scope instanceof ShadowRoot ? scope.activeElement === null && documentLost : documentLost;
   }
 
+  // Never pull focus into this surface from the page or another window: Firefox
+  // reports that as a window focus change and drops the screenshot in progress.
   function focusControl(...focusIds: string[]): boolean {
+    if (!document.hasFocus()) return false;
     for (const focusId of focusIds) {
       const target = view.querySelector(`[data-focus-id="${CSS.escape(focusId)}"]`);
       if (target instanceof HTMLElement && !target.matches(':disabled')) { target.focus(); return true; }
@@ -1384,7 +1389,7 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
   function render() {
     if (!alive) return;
     const activeElement = scopeActiveElement();
-    const inView = activeElement instanceof HTMLElement && view.contains(activeElement);
+    const inView = document.hasFocus() && activeElement instanceof HTMLElement && view.contains(activeElement);
     const focusId = inView ? activeElement.getAttribute('data-focus-id') : null;
     const selection = activeElement instanceof HTMLTextAreaElement && inView
       ? [activeElement.selectionStart, activeElement.selectionEnd] as const
@@ -1487,8 +1492,9 @@ export function mountJourneyUI(root: HTMLElement, client: JourneyClient): () => 
     }
     if (phaseChanged) {
       // A new view announces itself through its heading unless focus survived.
+      // Focus waits for recording to begin so it cannot disturb the first screenshot.
       pendingFocus = null;
-      if (!restored && (inView || focusLost())) focusControl('journey-heading');
+      if (!restored && state.phase !== 'starting' && (inView || focusLost())) focusControl('journey-heading');
     } else if (pendingFocus !== null && !settling()) {
       // Reclaim only focus the change dropped; a reader who moved on keeps their place.
       if (!restored && focusLost()) focusControl(...pendingFocus);

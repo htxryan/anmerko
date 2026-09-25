@@ -604,6 +604,8 @@ test('Firefox ends a journey on a same-origin reload with page-access-lost and e
   await dockClick('.comment-options');
   await dockClick('.journey-record');
   await driver.wait(async () => /Record a journey/.test(await journey()), 5000, 'the sidebar opens the journey launch view');
+  // The Firefox page-load notice sits above Start, which can push it below a short sidebar's fold.
+  await docked("root.querySelector('.journey-container .journey-primary').scrollIntoView({ block: 'center' })");
   await dockClick('.journey-container .journey-primary');
   await driver.wait(async () => /Recording journey/.test(await journey()), 20000, 'recording starts after the initial screenshot');
   // Firefox ties activeTab to the document: the reload keeps the origin but withdraws access.

@@ -67,13 +67,32 @@ test('a start that reaches the first screenshot and then fails returns focus to 
   await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeFocused();
 });
 
-test('a successful start moves focus to the new view heading', async ({ page }) => {
+test('a successful start moves focus to the recording heading once the first screenshot is taken', async ({ page }) => {
   await page.goto('http://127.0.0.1:4173');
   await page.setContent('<!doctype html><html><body></body></html>');
   await page.addScriptTag({ content: bundle() });
   await page.evaluate('journeyHarness.pending()');
   await page.getByRole('button', { name: 'Start journey', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Taking the first screenshot…' })).toBeFocused();
+  // Focus stays put while the first screenshot is taken, so Firefox keeps the capture.
+  await expect(page.getByRole('heading', { name: 'Taking the first screenshot…' })).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  await page.evaluate(() => (window as any).journeyHarness.set({ phase: 'recording', draft: { steps: [{}] } }));
+  await expect(page.getByRole('heading', { name: 'Recording journey' })).toBeFocused();
+});
+
+test('a surface without document focus never pulls focus from the page beside it', async ({ page }) => {
+  await page.goto('http://127.0.0.1:4173');
+  await page.setContent('<!doctype html><html><body></body></html>');
+  await page.addScriptTag({ content: bundle() });
+  await expect(page.getByRole('button', { name: 'Start journey', exact: true })).toBeVisible();
+  // A sidebar whose web page holds focus reports no document focus.
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await page.evaluate(() => (window as any).journeyHarness.set({ phase: 'recording', draft: { steps: [{}] } }));
+  await expect(page.getByRole('heading', { name: 'Recording journey' })).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  await page.evaluate(() => (window as any).journeyHarness.set({ phase: 'idle', epoch: 5 }));
+  await expect(page.getByRole('heading', { name: 'Record a journey' })).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
 
 test('initial capture can be cancelled while its promise remains pending', async ({ page }) => {
