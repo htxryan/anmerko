@@ -34,7 +34,9 @@ graphical format, never ASCII/text art.
    Automated browser tests alone do not satisfy this step.
 4. [code-review-and-quality](../code-review-and-quality/SKILL.md), then
    [documentation-and-adrs](../documentation-and-adrs/SKILL.md) where needed:
-   address findings and update affected documentation. Re-run affected checks
+   address findings and update affected documentation. For a user-visible
+   feature, also run [finish-feature](../finish-feature/SKILL.md) for the docs,
+   Features page, demo clip, and store copy. Re-run affected checks
    and browser scenarios after fixes; verify the final change against the plan.
 5. [git-workflow-and-versioning](../git-workflow-and-versioning/SKILL.md):
    commit, push, and open or update the feature PR with the plan and verification

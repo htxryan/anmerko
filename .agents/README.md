@@ -1,12 +1,13 @@
 # Project agent skills
 
-This checkout includes 25 skills from [Addy Osmani’s agent-skills](https://github.com/addyosmani/agent-skills), pinned to [be4e44a](https://github.com/addyosmani/agent-skills/tree/be4e44a9fbc5e8df0beaefadbb28bd22ee61cc39) on September 12, 2026 under the [MIT license](LICENSE), plus three project workflows:
+This checkout includes 25 skills from [Addy Osmani’s agent-skills](https://github.com/addyosmani/agent-skills), pinned to [be4e44a](https://github.com/addyosmani/agent-skills/tree/be4e44a9fbc5e8df0beaefadbb28bd22ee61cc39) on September 12, 2026 under the [MIT license](LICENSE), plus four project skills:
 
 | Workflow | Purpose |
 | --- | --- |
 | [workflow-define-and-plan](skills/workflow-define-and-plan/SKILL.md) | Explore, interview, and write an HTML spec/plan |
 | [workflow-execute](skills/workflow-execute/SKILL.md) | Implement a plan in a worktree, browser-test, and open a PR with green checks |
 | [workflow-define-plan-execute](skills/workflow-define-plan-execute/SKILL.md) | Define, plan, then execute |
+| [finish-feature](skills/finish-feature/SKILL.md) | Carry a user-visible feature through docs, the Features page and demo clip, and store copy |
 
 These workflows use the [HTML plan contract](references/html-plans.md): one self-contained plan with left navigation, specification, tasks, inline assets, and graphical diagrams.
 
