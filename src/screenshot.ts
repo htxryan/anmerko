@@ -5,11 +5,12 @@ type Rect = ScreenshotContext['region'];
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const nextFrames = () => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-// Full-page captures stop at this page height and scale down to stay within
-// canvas limits and the stored PNG size (the same cap as region crops).
-const FULL_PAGE_MAX_HEIGHT = 20_000;
-const FULL_PAGE_MAX_SIDE = 16_384;
-const FULL_PAGE_MAX_AREA = 16_000_000;
+// A full-page image must fit one canvas: 32,767 px per side in Chrome and
+// Firefox, and a smaller area on phones. Tall pages scale down until text is
+// half its on-screen size (about 65,000 CSS pixels of page); only pages taller
+// than that are cut off.
+const FULL_PAGE_MAX_SIDE = 32_767;
+const FULL_PAGE_MIN_SCALE = .5;
 const MAX_DATA_URL = 2_800_000;
 // Browsers limit visible-tab captures to about two per second, and the worker
 // rejects captures closer together than 600 ms.
@@ -229,7 +230,8 @@ export async function selectScreenshot(app: HTMLElement, mobile: boolean, captur
       if (Math.abs(zoom - 1) > .01) throw new Error('Zoom out fully to capture the full page.');
       const start = { x: window.scrollX, y: window.scrollY };
       const viewWidth = root.clientWidth, viewHeight = root.clientHeight;
-      const pageHeight = Math.min(FULL_PAGE_MAX_HEIGHT, Math.max(viewHeight, (document.scrollingElement || root).scrollHeight));
+      const pageHeight = Math.max(viewHeight, (document.scrollingElement || root).scrollHeight);
+      const maxArea = mobile ? 16_000_000 : 32_000_000;
       const check = () => {
         if (finished || signal.aborted || document.hidden || location.href !== startUrl
           || Math.abs((viewport?.width ?? innerWidth) - width) >= 1 || Math.abs((viewport?.height ?? innerHeight) - height) >= 1) {
@@ -237,11 +239,11 @@ export async function selectScreenshot(app: HTMLElement, mobile: boolean, captur
         }
       };
       let canvas: HTMLCanvasElement | null = null;
-      let ratio = 1, scale = 1, captured = 0, previousTop = -1;
+      let ratio = 1, scale = 1, captured = 0, previousTop = -1, limit = pageHeight;
       let restoreFloating: (() => void) | null = null;
       app.classList.add('capture-hidden');
       try {
-        for (let y = 0; y < pageHeight; y += viewHeight) {
+        for (let y = 0; y < limit; y += viewHeight) {
           window.scrollTo({ left: start.x, top: y, behavior: 'instant' });
           await nextFrames();
           await pause(Math.max(0, lastCapture + CAPTURE_INTERVAL - performance.now()));
@@ -258,11 +260,13 @@ export async function selectScreenshot(app: HTMLElement, mobile: boolean, captur
           if (!canvas) {
             ratio = frame.naturalWidth / captureWidth;
             const pixelWidth = viewWidth * ratio, pixelHeight = pageHeight * ratio;
-            scale = Math.min(1, 2400 / pixelWidth, FULL_PAGE_MAX_SIDE / pixelHeight, Math.sqrt(FULL_PAGE_MAX_AREA / (pixelWidth * pixelHeight)));
+            const minScale = Math.min(1, FULL_PAGE_MIN_SCALE / ratio);
+            scale = Math.max(minScale, Math.min(1, 2400 / pixelWidth, FULL_PAGE_MAX_SIDE / pixelHeight, Math.sqrt(maxArea / (pixelWidth * pixelHeight))));
+            limit = Math.min(pageHeight, Math.floor(Math.min(FULL_PAGE_MAX_SIDE, maxArea / (pixelWidth * scale)) / (ratio * scale)));
             canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(pixelWidth * scale)); canvas.height = Math.max(1, Math.round(pixelHeight * scale));
+            canvas.width = Math.max(1, Math.round(pixelWidth * scale)); canvas.height = Math.max(1, Math.round(limit * ratio * scale));
           }
-          const offset = y - top, rows = Math.min(viewHeight - offset, pageHeight - y);
+          const offset = y - top, rows = Math.min(viewHeight - offset, limit - y);
           const destination = Math.round(y * ratio * scale);
           canvas.getContext('2d')!.drawImage(frame, 0, Math.round(offset * ratio), Math.round(viewWidth * ratio), Math.round(rows * ratio),
             0, destination, canvas.width, Math.round((y + rows) * ratio * scale) - destination);
@@ -279,11 +283,18 @@ export async function selectScreenshot(app: HTMLElement, mobile: boolean, captur
       if (!canvas || captured <= 0) throw new Error('Could not capture the full page. Try again.');
       let output = encode(canvas, canvas.width, Math.round(captured * ratio * scale));
       let dataUrl = output.toDataURL('image/png');
+      // Long pages rarely fit the size cap as PNG. JPEG keeps them at full
+      // resolution; only if that is still too large does the image shrink.
+      for (const quality of [.9, .8, .7]) {
+        if (dataUrl.length <= MAX_DATA_URL) break;
+        dataUrl = output.toDataURL('image/jpeg', quality);
+      }
       for (let attempt = 0; dataUrl.length > MAX_DATA_URL && attempt < 6; attempt++) {
         const shrink = Math.min(.9, Math.sqrt(MAX_DATA_URL / dataUrl.length) * .95);
         output = encode(output, output.width * shrink, output.height * shrink);
-        dataUrl = output.toDataURL('image/png');
+        dataUrl = output.toDataURL('image/jpeg', .7);
       }
+      if (!/^data:image\/(png|jpeg);base64,/.test(dataUrl)) throw new Error('This page is too large to capture. Select a region instead.');
       if (dataUrl.length > MAX_DATA_URL) throw new Error('This page is too large to capture. Select a region instead.');
       return { dataUrl, width: output.width, height: output.height,
         region: { x: 0, y: 0, width: Math.round(viewWidth), height: Math.round(captured) },

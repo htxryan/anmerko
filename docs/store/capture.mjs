@@ -55,7 +55,7 @@ try {
   const example = await copyPrompt(page);
   await writeFile(resolve('site/src/content/docs/docs/example-prompt.md'),
     '---\ntitle: Example prompt\ndescription: Real anmerko feedback exported from Salad Recipe Finder.\n---\n\n'
-    + 'These two element comments were copied from [Salad Recipe Finder](https://saladrecipefinder.com/). Screenshot exports also reference PNGs; attach those separately.\n\n'
+    + 'These two element comments were copied from [Salad Recipe Finder](https://saladrecipefinder.com/). Screenshot exports also reference image files; attach those separately.\n\n'
     + '```markdown\n' + example.trimEnd() + '\n```\n');
 
   await panel.getByRole('button', { name: 'Take Screenshot' }).click();

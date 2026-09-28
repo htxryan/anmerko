@@ -3,7 +3,7 @@ title: Example prompt
 description: Real anmerko feedback exported from Salad Recipe Finder.
 ---
 
-These two element comments were copied from [Salad Recipe Finder](https://saladrecipefinder.com/). Screenshot exports also reference PNGs; attach those separately.
+These two element comments were copied from [Salad Recipe Finder](https://saladrecipefinder.com/). Screenshot exports also reference image files; attach those separately.
 
 ```markdown
 # Website feedback

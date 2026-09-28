@@ -336,6 +336,45 @@ test.describe('screenshot comments', () => {
     expect(prompt).toContain('- **Region:** Full page from the top, width');
     expect(prompt).toContain('height 3600 (CSS pixels)');
   });
+  test('full page capture goes past 20,000 pixels and falls back to JPEG when PNG is too large', async ({ page, worker, activate }) => {
+    test.setTimeout(120_000);
+    const bands = [[200, 30, 30], [30, 160, 60], [30, 60, 200], [120, 40, 160]];
+    await page.route(`${ORIGIN}/very-tall-page`, route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Very tall page</title>
+      <style>body{margin:0}section{height:10000px}#noise{height:3000px}</style>
+      ${bands.map(([r, g, b], index) => `<section style="background:rgb(${r},${g},${b})">${index === 1 ? '<div id="noise"></div>' : ''}</section>`).join('')}
+      <script>
+        const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
+        const ctx = canvas.getContext('2d'); const data = ctx.createImageData(256, 256);
+        for (let i = 0; i < data.data.length; i++) data.data[i] = i % 4 === 3 ? 255 : Math.random() * 256;
+        ctx.putImageData(data, 0, 0);
+        document.getElementById('noise').style.background = 'url(' + canvas.toDataURL() + ')';
+      </script>` }));
+    await page.goto(`${ORIGIN}/very-tall-page`);
+    await activate(page);
+    await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
+    await page.getByRole('dialog', { name: 'Select screenshot region' }).getByRole('button', { name: 'Full Page', exact: true }).click();
+    await expect(panel(page).getByLabel('Comment', { exact: true })).toBeVisible({ timeout: 90_000 });
+    await panel(page).getByLabel('Comment', { exact: true }).fill('Check the whole long page.');
+    await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(notes(page)).toHaveCount(1);
+    const records = await worker.evaluate(() => chrome.storage.local.get(null));
+    const shot = (Object.values(records) as Note[]).find(note => note?.screenshot)!.screenshot!;
+    expect(shot.dataUrl.startsWith('data:image/jpeg;base64,')).toBe(true);
+    expect(shot.dataUrl.length).toBeLessThanOrEqual(2_800_000);
+    expect(shot).toMatchObject({ fullPage: true, region: { x: 0, y: 0, height: 40_000 } });
+    expect(shot.width / shot.region.width).toBeGreaterThanOrEqual(.5);
+    const scale = shot.width / shot.region.width;
+    const samples = await page.evaluate(async ({ data, scale }) => {
+      const image = new Image(); image.src = data; await image.decode();
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+      const ctx = canvas.getContext('2d')!; ctx.drawImage(image, 0, 0);
+      return [5000, 15000, 25000, 35000].map(y => Array.from(ctx.getImageData(Math.round(200 * scale), Math.round(y * scale), 1, 1).data.slice(0, 3)));
+    }, { data: shot.dataUrl, scale });
+    samples.forEach((pixel, index) => pixel.forEach((channel, c) => expect(Math.abs(channel - bands[index][c])).toBeLessThanOrEqual(12)));
+    const prompt = await copyPrompt(page);
+    expect(prompt).toMatch(/Screenshot file:\*\* `screenshot-[^`]+\.jpg`/);
+    expect(prompt).toContain('height 40000 (CSS pixels)');
+  });
   test('drag capture excludes UI, preserves pixels at high DPI, persists and exports real PNG attachments', async ({ page, context, worker, activate }) => {
     await page.evaluate(() => {
       const swatch = document.createElement('div');

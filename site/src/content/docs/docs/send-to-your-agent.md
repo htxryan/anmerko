@@ -9,16 +9,16 @@ Choose **This page** or **All pages** before sharing. The selected scope control
 
 Choose **Copy Prompt** to copy Markdown containing your saved feedback, page URLs, and captured context. Paste it into your agent chat.
 
-For screenshot comments, use **Download Markdown + Images** and attach the matching PNG files listed in the copied Markdown.
+For screenshot comments, use **Download Markdown + Images** and attach the matching image files listed in the copied Markdown.
 
 ## Download Markdown and images
 
 When the selected comments include a screenshot, **Download Markdown + Images** appears below the prompt controls. It saves `anmerko-comments.zip`, containing:
 
 - `comments.md`, with the same prompt text
-- one matching PNG for each screenshot comment
+- one matching image for each screenshot comment (PNG, or JPEG for some long full-page screenshots)
 
-Extract the ZIP, give `comments.md` to your agent, and attach the PNG files alongside it. If **Copy Prompt** fails, use the download option instead.
+Extract the ZIP, give `comments.md` to your agent, and attach the image files alongside it. If **Copy Prompt** fails, use the download option instead.
 
 ![anmerko prompt and export controls with Salad Recipe Finder feedback](/screenshots/04-prompt-export.png)
 
