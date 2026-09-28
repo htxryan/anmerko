@@ -11,11 +11,10 @@
 // Usage:
 //   npm run build
 //   HEADLESS=1 CLIP_VIEWPORT=1068x668 CLIP_SCALE=800:-2 FFMPEG=/path/to/ffmpeg \
-//     node scripts/site/capture-feature-clips.mjs [element|screenshot|global|component|preact|export]
+//     node scripts/site/capture-feature-clips.mjs [element|screenshot|fullpage|global|component|preact|export]
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { startFixtureServer } from '../../tests/fixtures/component-context/server.mjs';
 import {
   repoRoot as root, clipConfig, caption, hideOverlay, pulse, glide, centerOf,
   clickAt, dragSlow, launch, activate, panel, setupPage, finish, composePip, mediaDuration, clipCues,
@@ -97,6 +96,54 @@ async function screenshotClip() {
     await page.waitForTimeout(1600);
     page._clipSs = ss;
     await finish(session, page, { name: 'screenshot', outDir, srtDir: rawDir, rawDir });
+  } catch (error) {
+    await session.context.close().catch(() => {});
+    await rm(session.temp, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function fullPageClip() {
+  const session = await launch();
+  try {
+    const { page, ss } = await setupPage(session, SALAD, saladReady);
+    const take = panel(page).getByRole('button', { name: 'Take Screenshot' });
+    const full = page.getByRole('button', { name: 'Full Page', exact: true });
+    const comment = panel(page).getByLabel('Comment', { exact: true });
+    const save = panel(page).getByRole('button', { name: 'Save', exact: true });
+    await caption(page, 'Take Screenshot, then choose Full Page');
+    await glide(page, await centerOf(take), 750);
+    await page.waitForTimeout(500);
+    // The first viewport capture becomes the selection backdrop; keep the
+    // cursor out of it so no second, frozen dot appears.
+    await hideOverlay(page, true);
+    await page.mouse.down();
+    await page.mouse.up();
+    await full.waitFor();
+    await hideOverlay(page, false);
+    await page.waitForTimeout(600);
+    await glide(page, await centerOf(full), 750);
+    await page.waitForTimeout(500);
+    // The page scrolls itself while frames are captured; keep the cursor and
+    // pulse overlay out of every stitched frame.
+    await hideOverlay(page, true);
+    await caption(page, 'anmerko scrolls and stitches the page');
+    await page.mouse.down();
+    await page.mouse.up();
+    await comment.waitFor({ timeout: 30_000 });
+    await hideOverlay(page, false);
+    await page.waitForTimeout(600);
+    await caption(page, 'Describe the page, then Save');
+    await glide(page, await centerOf(comment), 700);
+    await clickAt(page, await centerOf(comment), 450);
+    await comment.pressSequentially('Tighten spacing between sections.', { delay: 35 });
+    await page.waitForTimeout(900);
+    await glide(page, await centerOf(save), 700);
+    await clickAt(page, await centerOf(save));
+    await caption(page, 'Saved with the full-page image');
+    await page.waitForTimeout(1600);
+    page._clipSs = ss;
+    await finish(session, page, { name: 'fullpage', outDir, srtDir: rawDir, rawDir });
   } catch (error) {
     await session.context.close().catch(() => {});
     await rm(session.temp, { recursive: true, force: true });
@@ -292,15 +339,18 @@ async function exportClip() {
 process.chdir(root);
 await mkdir(rawDir, { recursive: true });
 await mkdir(outDir, { recursive: true });
-const clips = { element: elementClip, screenshot: screenshotClip, global: globalClip, export: exportClip };
+const clips = { element: elementClip, screenshot: screenshotClip, fullpage: fullPageClip, global: globalClip, export: exportClip };
 let fixtureServer;
 if (!only || only === 'component' || only === 'preact') {
+  // Loaded only for component clips: the fixture server needs the framework
+  // fixture packages from `npm run test:context-fixtures:setup`.
+  const { startFixtureServer } = await import('../../tests/fixtures/component-context/server.mjs');
   fixtureServer = await startFixtureServer();
   clips.component = () => componentClip(fixtureServer.origin);
   clips.preact = () => preactClip(fixtureServer.origin);
 }
 try {
-  const names = only ? [only] : ['element', 'screenshot', 'global', 'component', 'preact', 'export'];
+  const names = only ? [only] : ['element', 'screenshot', 'fullpage', 'global', 'component', 'preact', 'export'];
   for (const name of names) {
     assert.ok(clips[name], `unknown clip: ${name}`);
     await clips[name]();
