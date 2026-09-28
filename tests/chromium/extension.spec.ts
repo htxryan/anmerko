@@ -297,6 +297,45 @@ test.describe('screenshot comments', () => {
       expect(pixels).toEqual([[11, 132, 77, 255], [24, 60, 200, 255]]);
     });
   });
+  test('full page capture stitches the scrolled page once, restores the page and exports a full-page prompt', async ({ page, worker, activate }) => {
+    const bands = [[200, 30, 30], [30, 160, 60], [30, 60, 200]];
+    await page.route(`${ORIGIN}/tall-page`, route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Tall page</title>
+      <style>body{margin:0}section{height:1200px}</style>
+      <header id="site-header" style="position:fixed;top:0;left:0;right:0;height:60px;background:rgb(250,200,0);z-index:5"></header>
+      ${bands.map(([r, g, b]) => `<section style="background:rgb(${r},${g},${b})"></section>`).join('')}` }));
+    await page.goto(`${ORIGIN}/tall-page`);
+    await page.evaluate(() => scrollTo(0, 500));
+    await activate(page);
+    await panel(page).getByRole('button', { name: 'Take Screenshot' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Select screenshot region' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Full Page', exact: true }).click();
+    await expect(panel(page).getByLabel('Comment', { exact: true })).toBeVisible({ timeout: 15_000 });
+    expect(await page.evaluate(() => scrollY)).toBe(500);
+    expect(await page.locator("#site-header").evaluate(el => [getComputedStyle(el).visibility, el.getAttribute('style')!.includes('visibility')])).toEqual(['visible', false]);
+    await panel(page).getByLabel('Comment', { exact: true }).fill('The whole page needs more contrast.');
+    await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(notes(page)).toHaveCount(1);
+    const records = await worker.evaluate(() => chrome.storage.local.get(null));
+    const shot = (Object.values(records) as Note[]).find(note => note?.screenshot)!.screenshot!;
+    const view = await page.evaluate(() => ({ width: document.documentElement.clientWidth, height: document.documentElement.clientHeight }));
+    expect(shot).toMatchObject({ fullPage: true, region: { x: 0, y: 0, width: view.width, height: 3600 }, scroll: { x: 0, y: 0 } });
+    expect(shot.height / shot.width).toBeCloseTo(3600 / view.width, 1);
+    const scale = shot.width / view.width;
+    // Sample the fixed header, each band, and the top of the second frame, where
+    // a repeated fixed header would appear.
+    const samples = await page.evaluate(async ({ data, scale, rows }) => {
+      const image = new Image(); image.src = data; await image.decode();
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+      const ctx = canvas.getContext('2d')!; ctx.drawImage(image, 0, 0);
+      return rows.map(y => Array.from(ctx.getImageData(Math.round(200 * scale), Math.round(y * scale), 1, 1).data.slice(0, 3)));
+    }, { data: shot.dataUrl, scale, rows: [30, 600, 1800, 3000, view.height + 30] });
+    const expected = [[250, 200, 0], ...bands, view.height + 30 < 1200 ? bands[0] : bands[1]];
+    samples.forEach((pixel, index) => pixel.forEach((channel, c) => expect(Math.abs(channel - expected[index][c])).toBeLessThanOrEqual(3)));
+    const prompt = await copyPrompt(page);
+    expect(prompt).toContain('- **Region:** Full page from the top, width');
+    expect(prompt).toContain('height 3600 (CSS pixels)');
+  });
   test('drag capture excludes UI, preserves pixels at high DPI, persists and exports real PNG attachments', async ({ page, context, worker, activate }) => {
     await page.evaluate(() => {
       const swatch = document.createElement('div');
