@@ -11,7 +11,7 @@ const CLIP_V = 9;
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="What anmerko does: element, screenshot, and page comments, optional component hints, and agent-ready exports.">
+  <meta name="description" content="What anmerko does: element, screenshot, full-page screenshot, and page comments, optional component hints, and agent-ready exports.">
   <link rel="canonical" href="https://anmerko.com/features/">
   <meta property="og:title" content="anmerko — Features">
   <meta property="og:description" content="Point at what should change, add context, and hand your AI agent a clean brief.">
@@ -78,7 +78,7 @@ const CLIP_V = 9;
       <section aria-labelledby="screenshot-comments" class="feature-split">
         <div>
           <h2 id="screenshot-comments">Capture a visual region</h2>
-          <p>For feedback about a look or layout, drag a box over the region and comment on the crop. Only the cropped PNG is stored — never a full-page capture.</p>
+          <p>For feedback about a look or layout, drag a box over the region and comment on the crop. Only the cropped PNG is stored — never the rest of the screen.</p>
           <ul>
             <li>Keyboard support: arrows move, corners resize, <strong>Shift</strong> steps by ten pixels, <strong>Esc</strong> cancels.</li>
             <li>Crops are limited to 2,400 pixels on the longest side and about 2 MB each.</li>
@@ -89,6 +89,23 @@ const CLIP_V = 9;
         <figure class="feature-clip">
           <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/02-screenshot-feedback.png" aria-label="Silent clip: dragging a region and saving a screenshot comment">
             <source src={`/media/features/screenshot.mp4?v=${CLIP_V}`} type="video/mp4">
+          </video>
+        </figure>
+      </section>
+      <section aria-labelledby="full-page-screenshots" class="feature-split">
+        <div>
+          <h2 id="full-page-screenshots">Screenshot the full page</h2>
+          <p>When the feedback spans a whole layout, choose <strong>Full Page</strong> instead of dragging a box. anmerko scrolls from the top of the page to the bottom, stitches the screens into one image, and returns you to where you were.</p>
+          <ul>
+            <li>Fixed and sticky headers appear once, at the top, instead of repeating down the image.</li>
+            <li>Long pages are saved as JPEG when a PNG would exceed about 2 MB, so they keep their detail. Pages up to about 65,000 pixels tall fit in one image.</li>
+            <li>The prompt marks the image as a full-page capture so your agent reads it as the whole layout.</li>
+          </ul>
+          <p><a href="/docs/usage/screenshot-comments/#capture-the-full-page">Full-page screenshots →</a></p>
+        </div>
+        <figure class="feature-clip">
+          <video autoplay muted loop playsinline preload="metadata" poster="/screenshots/02-screenshot-feedback.png" aria-label="Silent clip: choosing Full Page, watching the page scroll and stitch, and saving a full-page screenshot comment">
+            <source src={`/media/features/fullpage.mp4?v=${CLIP_V}`} type="video/mp4">
           </video>
         </figure>
       </section>

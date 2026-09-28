@@ -26,3 +26,5 @@ Keep the draft open. Export saved feedback before deleting comments to free stor
 ## Screenshot selection disappears
 
 Changing tabs or viewport size cancels capture. Reposition the page and try again.
+
+A full-page screenshot scrolls the page for you. Keep the tab in view and leave the page alone until the comment editor opens.

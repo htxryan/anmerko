@@ -10,7 +10,7 @@ Changing a URL's query parameters or fragment can show a different set of commen
 Choose the comment type that best identifies what you want changed:
 
 - [Inline comments](/docs/usage/inline-comments/) point to a specific element.
-- [Screenshot comments](/docs/usage/screenshot-comments/) capture a visible region.
+- [Screenshot comments](/docs/usage/screenshot-comments/) capture a visible region or the full page.
 - [Global comments](/docs/usage/global-comments/) describe the whole current page.
 
 Write your feedback and choose **Save**, or press **Ctrl/⌘ + Enter**. A draft stays available when you move between the floating panel and sidebar while the document remains open. Save before refreshing, navigating away, or closing the page. If the page changes before you save, the draft still belongs to the URL where you started it.

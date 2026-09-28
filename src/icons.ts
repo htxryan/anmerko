@@ -2,6 +2,7 @@ type Shape = { tag: 'path' | 'circle' | 'rect'; attributes: Record<string, strin
 
 const shapes = {
   select: [{tag: 'circle', attributes: {cx: '12', cy: '12', r: '7'}}, {tag: 'path', attributes: {d: 'M12 2v5m0 10v5M2 12h5m10 0h5'}}],
+  'full-page': [{tag: 'rect', attributes: {x: '5', y: '2', width: '14', height: '20', rx: '2'}}, {tag: 'path', attributes: {d: 'M9 7h6m-6 4h6m-6 4h4'}}],
   camera: [{tag: 'path', attributes: {d: 'M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z'}}, {tag: 'circle', attributes: {cx: '12', cy: '13', r: '4'}}],
   pin: [{tag: 'path', attributes: {d: 'M9 3h6l-1 7 4 4v2H6v-2l4-4-1-7Zm3 13v6'}}],
   unpin: [{tag: 'path', attributes: {d: 'm2 2 20 20M9 3h6l-1 7 4 4v2M10 10l-4 4v2h10m-4 0v6'}}],

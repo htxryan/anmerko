@@ -19,7 +19,7 @@ This is ready-to-enter draft copy for the existing Chrome Web Store and Firefox 
 
 Turn website feedback into a clear brief for your AI agent.
 
-With anmerko, you can attach comments to webpage elements, capture a region of the page and comment on the image, or leave feedback about the whole page. Review your notes, copy a structured prompt, or export your feedback with its screenshots.
+With anmerko, you can attach comments to webpage elements, capture a region or the full page and comment on the image, or leave feedback about the whole page. Review your notes, copy a structured prompt, or export your feedback with its screenshots.
 
 - Point to the element that needs attention.
 - Add screenshot comments when visual context matters.

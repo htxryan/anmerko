@@ -693,8 +693,9 @@ export function mount(runtime: Runtime): Controller {
     if (note.kind === 'page' || !samePage(note.pageUrl, pageUrl())) return null;
     if (note.screenshot) {
       if (parent) return null;
-      const { region, scroll } = note.screenshot;
-      window.scrollTo({ left: Math.max(0, scroll.x + region.x + region.width / 2 - innerWidth / 2), top: Math.max(0, scroll.y + region.y + region.height / 2 - innerHeight / 2), behavior: 'instant' });
+      const { region, scroll, fullPage } = note.screenshot;
+      if (fullPage) window.scrollTo({ left: scroll.x, top: 0, behavior: 'instant' });
+      else window.scrollTo({ left: Math.max(0, scroll.x + region.x + region.width / 2 - innerWidth / 2), top: Math.max(0, scroll.y + region.y + region.height / 2 - innerHeight / 2), behavior: 'instant' });
       highlighted = null;
     } else {
       const element = resolveElement(note.element);

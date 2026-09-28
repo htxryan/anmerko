@@ -7,7 +7,7 @@ description: What anmerko saves, shares, and can access.
 
 The extension makes no network requests. It has no analytics, AI calls, or cloud sync. Saved comments stay in the browser profile until deleted or the extension is removed. Unsaved drafts stay in memory.
 
-anmerko stores comments, page titles/full URLs, selected element context and selectors, confirmed screenshot crops, and settings locally. These support annotation, filtering, and export. They are not sent to the developer or used for advertising, sale, or credit decisions. anmerko does not capture full HTML or source files, run an agent, or share automatically.
+anmerko stores comments, page titles/full URLs, selected element context and selectors, confirmed screenshot crops and full-page screenshots, and settings locally. These support annotation, filtering, and export. They are not sent to the developer or used for advertising, sale, or credit decisions. anmerko does not capture full HTML or source files, run an agent, or share automatically.
 
 Element capture excludes form values and editable text. Other captured text and URLs may still be private; screenshots include all visible pixels within the crop, including form contents. Review exports before sharing.
 

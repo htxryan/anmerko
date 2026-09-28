@@ -155,6 +155,23 @@ test('page and screenshot notes cannot persist component context', async () => {
   expect(JSON.stringify(memory.records[STORAGE_PREFIX + 'shot'])).not.toContain('componentContext');
 });
 
+test('only full-page screenshots may be JPEG, and they export with a .jpg name', async () => {
+  const memory = store();
+  const shot = (id: string, dataUrl: string, fullPage?: true) => ({
+    id, pageUrl: 'https://example.com/', pageTitle: 'Example', comment: 'Shot', createdAt: id, updatedAt: id,
+    screenshot: { dataUrl, width: 1, height: 1, region: { x: 0, y: 0, width: 1, height: 1 },
+      viewport: { width: 1, height: 1 }, scroll: { x: 0, y: 0 }, ...(fullPage ? { fullPage } : {}) },
+  }) as Note;
+  await expect(saveNote(memory, shot('crop', 'data:image/jpeg;base64,QQ=='))).rejects.toThrow('Invalid note');
+  await saveNote(memory, shot('page-jpeg', 'data:image/jpeg;base64,QQ==', true));
+  await saveNote(memory, shot('page-png', 'data:image/png;base64,QQ==', true));
+  const saved = await readNotes(memory);
+  expect(saved.map(note => note.id)).toEqual(['page-jpeg', 'page-png']);
+  const prompt = buildPrompt(saved);
+  expect(prompt).toContain('`screenshot-page-jpeg.jpg`');
+  expect(prompt).toContain('`screenshot-page-png.png`');
+});
+
 test('prompt preparation preserves absent-context output and cannot leak excluded context fields', () => {
   const baseline = buildPrompt([note]);
   const raw = {

@@ -1,6 +1,6 @@
 import { buildPrompt, screenshotFilename, type Note } from './core';
 
-// Store-only ZIP: PNG is already compressed. Keeps the export entirely local
+// Store-only ZIP: PNG and JPEG are already compressed. Keeps the export entirely local
 // and interoperable without a runtime dependency or a background upload.
 export function feedbackArchive(notes: Note[], preamble: string): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();

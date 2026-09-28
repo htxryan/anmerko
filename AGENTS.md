@@ -20,6 +20,10 @@ Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and
 - The main agent session will typically use Astra, and should do all planning and task breakdown activities. But it should use Sol or Terra subagents (depending on the task) to do individual low-level task execution (like making specific code changes in an area of the code). The goals should be parallelization and token cost optimization. Be sure to strike the right balance between "small enough to one-shot" and "big enough to not burn tokens duplicating context across multiple sessions".
 - Manually test all non-documentation updates end to end in a browser whenever
   browser testing applies. Automated tests complement this verification.
+- When adding or changing a user-visible feature, use the `finish-feature`
+  skill before its PR is done: user docs, the brochure Features page and demo
+  clip, store copy, and stale claims ship in the same PR, with an approved
+  named preview deploy of the site.
 
 ## Repository structure
 
@@ -45,8 +49,8 @@ Command definitions live in [package.json](package.json) and [Taskfile.yml](Task
 
 ## Agent skills
 
-This repository includes Addy Osmani's agent skills and three project-owned
-`workflow-*` skills in `.agents/skills/`.
+This repository includes Addy Osmani's agent skills, three project-owned
+`workflow-*` skills, and the project `finish-feature` skill in `.agents/skills/`.
 Use the host's native skill discovery to load a matching skill on demand.
 OpenCode should load matching skills with its `skill` tool. Keep the full
 `using-agent-skills` workflow out of always-loaded instructions.

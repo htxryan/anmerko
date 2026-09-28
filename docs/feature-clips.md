@@ -42,7 +42,7 @@ re-resolve if it moves). Record one clip or all:
 ```sh
 npm run build
 HEADLESS=1 CLIP_VIEWPORT=1068x668 CLIP_SCALE=800:-2 FFMPEG=/path/to/ffmpeg \
-  node scripts/site/capture-feature-clips.mjs [element|screenshot|global|component|export]
+  node scripts/site/capture-feature-clips.mjs [element|screenshot|fullpage|global|component|preact|export]
 ```
 
 `HEADLESS=1` records in headless bundled Chromium (no window opens) and is
@@ -107,8 +107,8 @@ NEVER submitted: no tokens burn and nothing runs.
 1. Add a scenario function following the existing cadence: `setupPage`
    (warm page absorbs slow loads off-camera; its video is discarded) →
    `caption` → `glide` → `clickAt` → `pressSequentially` → closing hold.
-2. Hide the overlay during real screenshot drags so it never ends up inside a
-   captured crop.
+2. Hide the overlay during real screenshot drags and full-page captures so it
+   never ends up inside a captured image.
 3. Name the output `<feature>.mp4`, reuse an existing poster, and embed with
    the `feature-split` + `feature-clip` pattern (text in the left `div`,
    `figure` on the right).

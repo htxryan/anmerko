@@ -18,6 +18,8 @@ export interface ScreenshotContext {
   region: { x: number; y: number; width: number; height: number };
   viewport: { width: number; height: number };
   scroll: { x: number; y: number };
+  // The image covers the page from its top, not a region of the viewport.
+  fullPage?: true;
 }
 
 interface NoteBase {
@@ -192,7 +194,7 @@ function normalizeNote(value: unknown): Note | undefined {
     };
     if (value.kind === 'page') return { ...base, kind: 'page' };
     if (value.screenshot) {
-      const { dataUrl, width, height, region, viewport, scroll } = value.screenshot;
+      const { dataUrl, width, height, region, viewport, scroll, fullPage } = value.screenshot;
       return {
         ...base,
         screenshot: {
@@ -200,6 +202,7 @@ function normalizeNote(value: unknown): Note | undefined {
           region: { x: region.x, y: region.y, width: region.width, height: region.height },
           viewport: { width: viewport.width, height: viewport.height },
           scroll: { x: scroll.x, y: scroll.y },
+          ...(fullPage ? { fullPage: true } : {}),
         },
       };
     }
@@ -228,16 +231,18 @@ export function isNote(value: unknown): value is Note {
 }
 
 function isScreenshot(image: ScreenshotContext): boolean {
-  return typeof image.dataUrl === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(image.dataUrl)
+  // Region crops are always PNG; full-page captures fall back to JPEG to fit.
+  return typeof image.dataUrl === 'string' && (image.fullPage === true ? /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/ : /^data:image\/png;base64,[A-Za-z0-9+/=]+$/).test(image.dataUrl)
     && image.dataUrl.length <= 2_800_000
     && [image.width, image.height, image.region?.width, image.region?.height, image.viewport?.width, image.viewport?.height].every(n => Number.isFinite(n) && n > 0)
-    && [image.region?.x, image.region?.y, image.scroll?.x, image.scroll?.y].every(Number.isFinite);
+    && [image.region?.x, image.region?.y, image.scroll?.x, image.scroll?.y].every(Number.isFinite)
+    && (image.fullPage === undefined || image.fullPage === true);
 }
 
 export function screenshotFilename(note: Note): string {
   const id = /^[a-zA-Z0-9_-]{1,80}$/.test(note.id) ? note.id
     : Array.from(new TextEncoder().encode(note.id), byte => byte.toString(16).padStart(2, '0')).join('');
-  return `screenshot-${id}.png`;
+  return `screenshot-${id}.${note.screenshot?.dataUrl.startsWith('data:image/jpeg') ? 'jpg' : 'png'}`;
 }
 
 export async function readNotes(store: Store): Promise<Note[]> {
@@ -287,10 +292,11 @@ export function buildPrompt(notes: Note[], preamble = DEFAULT_PROMPT_PREAMBLE): 
         continue;
       }
       if (note.screenshot) {
-        const { region, viewport, scroll, width, height } = note.screenshot;
+        const { region, viewport, scroll, width, height, fullPage } = note.screenshot;
         lines.push(`- **Screenshot file:** ${inlineCode(screenshotFilename(note))}`,
           `- **Image size:** ${width} × ${height} pixels`,
-          `- **Region:** x ${region.x}, y ${region.y}, width ${region.width}, height ${region.height} (CSS pixels within the visible viewport)`,
+          ...(fullPage ? [`- **Region:** Full page from the top, width ${region.width}, height ${region.height} (CSS pixels)`]
+            : [`- **Region:** x ${region.x}, y ${region.y}, width ${region.width}, height ${region.height} (CSS pixels within the visible viewport)`]),
           `- **Viewport:** ${viewport.width} × ${viewport.height}`,
           `- **Page scroll:** x ${scroll.x}, y ${scroll.y}`, '');
         continue;
