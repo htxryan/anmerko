@@ -1,6 +1,6 @@
 ---
 name: finish-feature
-description: Carry a new or changed user-visible anmerko feature through every public surface — user docs, the brochure Features page and its silent demo clip, store listing copy, generated examples, and a stale-claim sweep — before its PR is called done. Use whenever adding, extending, or changing a feature users can see, including small toolbar options and limit changes, and before opening or finalizing that feature's PR.
+description: Carry a new or changed user-visible anmerko feature through every public surface — user docs, the brochure Features page and its silent demo clip, store listing copy, generated examples, a stale-claim sweep, and a preview deploy of the site — before its PR is called done. Use whenever adding, extending, or changing a feature users can see, including small toolbar options and limit changes, and before opening or finalizing that feature's PR.
 ---
 
 # Finish a feature
@@ -104,9 +104,30 @@ plays (`readyState` ≥ 2, `currentTime` advancing), and look at a screenshot
 of it. Extension checks (`npm run check`, manual browser testing) remain
 required by the normal workflow.
 
-## 7. Report in the PR
+## 7. Preview deploy
+
+Ask the user to approve a named preview deploy of the brochure and docs site.
+It publishes to a public `workers.dev` address, so it needs approval each time
+unless the user has already asked for it for this feature. Once approved, from
+the feature worktree:
+
+```sh
+npx --no-install wrangler whoami   # authenticate first if needed
+task site:preview NAME=pr<PR number>
+```
+
+The task builds, checks, dry-runs, and deploys `anmerko-site-preview-<name>`,
+and prints the preview URL. Reusing the name updates the same preview. Details
+are in [site deployment](../../../docs/site-deployment.md#named-previews).
+Verify the preview: the changed pages return 200 and show the new copy, and
+the clip's bytes match the committed file
+(`cmp <(curl -s "<url>/media/features/<name>.mp4?v=<CLIP_V>") site/public/media/features/<name>.mp4`).
+Put the preview URL in the PR description. Never run production `site:deploy`
+or the Deploy workflow from this skill.
+
+## 8. Report in the PR
 
 Add a short "Public surfaces" list to the PR description: each surface
-updated, each one deliberately left unchanged with the reason, and any
-follow-up such as a store screenshot recapture. When you tell the user the
-feature is done, include the same list.
+updated, each one deliberately left unchanged with the reason, any follow-up
+such as a store screenshot recapture, and the preview URL. When you tell the
+user the feature is done, include the same list.

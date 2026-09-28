@@ -22,7 +22,8 @@ Old-host web traffic now redirects to `https://anmerko.com/`, dropping paths and
   browser testing applies. Automated tests complement this verification.
 - When adding or changing a user-visible feature, use the `finish-feature`
   skill before its PR is done: user docs, the brochure Features page and demo
-  clip, store copy, and stale claims ship in the same PR.
+  clip, store copy, and stale claims ship in the same PR, with an approved
+  named preview deploy of the site.
 
 ## Repository structure
 

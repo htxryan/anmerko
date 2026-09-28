@@ -7,7 +7,7 @@ This checkout includes 25 skills from [Addy Osmani’s agent-skills](https://git
 | [workflow-define-and-plan](skills/workflow-define-and-plan/SKILL.md) | Explore, interview, and write an HTML spec/plan |
 | [workflow-execute](skills/workflow-execute/SKILL.md) | Implement a plan in a worktree, browser-test, and open a PR with green checks |
 | [workflow-define-plan-execute](skills/workflow-define-plan-execute/SKILL.md) | Define, plan, then execute |
-| [finish-feature](skills/finish-feature/SKILL.md) | Carry a user-visible feature through docs, the Features page and demo clip, and store copy |
+| [finish-feature](skills/finish-feature/SKILL.md) | Carry a user-visible feature through docs, the Features page and demo clip, store copy, and a site preview deploy |
 
 These workflows use the [HTML plan contract](references/html-plans.md): one self-contained plan with left navigation, specification, tasks, inline assets, and graphical diagrams.
 
