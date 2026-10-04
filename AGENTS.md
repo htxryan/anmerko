@@ -49,13 +49,11 @@ Command definitions live in [package.json](package.json) and [Taskfile.yml](Task
 
 ## Agent skills
 
-This repository includes Addy Osmani's agent skills, three project-owned
-`workflow-*` skills, and the project `finish-feature` skill in `.agents/skills/`.
-Use the host's native skill discovery to load a matching skill on demand.
-OpenCode should load matching skills with its `skill` tool. Keep the full
-`using-agent-skills` workflow out of always-loaded instructions.
+The project `finish-feature` skill in `.agents/skills/` carries a user-visible
+feature through its docs, the Features page and demo clip, store copy, and a
+site preview. Run it before calling such a feature's PR done.
 
-Shared checklists live in `.agents/references/`. The pack's reviewer personas
-are reference material in `.agents/agents/`; they are not registered subagents.
-Resolve pack assets from `.agents/`, and write project outputs from the repo
-root. Installation details and the pinned revision are in [.agents/README.md](.agents/README.md).
+General engineering skills, including Addy Osmani's
+[agent-skills](https://github.com/addyosmani/agent-skills) and the `workflow-*`
+skills, are installed at user level rather than vendored here. Use the host's
+native skill discovery to load a matching skill on demand.
